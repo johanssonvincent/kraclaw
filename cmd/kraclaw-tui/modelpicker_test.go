@@ -14,30 +14,30 @@ func TestParseModelList(t *testing.T) {
 		{
 			name: "models header with current marker",
 			content: "Models:\n" +
-				"- claude-3-5-sonnet-20241022 (Sonnet) (current)\n" +
-				"- claude-3-5-haiku-20241022 (Haiku)",
+				"- claude-sonnet-4-6 (Claude Sonnet 4.6) (current)\n" +
+				"- claude-haiku-4-5 (Claude Haiku 4.5)",
 			want: []modelOption{
-				{ID: "claude-3-5-sonnet-20241022", Label: "claude-3-5-sonnet-20241022 (Sonnet)", Current: true},
-				{ID: "claude-3-5-haiku-20241022", Label: "claude-3-5-haiku-20241022 (Haiku)", Current: false},
+				{ID: "claude-sonnet-4-6", Label: "claude-sonnet-4-6 (Claude Sonnet 4.6)", Current: true},
+				{ID: "claude-haiku-4-5", Label: "claude-haiku-4-5 (Claude Haiku 4.5)", Current: false},
 			},
 		},
 		{
 			name: "cached header ignores blanks and keeps order",
 			content: "Models (cached):\n\n" +
-				"- claude-3-7-sonnet-20250219\n" +
-				"- claude-opus-4-1-20250805 (Opus 4.1)",
+				"- claude-sonnet-4-5 (Claude Sonnet 4.5)\n" +
+				"- claude-opus-4-1 (Claude Opus 4.1)",
 			want: []modelOption{
-				{ID: "claude-3-7-sonnet-20250219", Label: "claude-3-7-sonnet-20250219", Current: false},
-				{ID: "claude-opus-4-1-20250805", Label: "claude-opus-4-1-20250805 (Opus 4.1)", Current: false},
+				{ID: "claude-sonnet-4-5", Label: "claude-sonnet-4-5 (Claude Sonnet 4.5)", Current: false},
+				{ID: "claude-opus-4-1", Label: "claude-opus-4-1 (Claude Opus 4.1)", Current: false},
 			},
 		},
 		{
 			name: "cached upstream error header is ignored",
 			content: "Models (cached; upstream error):\n" +
-				"- claude-3-5-sonnet-20241022\n" +
+				"- claude-opus-4-6 (Claude Opus 4.6)\n" +
 				"Current: default",
 			want: []modelOption{
-				{ID: "claude-3-5-sonnet-20241022", Label: "claude-3-5-sonnet-20241022", Current: false},
+				{ID: "claude-opus-4-6", Label: "claude-opus-4-6 (Claude Opus 4.6)", Current: false},
 			},
 		},
 		{
