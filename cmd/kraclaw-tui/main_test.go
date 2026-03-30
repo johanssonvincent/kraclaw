@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -340,9 +341,16 @@ func TestNewAPIClient_TLS(t *testing.T) {
 
 	t.Run("wrong CA", func(t *testing.T) {
 		wrongCA := generateWrongCA(t)
-		_, err := newAPIClient(lis.Addr().String(), wrongCA, clientCert, clientKey, "localhost", false)
+		client, err := newAPIClient(lis.Addr().String(), wrongCA, clientCert, clientKey, "localhost", false)
+		if err != nil {
+			// Error at dial time is fine (pre-NewClient behavior).
+			return
+		}
+		// grpc.NewClient is lazy — TLS error surfaces on first RPC call.
+		_, err = client.admin.GetStatus(context.Background(), &kraclawv1.GetStatusRequest{})
 		if err == nil {
 			t.Fatal("expected error with wrong CA, got nil")
 		}
+		_ = client.Close()
 	})
 }
