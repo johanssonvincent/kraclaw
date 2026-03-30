@@ -7,7 +7,7 @@ COPY src/ ./src/
 RUN npm run build
 
 FROM node:22-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git curl jq && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code
 RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | RTK_INSTALL_DIR=/usr/local/bin sh
 WORKDIR /app
@@ -17,6 +17,7 @@ COPY package.json ./
 RUN mkdir -p /home/node/.claude /workspace /config && chown -R node:node /home/node/.claude /workspace /config
 USER node
 ENV HOME=/home/node
-RUN rtk init -g
+RUN rtk init -g && \
+    echo '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"/home/node/.claude/hooks/rtk-rewrite.sh"}]}]}}' > /home/node/.claude/settings.json
 ENV NODE_ENV=production
 ENTRYPOINT ["node", "/app/dist/index.js"]
