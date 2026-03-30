@@ -169,6 +169,9 @@ func TestOAuthMode_PlaceholderApiKey_InjectsToken(t *testing.T) {
 	if got := receivedHeaders.Get("Authorization"); got != "Bearer real-oauth-token" {
 		t.Fatalf("expected OAuth token injected for placeholder key, got %q", got)
 	}
+	if got := receivedHeaders.Get("X-Api-Key"); got != "" {
+		t.Fatalf("expected placeholder X-Api-Key stripped, got %q", got)
+	}
 }
 
 func TestOAuthMode_RealApiKey_PassesThrough(t *testing.T) {

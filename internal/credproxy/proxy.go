@@ -191,6 +191,7 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 							return
 						}
 					}
+					req.Header.Del("X-Api-Key")
 					req.Header.Set("Authorization", "Bearer "+p.oauthToken)
 				}
 			}
