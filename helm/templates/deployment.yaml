@@ -27,13 +27,16 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
       initContainers:
         - name: wait-for-db
           image: busybox
           command:
             - sh
             - -c
-            - "while ! nc -z mysql 3306; do sleep 2; done"
+            - "while ! nc -z {{ .Values.mysql.host }} 3306; do sleep 2; done"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -78,6 +81,11 @@ spec:
             - name: grpc-tls
               mountPath: /var/run/kraclaw/grpc-tls
               readOnly: true
+            {{- if .Values.tls.clientSecretName }}
+            - name: grpc-client-tls
+              mountPath: /var/run/kraclaw/grpc-client-tls
+              readOnly: true
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.resources.requests.cpu | quote }}
@@ -115,3 +123,8 @@ spec:
         - name: grpc-tls
           secret:
             secretName: {{ .Values.tls.secretName }}
+        {{- if .Values.tls.clientSecretName }}
+        - name: grpc-client-tls
+          secret:
+            secretName: {{ .Values.tls.clientSecretName }}
+        {{- end }}
