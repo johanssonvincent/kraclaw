@@ -10,35 +10,99 @@ Kraclaw turns a Kubernetes cluster into a managed runtime for AI agents. It runs
 
 Messages arrive from chat platforms (Discord, Telegram), get routed through a per-group Redis queue, and trigger sandboxed K8s Jobs where Claude agents execute. Agents communicate back through Redis Streams IPC, and results are routed to the originating channel. A gRPC API exposes five services (Admin, Group, Task, Channel, Sandbox) for programmatic control, with a Bubbletea TUI as the primary operator interface.
 
-```
-                    ┌─────────────┐
-                    │ TUI Client  │ (gRPC)
-                    └──────┬──────┘
-                           │
-┌─────────────────────────────────────────────────────────┐
-│                    Kraclaw Server                       │
-│                           │                             │
-│  ┌────────────┐   ┌───────┴──────┐   ┌────────────────┐ │
-│  │ Channels   │──▶│  Message     │──▶│ Redis Queue    │ │
-│  │ Discord    │   │  Router      │   │ (per-group)    │ │
-│  │ Telegram   │   └──────────────┘   └────────┬───────┘ │
-│  └────────────┘                               │         │
-│                                               ▼         │
-│  ┌────────────┐   ┌──────────────┐   ┌────────────────┐ │
-│  │ Scheduler  │──▶│  Sandbox     │──▶│ K8s Job/Pod    │ │
-│  │ (cron)     │   │  Controller  │   │ (agent exec)   │ │
-│  └────────────┘   └──────────────┘   └────────┬───────┘ │
-│                                               │         │
-│  ┌────────────┐   ┌──────────────┐            │         │
-│  │ Credential │   │ Redis        │◀───────────┘         │
-│  │ Proxy      │   │ Streams IPC  │   (agent results)    │
-│  └────────────┘   └──────────────┘                      │
-│                                                         │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │             MySQL (persistent state)              │  │
-│  │ messages, groups, tasks, sessions, router_state   │  │
-│  └───────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    %% ── External Clients ──
+    TUI["🖥️ TUI Client<br/><i>Bubbletea</i>"]
+    Discord["💬 Discord"]
+    Telegram["✈️ Telegram"]
+
+    %% ── API Layer ──
+    subgraph API ["API Layer"]
+        direction LR
+        GRPC["gRPC Server<br/><code>:50051</code>"]
+        REST["REST Gateway<br/><code>:8080</code><br/><i>/healthz · /readyz · /metrics</i>"]
+    end
+
+    %% ── Core Engine ──
+    subgraph CORE ["Kraclaw Server"]
+        direction TB
+
+        subgraph INGEST ["Message Ingestion"]
+            direction LR
+            Channels["Channel<br/>Registry"]
+            Router["Message<br/>Router"]
+            Queue["Redis Queue<br/><i>per-group FIFO</i>"]
+        end
+
+        subgraph EXEC ["Agent Execution"]
+            direction LR
+            Orchestrator["Orchestrator<br/><i>poll loop</i>"]
+            Sandbox["Sandbox<br/>Controller"]
+            Scheduler["Scheduler<br/><i>cron · interval · once</i>"]
+        end
+
+        subgraph INFRA ["Infrastructure"]
+            direction LR
+            IPC["Redis Streams<br/>IPC Broker"]
+            CredProxy["Credential Proxy<br/><code>:3001</code>"]
+            Auth["Auth<br/><i>sender allowlist</i>"]
+            Metrics["Prometheus<br/>Metrics"]
+        end
+    end
+
+    %% ── External Systems ──
+    subgraph K8S ["Kubernetes Cluster"]
+        Jobs["K8s Jobs<br/><i>isolated agent pods</i>"]
+        PVC["PVCs<br/><i>groups · sessions · data</i>"]
+        NetPol["Network<br/>Policy"]
+    end
+
+    MySQL[("MySQL<br/><i>messages · groups<br/>tasks · sessions</i>")]
+    Redis[("Redis<br/><i>queues · streams<br/>pub/sub</i>")]
+    Anthropic["Anthropic API<br/><i>api.anthropic.com</i>"]
+
+    %% ── Connections ──
+    TUI -->|gRPC + TLS| GRPC
+    Discord --> Channels
+    Telegram --> Channels
+    GRPC --> Orchestrator
+
+    Channels --> Router --> Queue
+    Queue --> Orchestrator
+    Scheduler --> Orchestrator
+    Orchestrator --> Sandbox
+    Sandbox --> Jobs
+
+    Jobs <-->|input/output streams| IPC
+    IPC --> Router
+    Jobs -->|proxied requests| CredProxy
+    CredProxy -->|injected credentials| Anthropic
+    NetPol -.->|restricts access| CredProxy
+
+    Jobs --- PVC
+    Orchestrator --> Auth
+
+    Orchestrator <--> MySQL
+    Queue <--> Redis
+    IPC <--> Redis
+    Metrics --> REST
+
+    %% ── Styles ──
+    classDef client fill:#818cf8,stroke:#4f46e5,color:#fff,stroke-width:2px
+    classDef api fill:#38bdf8,stroke:#0284c7,color:#fff,stroke-width:2px
+    classDef core fill:#f8fafc,stroke:#94a3b8,color:#1e293b,stroke-width:1px
+    classDef k8s fill:#a78bfa,stroke:#7c3aed,color:#fff,stroke-width:2px
+    classDef datastore fill:#34d399,stroke:#059669,color:#fff,stroke-width:2px
+    classDef external fill:#fb923c,stroke:#ea580c,color:#fff,stroke-width:2px
+    classDef infra fill:#e2e8f0,stroke:#64748b,color:#334155,stroke-width:1px
+
+    class TUI,Discord,Telegram client
+    class GRPC,REST api
+    class Jobs,PVC,NetPol k8s
+    class MySQL,Redis datastore
+    class Anthropic external
+    class Channels,Router,Queue,Orchestrator,Sandbox,Scheduler,IPC,CredProxy,Auth,Metrics infra
 ```
 
 ---
