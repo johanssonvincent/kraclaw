@@ -12,6 +12,12 @@ on:
     paths:
       - 'agent/**'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: johanssonvincent/kraclaw-agent
@@ -32,14 +38,16 @@ jobs:
 
       - name: Resolve version tag
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           BASE_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
           BASE_VERSION=${BASE_VERSION#v}
           echo "base=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            PR_NUM=${{ github.event.pull_request.number }}
-            echo "pr_tag=${BASE_VERSION}-pr${PR_NUM}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "pr_tag=${BASE_VERSION}-pr${PR_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Docker Buildx
