@@ -35,12 +35,12 @@ func NewMySQLStore(dsn string, maxOpen, maxIdle int, connMaxLifetime time.Durati
 	db.SetConnMaxLifetime(connMaxLifetime)
 
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("ping mysql: %w", err)
 	}
 
 	if err := runMigrations(dsn); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
@@ -70,7 +70,7 @@ func runMigrations(dsn string) error {
 	if err != nil {
 		return fmt.Errorf("open migration db: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
@@ -130,7 +130,7 @@ func (s *MySQLStore) ListGroups(ctx context.Context) ([]Group, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list groups: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var groups []Group
 	for rows.Next() {
@@ -228,7 +228,7 @@ func (s *MySQLStore) StoreBatch(ctx context.Context, msgs []Message) error {
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx,
 		`REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message)
@@ -237,7 +237,7 @@ func (s *MySQLStore) StoreBatch(ctx context.Context, msgs []Message) error {
 	if err != nil {
 		return fmt.Errorf("prepare batch insert: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for i := range msgs {
 		m := &msgs[i]
@@ -283,7 +283,7 @@ func (s *MySQLStore) GetNewMessages(ctx context.Context, jids []string, since ti
 	if err != nil {
 		return nil, fmt.Errorf("get new messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanMessages(rows)
 }
@@ -304,7 +304,7 @@ func (s *MySQLStore) GetMessagesSince(ctx context.Context, chatJID string, since
 	if err != nil {
 		return nil, fmt.Errorf("get messages since: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanMessages(rows)
 }
@@ -451,7 +451,7 @@ func (s *MySQLStore) DeleteTask(ctx context.Context, id, groupFolder string) err
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM task_run_logs WHERE task_id = ? AND group_folder = ?", id, groupFolder); err != nil {
 		return fmt.Errorf("delete task run logs: %w", err)

@@ -162,7 +162,7 @@ func (c *modelCache) fetchModels(ctx context.Context, apiKey string) (modelsResp
 	if err != nil {
 		return modelsResponse{}, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return modelsResponse{}, resp.StatusCode, fmt.Errorf("%s", resp.Status)
@@ -187,7 +187,7 @@ func (c *modelCache) exchangeOAuthAPIKey(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return "", fmt.Errorf("oauth exchange failed: %s", resp.Status)
