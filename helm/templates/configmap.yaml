@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kraclaw.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels: {{ include "kraclaw.labels" . | nindent 4 }}
+data:
+  # Server
+  GRPC_ADDR: {{ .Values.server.grpcAddr | quote }}
+  REST_ADDR: {{ .Values.server.restAddr | quote }}
+  PROXY_ADDR: {{ .Values.server.proxyAddr | quote }}
+  GRPC_INSECURE: {{ .Values.server.grpcInsecure | quote }}
+  GRPC_TLS_CERT_FILE: {{ .Values.server.grpcTlsCertFile | quote }}
+  GRPC_TLS_KEY_FILE: {{ .Values.server.grpcTlsKeyFile | quote }}
+  GRPC_TLS_CLIENT_CA_FILE: {{ .Values.server.grpcTlsClientCAFile | quote }}
+  GRPC_ALLOWED_CIDRS: {{ .Values.server.grpcAllowedCidrs | quote }}
+  GRPC_REFLECTION_ENABLED: {{ .Values.server.grpcReflectionEnabled | quote }}
+  # Redis
+  REDIS_URL: {{ .Values.redis.url | quote }}
+  # Kubernetes / sandbox
+  K8S_NAMESPACE: {{ .Release.Namespace | quote }}
+  AGENT_IMAGE: {{ .Values.k8s.agentImage | quote }}
+  K8S_IN_CLUSTER: {{ .Values.k8s.inCluster | quote }}
+  K8S_SESSIONS_PVC: {{ default (printf "%s-sessions" (include "kraclaw.fullname" .)) .Values.k8s.sessionsPvc | quote }}
+  K8S_GROUPS_PVC: {{ default (printf "%s-groups" (include "kraclaw.fullname" .)) .Values.k8s.groupsPvc | quote }}
+  K8S_DATA_PVC: {{ default (printf "%s-data" (include "kraclaw.fullname" .)) .Values.k8s.dataPvc | quote }}
+  SANDBOX_STARTUP_TIMEOUT: {{ .Values.k8s.sandboxStartupTimeout | quote }}
+  # Credential proxy (non-secret)
+  PROXY_UPSTREAM_URL: {{ .Values.credproxy.upstreamUrl | quote }}
+  ANTHROPIC_VERSION: {{ .Values.credproxy.anthropicVersion | quote }}
+  # MySQL (non-secret connection params)
+  MYSQL_MAX_OPEN_CONNS: {{ .Values.mysql.maxOpenConns | quote }}
+  MYSQL_MAX_IDLE_CONNS: {{ .Values.mysql.maxIdleConns | quote }}
+  MYSQL_CONN_MAX_LIFETIME: {{ .Values.mysql.connMaxLifetime | quote }}
+  # Queue / rate limiting
+  MAX_CONCURRENT: {{ .Values.queue.maxConcurrent | quote }}
+  IDLE_TIMEOUT: {{ .Values.queue.idleTimeout | quote }}
+  TASK_CLOSE_DELAY: {{ .Values.queue.taskCloseDelay | quote }}
+  MAX_RETRIES: {{ .Values.queue.maxRetries | quote }}
+  RETRY_BASE_DELAY: {{ .Values.queue.retryBaseDelay | quote }}
+  # Scheduler
+  SCHEDULER_POLL_INTERVAL: {{ .Values.scheduler.pollInterval | quote }}
+  # Observability
+  METRICS_ENABLED: {{ .Values.metrics.enabled | quote }}
+  METRICS_PATH: {{ .Values.metrics.path | quote }}
+  LOG_LEVEL: {{ .Values.logging.level | quote }}
+  LOG_FORMAT: {{ .Values.logging.format | quote }}
+  # Channels (non-secret)
+  ASSISTANT_NAME: {{ .Values.channels.assistantName | quote }}
+  TZ: {{ .Values.channels.timezone | quote }}

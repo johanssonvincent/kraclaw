@@ -1,0 +1,49 @@
+# helm/values-prod.yaml — Production overrides
+# Keys not listed here use base values.yaml defaults
+# Helm applies this AFTER values.yaml — conflicts are won by this file
+
+# HA deployment: 3 replicas for production resilience
+replicaCount: 3
+
+# Explicit image tag (production release, not latest)
+image:
+  tag: "v0.7.1"
+
+# Production-grade resource limits
+resources:
+  requests:
+    cpu: "500m"
+    memory: "256Mi"
+  limits:
+    cpu: "2000m"
+    memory: "1Gi"
+
+# Optional: Restrict gRPC access to internal subnets only (depends on deployment environment)
+# Uncomment and adjust CIDR ranges for your network
+# server:
+#   grpcAllowedCidrs: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fd00::/8"
+
+# Optional: Production storage class and size for persistent data
+# If using dedicated storage classes (e.g., longhorn, ebs-sc), override here
+# storage:
+#   class: "longhorn"
+#   groups:
+#     size: "50Gi"
+#   sessions:
+#     size: "20Gi"
+#   data:
+#     size: "10Gi"
+
+# Agent sandbox production configuration
+sandbox:
+  # Agent image: use explicit production version tag
+  agentImage: "ghcr.io/johanssonvincent/kraclaw-agent:v0.7.1"
+
+  # Production-grade agent resources
+  agentResources:
+    requests:
+      cpu: "1000m"
+      memory: "1Gi"
+    limits:
+      cpu: "4000m"
+      memory: "4Gi"

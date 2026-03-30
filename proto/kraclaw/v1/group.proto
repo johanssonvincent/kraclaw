@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package kraclaw.v1;
+
+option go_package = "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1";
+
+import "google/protobuf/timestamp.proto";
+
+service GroupService {
+  rpc RegisterGroup(RegisterGroupRequest) returns (Group);
+  rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
+  rpc GetGroup(GetGroupRequest) returns (Group);
+  rpc UnregisterGroup(UnregisterGroupRequest) returns (UnregisterGroupResponse);
+  rpc GetSenderAllowlist(GetSenderAllowlistRequest) returns (SenderAllowlist);
+  rpc UpdateSenderAllowlist(UpdateSenderAllowlistRequest) returns (SenderAllowlist);
+}
+
+message Group {
+  string jid = 1;
+  string name = 2;
+  string folder = 3;
+  string trigger_pattern = 4;
+  bool is_main = 5;
+  bool requires_trigger = 6;
+  string container_config_json = 7;
+  google.protobuf.Timestamp added_at = 8;
+}
+
+message RegisterGroupRequest {
+  string jid = 1;
+  string name = 2;
+  string folder = 3;
+  string trigger_pattern = 4;
+  bool is_main = 5;
+  bool requires_trigger = 6;
+  string container_config_json = 7;
+}
+
+message GetGroupRequest {
+  string jid = 1;
+}
+
+message ListGroupsRequest {}
+
+message ListGroupsResponse {
+  repeated Group groups = 1;
+}
+
+message UnregisterGroupRequest {
+  string jid = 1;
+}
+
+message UnregisterGroupResponse {}
+
+message SenderAllowlistEntry {
+  int64 id = 1;
+  string chat_jid = 2;
+  string allow_pattern = 3;
+  string mode = 4; // trigger, drop
+}
+
+message SenderAllowlist {
+  repeated SenderAllowlistEntry entries = 1;
+}
+
+message GetSenderAllowlistRequest {
+  string chat_jid = 1;
+}
+
+message UpdateSenderAllowlistRequest {
+  string chat_jid = 1;
+  repeated SenderAllowlistEntry entries = 2;
+}

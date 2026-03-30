@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kraclaw.fullname" . }}-credproxy
+  namespace: {{ .Release.Namespace }}
+  labels: {{ include "kraclaw.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: {{ include "kraclaw.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: credproxy
+      port: 3001
+      targetPort: credproxy
+      protocol: TCP

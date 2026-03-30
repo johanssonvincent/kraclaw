@@ -1,0 +1,8 @@
+DROP TABLE IF EXISTS sender_allowlist;
+DROP TABLE IF EXISTS router_state;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS task_run_logs;
+DROP TABLE IF EXISTS scheduled_tasks;
+DROP TABLE IF EXISTS chats;
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS `groups`;

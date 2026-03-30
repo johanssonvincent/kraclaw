@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kraclaw.fullname" . }}-rest
+  namespace: {{ .Release.Namespace }}
+  labels: {{ include "kraclaw.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: {{ include "kraclaw.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: rest
+      port: 8080
+      targetPort: rest
+      protocol: TCP

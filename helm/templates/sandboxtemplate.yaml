@@ -1,0 +1,88 @@
+{{- if .Values.sandbox.enabled }}
+{{- if not .Values.sandbox.agentImage }}
+{{- fail "sandbox.agentImage is required when sandbox.enabled=true. Set --set sandbox.agentImage=<image> or sandbox.enabled=false." }}
+{{- end }}
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: {{ include "kraclaw.fullname" . }}-agent-template
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kraclaw.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-template
+spec:
+  podTemplate:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- if .Values.sandbox.imagePullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.sandbox.imagePullSecret }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.sandbox.runAsUser }}
+      initContainers:
+        - name: init-dirs
+          image: {{ .Values.sandbox.initImage }}
+          command:
+            - sh
+            - -c
+            - "mkdir -p /sessions/$(GROUP_FOLDER)/.claude && mkdir -p /groups/$(GROUP_FOLDER)/archives"
+          env:
+            - name: GROUP_FOLDER
+              value: "placeholder"
+          volumeMounts:
+            - name: sessions
+              mountPath: /sessions
+            - name: groups
+              mountPath: /groups
+          securityContext:
+            runAsUser: {{ .Values.sandbox.runAsUser }}
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml .Values.sandbox.initResources | nindent 12 }}
+      containers:
+        - name: agent
+          image: {{ .Values.sandbox.agentImage }}
+          command:
+            - node
+            - /app/dist/index.js
+            - --group
+            - "$(GROUP_FOLDER)"
+          workingDir: /workspace
+          env:
+            - name: GROUP_FOLDER
+              value: "placeholder"
+            - name: REDIS_URL
+              value: {{ .Values.sandbox.redisUrl | quote }}
+            - name: ANTHROPIC_BASE_URL
+              value: {{ .Values.sandbox.proxyUrl | quote }}
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              value: "placeholder"
+            - name: HOME
+              value: "/home/node"
+          volumeMounts:
+            - name: sessions
+              mountPath: /home/node/.claude
+              subPathExpr: "$(GROUP_FOLDER)/.claude"
+            - name: groups
+              mountPath: /workspace
+              subPathExpr: "$(GROUP_FOLDER)"
+            - name: data
+              mountPath: /config
+              readOnly: true
+          resources:
+            {{- toYaml .Values.sandbox.agentResources | nindent 12 }}
+      volumes:
+        - name: sessions
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-sessions" (include "kraclaw.fullname" .)) .Values.sandbox.sessionsPvc }}
+        - name: groups
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-groups" (include "kraclaw.fullname" .)) .Values.sandbox.groupsPvc }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-data" (include "kraclaw.fullname" .)) .Values.sandbox.dataPvc }}
+            readOnly: true
+{{- end }}

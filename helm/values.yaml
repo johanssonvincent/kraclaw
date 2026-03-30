@@ -1,0 +1,177 @@
+# Kraclaw Helm Chart Values
+# All env var defaults are sourced from internal/config/config.go envconfig tags.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/johanssonvincent/kraclaw
+  pullPolicy: IfNotPresent
+  # Defaults to .Chart.AppVersion if not set
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  # Defaults to kraclaw.fullname if empty
+  name: ""
+
+rbac:
+  create: true
+
+# Server configuration — maps to ServerConfig envconfig struct
+server:
+  grpcAddr: ":50051"                                                              # GRPC_ADDR
+  restAddr: ":8080"                                                               # REST_ADDR
+  proxyAddr: ":3001"                                                              # PROXY_ADDR
+  grpcInsecure: false                                                             # GRPC_INSECURE — must be false in production
+  grpcTlsCertFile: "/var/run/kraclaw/grpc-tls/tls.crt"                          # GRPC_TLS_CERT_FILE
+  grpcTlsKeyFile: "/var/run/kraclaw/grpc-tls/tls.key"                           # GRPC_TLS_KEY_FILE
+  grpcTlsClientCAFile: "/var/run/kraclaw/grpc-tls/ca.crt"                       # GRPC_TLS_CLIENT_CA_FILE
+  grpcAllowedCidrs: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fd00::/8,127.0.0.0/8,::1/128"  # GRPC_ALLOWED_CIDRS
+  grpcReflectionEnabled: false                                                    # GRPC_REFLECTION_ENABLED
+
+# MySQL — MYSQL_DSN is REQUIRED and must come from a pre-created Secret (not stored in values.yaml)
+mysql:
+  maxOpenConns: 10         # MYSQL_MAX_OPEN_CONNS
+  maxIdleConns: 5          # MYSQL_MAX_IDLE_CONNS
+  connMaxLifetime: "5m"    # MYSQL_CONN_MAX_LIFETIME
+  # secretName: name of pre-existing Secret containing key "MYSQL_DSN" (required before helm install)
+  secretName: "kraclaw-mysql-url"
+
+# Redis
+redis:
+  url: "redis://redis.kraclaw.svc.cluster.local:6379"  # REDIS_URL
+
+# NOTE: PVC names below assume release name "kraclaw". If using a different release name,
+# override k8s.sessionsPvc, k8s.groupsPvc, k8s.dataPvc, and sandbox.sessionsPvc, sandbox.groupsPvc,
+# sandbox.dataPvc to match the PVC names rendered by the fullname helper: {releaseName}-{chartName}-{type}
+# Example: helm install myrelease ./helm --set k8s.sessionsPvc=myrelease-kraclaw-sessions ...
+#
+# Kubernetes / sandbox configuration
+k8s:
+  agentImage: ""                        # AGENT_IMAGE — REQUIRED: set before helm install
+  inCluster: true                       # K8S_IN_CLUSTER
+  sessionsPvc: ""                        # K8S_SESSIONS_PVC — auto-computed from fullname if empty
+  groupsPvc: ""                          # K8S_GROUPS_PVC — auto-computed from fullname if empty
+  dataPvc: ""                            # K8S_DATA_PVC — auto-computed from fullname if empty
+  sandboxStartupTimeout: "5m"          # SANDBOX_STARTUP_TIMEOUT
+
+# Anthropic credential proxy — API key comes from pre-created Secret (not stored here)
+credproxy:
+  upstreamUrl: "https://api.anthropic.com"   # PROXY_UPSTREAM_URL
+  anthropicVersion: "2023-06-01"             # ANTHROPIC_VERSION
+  # secretName: name of pre-existing Secret containing keys "ANTHROPIC_API_KEY" and/or "ANTHROPIC_OAUTH_TOKEN"
+  secretName: "kraclaw-api-keys"
+
+# Queue and rate limiting
+queue:
+  maxConcurrent: 5           # MAX_CONCURRENT
+  idleTimeout: "30m"         # IDLE_TIMEOUT
+  taskCloseDelay: "10s"      # TASK_CLOSE_DELAY
+  maxRetries: 5              # MAX_RETRIES
+  retryBaseDelay: "5s"       # RETRY_BASE_DELAY
+
+# Scheduler
+scheduler:
+  pollInterval: "60s"        # SCHEDULER_POLL_INTERVAL
+
+# Observability
+metrics:
+  enabled: true              # METRICS_ENABLED
+  path: "/metrics"           # METRICS_PATH
+
+logging:
+  level: "info"              # LOG_LEVEL
+  format: "json"             # LOG_FORMAT
+
+# Channel configuration
+channels:
+  assistantName: "Kraclaw"   # ASSISTANT_NAME
+  timezone: "UTC"            # TZ
+  # Discord and Telegram tokens come from pre-created Secrets (optional channels)
+  discordSecretName: ""      # set to Secret name containing DISCORD_TOKEN if using Discord
+  telegramSecretName: ""     # set to Secret name containing TELEGRAM_TOKEN if using Telegram
+
+# TLS Secret name for gRPC (must be pre-created before helm install)
+# kubectl create secret tls kraclaw-grpc-tls --cert=tls.crt --key=tls.key -n <namespace>
+tls:
+  secretName: "kraclaw-grpc-tls"
+
+# Storage configuration for PVCs
+storage:
+  class: "longhorn"    # StorageClass name — must exist in cluster
+  groups:
+    size: "10Gi"       # kraclaw-groups PVC size
+  sessions:
+    size: "5Gi"        # kraclaw-sessions PVC size
+  data:
+    size: "1Gi"        # kraclaw-data PVC size
+
+# Resource requests and limits
+resources:
+  requests:
+    cpu: "200m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+# Network policy for credential proxy — restricts egress to Anthropic API
+networkPolicy:
+  credProxy:
+    enabled: true
+
+# Secret creation (dev/test only — do NOT use in production)
+# Default: false — operator pre-creates Secrets externally
+secrets:
+  create: false
+  mysqlDsn: ""            # Only used if secrets.create=true
+  anthropicApiKey: ""     # Only used if secrets.create=true
+  anthropicOauthToken: "" # Only used if secrets.create=true
+
+# Agent sandbox — SandboxTemplate CRD instance for agent pods
+# Set sandbox.enabled=false to skip SandboxTemplate creation (e.g., when managing externally)
+sandbox:
+  enabled: true
+
+  # Agent container image — REQUIRED: set to full image name before helm install
+  # Example: ghcr.io/johanssonvincent/kraclaw-agent:v1.0
+  agentImage: ""
+
+  # Init container image for per-group directory setup
+  initImage: "busybox:latest"
+
+  # Image pull secret for private registries (ghcr.io)
+  imagePullSecret: "ghcr-pull-secret"
+
+  # UID for all pod containers (must match agent's expected user)
+  runAsUser: 1000
+
+  # In-cluster service URLs — use FQDN to work across namespaces
+  redisUrl: "redis://redis.kraclaw.svc.cluster.local:6379"
+  proxyUrl: "http://kraclaw-credproxy:3001"
+
+  # PVC names — must match PVCs created by helm/templates/pvc-*.yaml
+  # If release name is not "kraclaw", override these to match: {fullname}-{type}
+  sessionsPvc: ""   # auto-computed from fullname if empty
+  groupsPvc: ""     # auto-computed from fullname if empty
+  dataPvc: ""       # auto-computed from fullname if empty
+
+  # Init container resource requests (directory setup only — minimal)
+  initResources:
+    requests:
+      cpu: "10m"
+      memory: "32Mi"
+
+  # Agent container resources — tune for your workload
+  agentResources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"

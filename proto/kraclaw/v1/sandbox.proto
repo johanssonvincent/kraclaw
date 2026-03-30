@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package kraclaw.v1;
+
+option go_package = "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+service SandboxService {
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+  rpc GetSandbox(GetSandboxRequest) returns (Sandbox);
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc StopSandbox(StopSandboxRequest) returns (StopSandboxResponse);
+  rpc PipeSandboxInput(PipeSandboxInputRequest) returns (PipeSandboxInputResponse);
+  rpc StreamSandboxLogs(StreamLogsRequest) returns (stream LogEntry);
+  rpc StreamSandboxOutput(StreamOutputRequest) returns (stream SandboxOutput);
+}
+
+message Sandbox {
+  string name = 1;
+  string group_folder = 2;
+  string group_jid = 3;
+  string state = 4; // pending, running, completed, failed
+  google.protobuf.Timestamp start_time = 5;
+  google.protobuf.Timestamp end_time = 6;
+  string session_id = 7;
+}
+
+message CreateSandboxRequest {
+  string group_folder = 1;
+  string group_jid = 2;
+  string prompt = 3;
+  string session_id = 4;
+  bool is_main = 5;
+  google.protobuf.Duration timeout = 6;
+  string assistant_name = 7;
+}
+
+message CreateSandboxResponse {
+  Sandbox sandbox = 1;
+}
+
+message GetSandboxRequest {
+  string name = 1;
+}
+
+message ListSandboxesRequest {}
+
+message ListSandboxesResponse {
+  repeated Sandbox sandboxes = 1;
+}
+
+message StopSandboxRequest {
+  string name = 1;
+}
+
+message StopSandboxResponse {}
+
+message PipeSandboxInputRequest {
+  string name = 1;
+  string group_folder = 2;
+  string text = 3;
+}
+
+message PipeSandboxInputResponse {}
+
+message StreamLogsRequest {
+  string name = 1;
+  bool follow = 2;
+}
+
+message LogEntry {
+  google.protobuf.Timestamp timestamp = 1;
+  string container = 2;
+  string message = 3;
+}
+
+message StreamOutputRequest {
+  string name = 1;
+  string group_folder = 2;
+}
+
+message SandboxOutput {
+  string type = 1; // text, session_update, error
+  string content = 2;
+  string new_session_id = 3;
+}

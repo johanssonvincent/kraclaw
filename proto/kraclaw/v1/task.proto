@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package kraclaw.v1;
+
+option go_package = "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1";
+
+import "google/protobuf/timestamp.proto";
+
+service TaskService {
+  rpc CreateTask(CreateTaskRequest) returns (Task);
+  rpc GetTask(GetTaskRequest) returns (Task);
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  rpc UpdateTask(UpdateTaskRequest) returns (Task);
+  rpc PauseTask(PauseTaskRequest) returns (Task);
+  rpc ResumeTask(ResumeTaskRequest) returns (Task);
+  rpc DeleteTask(DeleteTaskRequest) returns (DeleteTaskResponse);
+}
+
+message Task {
+  string id = 1;
+  string group_folder = 2;
+  string chat_jid = 3;
+  string prompt = 4;
+  string schedule_type = 5; // cron, interval, once
+  string schedule_value = 6;
+  string context_mode = 7; // group, isolated
+  google.protobuf.Timestamp next_run = 8;
+  google.protobuf.Timestamp last_run = 9;
+  string last_result = 10;
+  string status = 11; // active, paused, completed
+  google.protobuf.Timestamp created_at = 12;
+}
+
+message CreateTaskRequest {
+  string group_folder = 1;
+  string chat_jid = 2;
+  string prompt = 3;
+  string schedule_type = 4;
+  string schedule_value = 5;
+  string context_mode = 6;
+}
+
+message GetTaskRequest {
+  string id = 1;
+}
+
+message ListTasksRequest {
+  string group_folder = 1; // optional filter
+}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+}
+
+message UpdateTaskRequest {
+  string id = 1;
+  string prompt = 2;
+  string schedule_type = 3;
+  string schedule_value = 4;
+  string context_mode = 5;
+  string group_folder = 6;
+}
+
+message PauseTaskRequest {
+  string id = 1;
+}
+
+message ResumeTaskRequest {
+  string id = 1;
+}
+
+message DeleteTaskRequest {
+  string id = 1;
+}
+
+message DeleteTaskResponse {}

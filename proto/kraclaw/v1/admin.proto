@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package kraclaw.v1;
+
+option go_package = "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1";
+
+import "google/protobuf/timestamp.proto";
+
+service AdminService {
+  rpc GetStatus(GetStatusRequest) returns (ServerStatus);
+  rpc StreamEvents(StreamEventsRequest) returns (stream Event);
+  rpc GetMetrics(GetMetricsRequest) returns (Metrics);
+}
+
+message GetStatusRequest {}
+
+message ServerStatus {
+  string version = 1;
+  int32 active_sandboxes = 2;
+  int32 connected_channels = 3;
+  int32 pending_messages = 4;
+  int32 active_tasks = 5;
+  google.protobuf.Timestamp uptime_since = 6;
+  bool mysql_connected = 7;
+  bool redis_connected = 8;
+  bool k8s_connected = 9;
+}
+
+message StreamEventsRequest {
+  repeated string event_types = 1; // filter by type, empty = all
+}
+
+message Event {
+  google.protobuf.Timestamp timestamp = 1;
+  string type = 2;
+  string source = 3;
+  string message = 4;
+  map<string, string> metadata = 5;
+}
+
+message GetMetricsRequest {}
+
+message Metrics {
+  int64 total_messages_received = 1;
+  int64 total_messages_sent = 2;
+  int64 total_sandboxes_created = 3;
+  int64 total_tasks_executed = 4;
+  int64 proxy_requests = 5;
+}

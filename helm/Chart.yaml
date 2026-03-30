@@ -1,0 +1,18 @@
+apiVersion: v2
+name: kraclaw
+description: K8s-native AI agent orchestrator with per-group isolation
+type: application
+version: 0.1.0
+appVersion: "0.6"
+home: https://github.com/johanssonvincent/kraclaw
+sources:
+  - https://github.com/johanssonvincent/kraclaw
+maintainers:
+  - name: Vincent Johansson
+keywords:
+  - kubernetes
+  - ai-agent
+  - orchestration
+  - sandboxing
+annotations:
+  category: Integration

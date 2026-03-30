@@ -1,0 +1,19 @@
+# Binaries
+/kraclaw
+/kraclaw-tui
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Test
+coverage.out
+
+# Environment
+.env
+.claude/worktrees/

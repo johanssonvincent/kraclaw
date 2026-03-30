@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kraclaw.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{ include "kraclaw.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels: {{ include "kraclaw.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "kraclaw.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "kraclaw.serviceAccountName" . }}
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+        - name: wait-for-db
+          image: busybox
+          command:
+            - sh
+            - -c
+            - "while ! nc -z mysql 3306; do sleep 2; done"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+            - name: rest
+              containerPort: 8080
+              protocol: TCP
+            - name: credproxy
+              containerPort: 3001
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "kraclaw.fullname" . }}-config
+            - secretRef:
+                name: {{ .Values.credproxy.secretName }}
+            - secretRef:
+                name: {{ .Values.mysql.secretName }}
+            {{- if .Values.channels.discordSecretName }}
+            - secretRef:
+                name: {{ .Values.channels.discordSecretName }}
+            {{- end }}
+            {{- if .Values.channels.telegramSecretName }}
+            - secretRef:
+                name: {{ .Values.channels.telegramSecretName }}
+            {{- end }}
+          volumeMounts:
+            - name: kraclaw-groups
+              mountPath: /app/groups
+            - name: kraclaw-sessions
+              mountPath: /app/data/sessions
+            - name: kraclaw-data
+              mountPath: /app/data/config
+            - name: grpc-tls
+              mountPath: /var/run/kraclaw/grpc-tls
+              readOnly: true
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+              memory: {{ .Values.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu | quote }}
+              memory: {{ .Values.resources.limits.memory | quote }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: rest
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: rest
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: kraclaw-groups
+          persistentVolumeClaim:
+            claimName: {{ include "kraclaw.fullname" . }}-groups
+        - name: kraclaw-sessions
+          persistentVolumeClaim:
+            claimName: {{ include "kraclaw.fullname" . }}-sessions
+        - name: kraclaw-data
+          persistentVolumeClaim:
+            claimName: {{ include "kraclaw.fullname" . }}-data
+        - name: grpc-tls
+          secret:
+            secretName: {{ .Values.tls.secretName }}

@@ -1,0 +1,39 @@
+Thank you for installing {{ .Chart.Name }} {{ .Chart.AppVersion }}!
+
+=== Pre-install Requirements ===
+
+The following Secrets MUST be created before kraclaw will start:
+
+1. MySQL DSN Secret ({{ .Values.mysql.secretName }}):
+   kubectl create secret generic {{ .Values.mysql.secretName }} \
+     --from-literal=MYSQL_DSN='mysql://user:pass@mysql:3306/kraclaw' \
+     -n {{ .Release.Namespace }}
+
+2. Anthropic API Keys Secret ({{ .Values.credproxy.secretName }}):
+   kubectl create secret generic {{ .Values.credproxy.secretName }} \
+     --from-literal=ANTHROPIC_API_KEY='sk-ant-...' \
+     -n {{ .Release.Namespace }}
+
+{{- if not .Values.server.grpcInsecure }}
+3. gRPC TLS Secret ({{ .Values.tls.secretName }}):
+   kubectl create secret generic {{ .Values.tls.secretName }} \
+     --from-file=tls.crt=tls.crt \
+     --from-file=tls.key=tls.key \
+     --from-file=ca.crt=ca.crt \
+     -n {{ .Release.Namespace }}
+{{- end }}
+
+=== Verify Installation ===
+
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "kraclaw.name" . }}
+
+=== Endpoints ===
+
+  gRPC: {{ include "kraclaw.fullname" . }}-grpc:50051
+  REST: {{ include "kraclaw.fullname" . }}-rest:8080
+  Credential Proxy: {{ include "kraclaw.fullname" . }}-credproxy:3001
+
+Health checks:
+  kubectl port-forward svc/{{ include "kraclaw.fullname" . }}-rest 8080:8080 -n {{ .Release.Namespace }}
+  curl http://localhost:8080/healthz
+  curl http://localhost:8080/readyz
