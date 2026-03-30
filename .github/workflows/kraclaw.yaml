@@ -36,8 +36,11 @@ jobs:
   test-integration:
     uses: ./.github/workflows/test-integration.yaml
 
+  lint:
+    uses: ./.github/workflows/lint.yaml
+
   build:
-    needs: [test-unit, test-integration]
+    needs: [test-unit, test-integration, lint]
     runs-on: ubuntu-latest
     permissions:
       contents: read
