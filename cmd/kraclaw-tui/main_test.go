@@ -144,7 +144,7 @@ func writePEM(t *testing.T, path, typ string, der []byte) {
 	if err != nil {
 		t.Fatalf("create %s: %v", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := pem.Encode(f, &pem.Block{Type: typ, Bytes: der}); err != nil {
 		t.Fatalf("encode PEM %s: %v", path, err)
 	}
@@ -266,14 +266,14 @@ func TestNewAPIClient_Insecure(t *testing.T) {
 	kraclawv1.RegisterGroupServiceServer(srv, &kraclawv1.UnimplementedGroupServiceServer{})
 	kraclawv1.RegisterTaskServiceServer(srv, &kraclawv1.UnimplementedTaskServiceServer{})
 	kraclawv1.RegisterSandboxServiceServer(srv, &kraclawv1.UnimplementedSandboxServiceServer{})
-	go srv.Serve(lis)
+	go func() { _ = srv.Serve(lis) }()
 	defer srv.Stop()
 
 	client, err := newAPIClient(lis.Addr().String(), "", "", "", "", true)
 	if err != nil {
 		t.Fatalf("newAPIClient insecure: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if client.conn == nil {
 		t.Fatal("conn is nil")
@@ -327,7 +327,7 @@ func TestNewAPIClient_TLS(t *testing.T) {
 	kraclawv1.RegisterGroupServiceServer(srv, &kraclawv1.UnimplementedGroupServiceServer{})
 	kraclawv1.RegisterTaskServiceServer(srv, &kraclawv1.UnimplementedTaskServiceServer{})
 	kraclawv1.RegisterSandboxServiceServer(srv, &kraclawv1.UnimplementedSandboxServiceServer{})
-	go srv.Serve(lis)
+	go func() { _ = srv.Serve(lis) }()
 	defer srv.Stop()
 
 	t.Run("correct certs", func(t *testing.T) {
@@ -335,7 +335,7 @@ func TestNewAPIClient_TLS(t *testing.T) {
 		if err != nil {
 			t.Fatalf("newAPIClient with correct certs: %v", err)
 		}
-		client.Close()
+		_ = client.Close()
 	})
 
 	t.Run("wrong CA", func(t *testing.T) {

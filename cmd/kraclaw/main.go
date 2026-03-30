@@ -68,7 +68,7 @@ func main() {
 		log.Error("failed to initialise MySQL store", "error", err)
 		os.Exit(1)
 	}
-	defer mysqlStore.Close()
+	defer func() { _ = mysqlStore.Close() }()
 	log.Info("connected to MySQL, migrations complete")
 
 	// Connect Redis
@@ -81,7 +81,7 @@ func main() {
 	log.Info("connected to Redis")
 
 	ipcBroker := ipc.NewRedisBroker(rdb, log)
-	defer ipcBroker.Close()
+	defer func() { _ = ipcBroker.Close() }()
 
 	var (
 		kubeConfig  *rest.Config
@@ -108,7 +108,7 @@ func main() {
 
 	// Create queue, TUI channel, and orchestrator
 	redisQueue := queue.NewRedisQueue(rdb, log)
-	defer redisQueue.Close()
+	defer func() { _ = redisQueue.Close() }()
 
 	tuiChannel := tui.New(log)
 

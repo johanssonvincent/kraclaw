@@ -52,7 +52,7 @@ func TestUpdateChatModelPicker(t *testing.T) {
 	m.chatState = chatStateChatting
 	m.chatGroup = &GroupInfo{JID: "chat:test"}
 
-	updated, cmd := m.updateChat(keyPress("m"))
+	updated, _ := m.updateChat(keyPress("m"))
 	m1 := updated.(model)
 	if m1.modelPicker.Open {
 		t.Fatal("expected model picker to stay closed on plain 'm'")
@@ -61,6 +61,7 @@ func TestUpdateChatModelPicker(t *testing.T) {
 		t.Fatalf("expected no command sent on plain 'm', got %q", channelClient.lastText)
 	}
 
+	var cmd tea.Cmd
 	updated, cmd = m1.updateChat(keyPress("ctrl+m"))
 	m1 = updated.(model)
 
