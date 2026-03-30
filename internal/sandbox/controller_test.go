@@ -28,7 +28,7 @@ func newTestController() *Controller {
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 
-	ctrl, err := New(fake.NewSimpleClientset(), ctrlClient, nil, "test-ns", "agent:latest")
+	ctrl, err := New(fake.NewSimpleClientset(), ctrlClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
 	if err != nil {
 		panic("newTestController: " + err.Error())
 	}
@@ -133,7 +133,7 @@ func newTestControllerWithCreateInterceptor(funcs interceptor.Funcs) *Controller
 		WithInterceptorFuncs(funcs).
 		Build()
 
-	ctrl, err := New(fake.NewSimpleClientset(), ctrlClient, nil, "test-ns", "agent:latest")
+	ctrl, err := New(fake.NewSimpleClientset(), ctrlClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
 	if err != nil {
 		panic("newTestControllerWithCreateInterceptor: " + err.Error())
 	}
@@ -529,7 +529,7 @@ func TestCleanupOrphans_IsNotFoundSkipped(t *testing.T) {
 		failName:  "kraclaw-agent-gone-aaa111",
 	}
 
-	ctrl, err := New(fake.NewSimpleClientset(), wrappedClient, nil, "test-ns", "agent:latest")
+	ctrl, err := New(fake.NewSimpleClientset(), wrappedClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
 	if err != nil {
 		t.Fatal(err)
 	}

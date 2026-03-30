@@ -36,7 +36,6 @@ server:
 
 # MySQL — MYSQL_DSN is REQUIRED and must come from a pre-created Secret (not stored in values.yaml)
 mysql:
-  host: "mysql"            # MySQL hostname for wait-for-db init container
   maxOpenConns: 10         # MYSQL_MAX_OPEN_CONNS
   maxIdleConns: 5          # MYSQL_MAX_IDLE_CONNS
   connMaxLifetime: "5m"    # MYSQL_CONN_MAX_LIFETIME
@@ -45,7 +44,7 @@ mysql:
 
 # Redis
 redis:
-  url: "redis://redis.kraclaw.svc.cluster.local:6379"  # REDIS_URL
+  url: "redis://redis.databases.svc.cluster.local:6379"  # REDIS_URL
 
 # NOTE: PVC names below assume release name "kraclaw". If using a different release name,
 # override k8s.sessionsPvc, k8s.groupsPvc, k8s.dataPvc, and sandbox.sessionsPvc, sandbox.groupsPvc,
@@ -101,11 +100,6 @@ channels:
 # kubectl create secret tls kraclaw-grpc-tls --cert=tls.crt --key=tls.key -n <namespace>
 tls:
   secretName: "kraclaw-grpc-tls"
-  # Optional: client TLS secret for mTLS (e.g., TUI client cert)
-  clientSecretName: ""
-
-# Node selector for scheduling pods to specific nodes
-nodeSelector: {}
 
 # Storage configuration for PVCs
 storage:
@@ -158,7 +152,7 @@ sandbox:
   runAsUser: 1000
 
   # In-cluster service URLs — use FQDN to work across namespaces
-  redisUrl: "redis://redis.kraclaw.svc.cluster.local:6379"
+  redisUrl: "redis://redis.databases.svc.cluster.local:6379"
   proxyUrl: "http://kraclaw-credproxy:3001"
 
   # PVC names — must match PVCs created by helm/templates/pvc-*.yaml

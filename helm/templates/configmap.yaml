@@ -25,6 +25,7 @@ data:
   K8S_GROUPS_PVC: {{ default (printf "%s-groups" (include "kraclaw.fullname" .)) .Values.k8s.groupsPvc | quote }}
   K8S_DATA_PVC: {{ default (printf "%s-data" (include "kraclaw.fullname" .)) .Values.k8s.dataPvc | quote }}
   SANDBOX_STARTUP_TIMEOUT: {{ .Values.k8s.sandboxStartupTimeout | quote }}
+  SANDBOX_PROXY_URL: {{ .Values.sandbox.proxyUrl | quote }}
   # Credential proxy (non-secret)
   PROXY_UPSTREAM_URL: {{ .Values.credproxy.upstreamUrl | quote }}
   ANTHROPIC_VERSION: {{ .Values.credproxy.anthropicVersion | quote }}

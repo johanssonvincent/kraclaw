@@ -41,6 +41,8 @@ type Controller struct {
 	config     *rest.Config
 	namespace  string
 	agentImage string
+	redisURL   string
+	proxyURL   string
 	log        *slog.Logger
 }
 
@@ -91,7 +93,7 @@ type SandboxStatus struct {
 }
 
 // New creates a new sandbox controller.
-func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *rest.Config, namespace, agentImage string) (*Controller, error) {
+func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *rest.Config, namespace, agentImage, redisURL, proxyURL string) (*Controller, error) {
 	if clientset == nil {
 		return nil, fmt.Errorf("sandbox: kubernetes clientset is required")
 	}
@@ -101,6 +103,8 @@ func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *re
 		config:     config,
 		namespace:  namespace,
 		agentImage: agentImage,
+		redisURL:   redisURL,
+		proxyURL:   proxyURL,
 		log:        slog.Default().With("component", "sandbox"),
 	}, nil
 }
@@ -328,8 +332,8 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) *agentsandboxv
 							WorkingDir: "/workspace",
 							Env: []corev1.EnvVar{
 								groupFolderEnv,
-								{Name: "REDIS_URL", Value: "redis://redis:6379"},
-								{Name: "ANTHROPIC_BASE_URL", Value: "http://kraclaw-credential-proxy:3001"},
+								{Name: "REDIS_URL", Value: c.redisURL},
+								{Name: "ANTHROPIC_BASE_URL", Value: c.proxyURL},
 								{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: "placeholder"},
 								{Name: "HOME", Value: "/home/node"},
 							},

@@ -97,7 +97,7 @@ func main() {
 		if err != nil {
 			log.Warn("failed to create controller-runtime client; sandbox admin APIs will be degraded", "error", err)
 		} else {
-			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, cfg.K8s.AgentImage)
+			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, cfg.K8s.AgentImage, cfg.Redis.URL, cfg.K8s.SandboxProxyURL)
 			if err != nil {
 				log.Error("failed to create sandbox controller", "error", err)
 				return

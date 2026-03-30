@@ -51,6 +51,7 @@ type K8sConfig struct {
 	GroupsPVC              string        `envconfig:"K8S_GROUPS_PVC" default:"kraclaw-groups"`
 	DataPVC                string        `envconfig:"K8S_DATA_PVC" default:"kraclaw-data"`
 	SandboxStartupTimeout  time.Duration `envconfig:"SANDBOX_STARTUP_TIMEOUT" default:"5m"`
+	SandboxProxyURL        string        `envconfig:"SANDBOX_PROXY_URL" default:"http://kraclaw-credproxy:3001"`
 }
 
 type ProxyConfig struct {

@@ -66,7 +66,7 @@ These Secrets must exist before running `helm install`:
 | `tls.secretName` | `kraclaw-grpc-tls` | Secret containing gRPC TLS certificates |
 | `mysql.secretName` | `kraclaw-mysql-url` | Secret containing MYSQL_DSN |
 | `credproxy.secretName` | `kraclaw-api-keys` | Secret containing ANTHROPIC_API_KEY |
-| `redis.url` | `redis://redis.kraclaw.svc.cluster.local:6379` | Redis connection URL |
+| `redis.url` | `redis://redis.databases.svc.cluster.local:6379` | Redis connection URL |
 | `storage.class` | `longhorn` | StorageClass for PVCs |
 | `storage.groups.size` | `10Gi` | Size of groups PVC |
 | `storage.sessions.size` | `5Gi` | Size of sessions PVC |

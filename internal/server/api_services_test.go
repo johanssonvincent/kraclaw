@@ -44,7 +44,7 @@ func createTestSandboxController() *sandbox.Controller {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
-	ctrl, _ := sandbox.New(fake.NewSimpleClientset(), ctrlClient, nil, "default", "agent:latest")
+	ctrl, _ := sandbox.New(fake.NewSimpleClientset(), ctrlClient, nil, "default", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
 	return ctrl
 }
 
