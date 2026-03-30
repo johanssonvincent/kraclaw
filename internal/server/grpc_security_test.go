@@ -83,7 +83,7 @@ func TestAllowlistListener_AcceptsAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer inner.Close()
+	defer func() { _ = inner.Close() }()
 
 	nets, err := parseAllowedCIDRs("127.0.0.0/8")
 	if err != nil {
@@ -108,11 +108,11 @@ func TestAllowlistListener_AcceptsAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	select {
 	case srv := <-accepted:
-		srv.Close()
+		_ = srv.Close()
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for accepted connection")
 	}
@@ -123,7 +123,7 @@ func TestAllowlistListener_RejectsDisallowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer inner.Close()
+	defer func() { _ = inner.Close() }()
 
 	nets, err := parseAllowedCIDRs("10.0.0.0/8")
 	if err != nil {
@@ -147,11 +147,11 @@ func TestAllowlistListener_RejectsDisallowed(t *testing.T) {
 	}
 
 	// The server should close the connection; reading should fail
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 1)
 	_, err = conn.Read(buf)
 	if err == nil {
 		t.Fatal("expected read error on rejected connection, got nil")
 	}
-	conn.Close()
+	_ = conn.Close()
 }

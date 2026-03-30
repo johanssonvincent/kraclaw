@@ -104,7 +104,7 @@ func TestAPIKeyMode_InjectsKey(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedHeaders = r.Header
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer upstream.Close()
 
@@ -130,7 +130,7 @@ func TestOAuthMode_ReplacesBearer(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedHeaders = r.Header
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer upstream.Close()
 
@@ -348,7 +348,7 @@ func TestSSEStreaming_FlushesImmediately(t *testing.T) {
 			t.Fatal("expected flusher")
 		}
 		for i := 0; i < 3; i++ {
-			fmt.Fprintf(w, "event: message\ndata: {\"index\":%d}\n\n", i)
+			_, _ = fmt.Fprintf(w, "event: message\ndata: {\"index\":%d}\n\n", i)
 			flusher.Flush()
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -373,7 +373,7 @@ func TestSSEStreaming_FlushesImmediately(t *testing.T) {
 	go func() {
 		defer close(done)
 		handler.ServeHTTP(w, req)
-		pw.Close()
+		_ = pw.Close()
 	}()
 
 	buf := make([]byte, 4096)

@@ -115,12 +115,12 @@ func (p *Proxy) authMode() string {
 
 func (p *Proxy) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 func (p *Proxy) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
@@ -216,7 +216,7 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 			}
 			p.log.Error("upstream error", "url", r.URL.String(), "error", err)
 			w.WriteHeader(http.StatusBadGateway)
-			w.Write([]byte("Bad Gateway"))
+			_, _ = w.Write([]byte("Bad Gateway"))
 		},
 	}
 	return rp

@@ -82,7 +82,7 @@ func (l *allowlistListener) Accept() (net.Conn, error) {
 		addr, ok := conn.RemoteAddr().(*net.TCPAddr)
 		if !ok {
 			l.log.Warn("rejecting non-TCP gRPC connection", "remote_addr", conn.RemoteAddr().String())
-			conn.Close()
+			_ = conn.Close()
 			continue
 		}
 
@@ -91,6 +91,6 @@ func (l *allowlistListener) Accept() (net.Conn, error) {
 		}
 
 		l.log.Warn("rejecting gRPC connection from disallowed IP", "remote_ip", addr.IP.String())
-		conn.Close()
+		_ = conn.Close()
 	}
 }

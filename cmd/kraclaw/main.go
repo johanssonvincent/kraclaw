@@ -68,7 +68,7 @@ func main() {
 		log.Error("failed to initialise MySQL store", "error", err)
 		os.Exit(1)
 	}
-	defer mysqlStore.Close()
+	defer func() { _ = mysqlStore.Close() }()
 	log.Info("connected to MySQL, migrations complete")
 
 	// Connect Redis
@@ -77,11 +77,11 @@ func main() {
 		log.Error("failed to connect to Redis", "error", err)
 		os.Exit(1)
 	}
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 	log.Info("connected to Redis")
 
 	ipcBroker := ipc.NewRedisBroker(rdb, log)
-	defer ipcBroker.Close()
+	defer func() { _ = ipcBroker.Close() }()
 
 	var (
 		kubeConfig  *rest.Config
@@ -108,7 +108,7 @@ func main() {
 
 	// Create queue, TUI channel, and orchestrator
 	redisQueue := queue.NewRedisQueue(rdb, log)
-	defer redisQueue.Close()
+	defer func() { _ = redisQueue.Close() }()
 
 	tuiChannel := tui.New(log)
 
@@ -255,7 +255,7 @@ func connectRedis(ctx context.Context, cfg config.RedisConfig) (*redis.Client, e
 
 	rdb := redis.NewClient(opts)
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		rdb.Close()
+		_ = rdb.Close()
 		return nil, fmt.Errorf("ping: %w", err)
 	}
 

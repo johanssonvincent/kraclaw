@@ -181,7 +181,7 @@ func (q *RedisQueue) Subscribe(ctx context.Context) (<-chan QueueEvent, error) {
 
 	go func() {
 		defer close(ch)
-		defer pubsub.Close()
+		defer func() { _ = pubsub.Close() }()
 		defer cancel()
 
 		subCh := pubsub.Channel()

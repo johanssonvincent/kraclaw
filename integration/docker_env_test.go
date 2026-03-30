@@ -89,7 +89,7 @@ func setupIntegrationEnv() *integrationEnv {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		return db.Ping()
 	}); err != nil {
 		env.setupErr = fmt.Errorf("wait for mysql: %w", err)
@@ -114,7 +114,7 @@ func setupIntegrationEnv() *integrationEnv {
 
 	if err := pool.Retry(func() error {
 		rdb := redis.NewClient(&redis.Options{Addr: env.redisAddr})
-		defer rdb.Close()
+		defer func() { _ = rdb.Close() }()
 		return rdb.Ping(context.Background()).Err()
 	}); err != nil {
 		env.setupErr = fmt.Errorf("wait for redis: %w", err)

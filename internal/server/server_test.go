@@ -40,7 +40,7 @@ func TestReadyzHandler_HealthyDeps(t *testing.T) {
 	mr := miniredis.RunT(t)
 
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rdb.Close() })
+	t.Cleanup(func() { _ = rdb.Close() })
 
 	// Use a real miniredis for Redis; for DB we need a mock that passes Ping.
 	// sql.Open with a driver but no real server won't Ping successfully,
@@ -54,14 +54,14 @@ func TestReadyzHandler_DBDown(t *testing.T) {
 	mr := miniredis.RunT(t)
 
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rdb.Close() })
+	t.Cleanup(func() { _ = rdb.Close() })
 
 	// Open a DB connection that will fail on Ping (invalid DSN, no server).
 	db, err := sql.Open("mysql", "invalid:invalid@tcp(127.0.0.1:1)/nonexistent")
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	handler := readyzHandler(db, rdb)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
@@ -81,7 +81,7 @@ func TestReadyzHandler_RedisDown(t *testing.T) {
 	mr.Close()
 
 	rdb := redis.NewClient(&redis.Options{Addr: addr})
-	t.Cleanup(func() { rdb.Close() })
+	t.Cleanup(func() { _ = rdb.Close() })
 
 	// Open a DB connection that will also fail, but Redis is checked second,
 	// so DB failure will be hit first. We need DB to succeed for the Redis check.
@@ -91,7 +91,7 @@ func TestReadyzHandler_RedisDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	handler := readyzHandler(db, rdb)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)

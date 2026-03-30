@@ -1455,11 +1455,8 @@ func TestHandleIPCMessage_TaskUpdateGroupMismatch(t *testing.T) {
 		Payload: payload,
 	}
 
-	result := o.handleIPCMessage(context.Background(), "chat@g.us", group, msg)
+	_ = o.handleIPCMessage(context.Background(), "chat@g.us", group, msg)
 
-	if !result {
-		// handleIPCMessage returns false for non-shutdown — expected
-	}
 	if ms.updateTaskCalled {
 		t.Error("UpdateTask should NOT be called when group folder mismatches")
 	}

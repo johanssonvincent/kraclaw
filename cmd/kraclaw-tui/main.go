@@ -124,13 +124,7 @@ type apiClient struct {
 }
 
 func newAPIClient(serverAddr, caCertFile, clientCertFile, clientKeyFile, serverName string, insecure bool) (*apiClient, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	opts := []grpc.DialOption{
-		grpc.WithBlock(),
-		grpc.WithReturnConnectionError(),
-	}
+	var opts []grpc.DialOption
 
 	if insecure {
 		opts = append(opts, grpc.WithTransportCredentials(grpcinsecure.NewCredentials()))
@@ -142,8 +136,7 @@ func newAPIClient(serverAddr, caCertFile, clientCertFile, clientKeyFile, serverN
 		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
 	}
 
-	conn, err := grpc.DialContext(
-		ctx,
+	conn, err := grpc.NewClient(
 		serverAddr,
 		opts...,
 	)
@@ -855,28 +848,28 @@ func (m model) renderDashboard() string {
 
 	s := m.status
 
-	b.WriteString(fmt.Sprintf("  Version:            %s\n", s.Version))
-	b.WriteString(fmt.Sprintf("  Active Sandboxes:   %d\n", s.ActiveSandboxes))
-	b.WriteString(fmt.Sprintf("  Connected Channels: %d\n", s.ConnectedChannels))
-	b.WriteString(fmt.Sprintf("  Pending Messages:   %d\n", s.PendingMessages))
-	b.WriteString(fmt.Sprintf("  Active Tasks:       %d\n", s.ActiveTasks))
+	fmt.Fprintf(&b, "  Version:            %s\n", s.Version)
+	fmt.Fprintf(&b, "  Active Sandboxes:   %d\n", s.ActiveSandboxes)
+	fmt.Fprintf(&b, "  Connected Channels: %d\n", s.ConnectedChannels)
+	fmt.Fprintf(&b, "  Pending Messages:   %d\n", s.PendingMessages)
+	fmt.Fprintf(&b, "  Active Tasks:       %d\n", s.ActiveTasks)
 
 	if s.UptimeSince != "" {
-		b.WriteString(fmt.Sprintf("  Uptime Since:       %s\n", s.UptimeSince))
+		fmt.Fprintf(&b, "  Uptime Since:       %s\n", s.UptimeSince)
 	}
 
 	b.WriteString("\n")
 	b.WriteString(titleStyle.Render("Dependencies"))
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  MySQL:       %s\n", connStatus(s.MysqlConnected)))
-	b.WriteString(fmt.Sprintf("  Redis:       %s\n", connStatus(s.RedisConnected)))
-	b.WriteString(fmt.Sprintf("  Kubernetes:  %s\n", connStatus(s.K8sConnected)))
+	fmt.Fprintf(&b, "  MySQL:       %s\n", connStatus(s.MysqlConnected))
+	fmt.Fprintf(&b, "  Redis:       %s\n", connStatus(s.RedisConnected))
+	fmt.Fprintf(&b, "  Kubernetes:  %s\n", connStatus(s.K8sConnected))
 
 	b.WriteString("\n")
 	b.WriteString(titleStyle.Render("Transport"))
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  gRPC mTLS:   %s\n", connStatus(m.statusErr == nil && m.status != nil)))
-	b.WriteString(fmt.Sprintf("  Event Stream:%s\n", " "+connStatus(m.eventStream != nil && m.eventsErr == nil)))
+	fmt.Fprintf(&b, "  gRPC mTLS:   %s\n", connStatus(m.statusErr == nil && m.status != nil))
+	fmt.Fprintf(&b, "  Event Stream:%s\n", " "+connStatus(m.eventStream != nil && m.eventsErr == nil))
 
 	return b.String()
 }
@@ -1164,7 +1157,7 @@ func runDebugChecks(serverAddr, caCert, clientCert, clientKey, serverName string
 		dbg("Stopping diagnostics — server not reachable.")
 		return
 	}
-	tcpConn.Close()
+	_ = tcpConn.Close()
 	dbg("  TCP dial %s: OK", serverAddr)
 
 	// 5. TLS handshake
@@ -1184,7 +1177,7 @@ func runDebugChecks(serverAddr, caCert, clientCert, clientKey, serverName string
 		if len(state.PeerCertificates) > 0 {
 			dbg("  Server cert subject: %s", state.PeerCertificates[0].Subject)
 		}
-		tlsConn.Close()
+		_ = tlsConn.Close()
 	}
 
 	dbg("=== Diagnostics complete, proceeding with normal startup ===")
@@ -1211,7 +1204,7 @@ func main() {
 		slog.Error("failed to create gRPC client", "error", err)
 		os.Exit(1)
 	}
-	defer api.Close()
+	defer func() { _ = api.Close() }()
 
 	slog.Info("starting kraclaw TUI", "server", *serverAddr)
 

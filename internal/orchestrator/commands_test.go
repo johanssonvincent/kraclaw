@@ -19,7 +19,7 @@ import (
 
 func TestHandleSlashCommand(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
+		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
 			{ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude 3.5 Sonnet"},
 		}})
 	}))
@@ -154,7 +154,7 @@ func TestHandleSlashCommand(t *testing.T) {
 
 func TestHandleModelCommand_SetModel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
+		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
 			{ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude 3.5 Sonnet"},
 		}})
 	}))
@@ -251,7 +251,7 @@ func TestHandleModelCommand_SetModel(t *testing.T) {
 func TestHandleModelsCommand_Scenarios(t *testing.T) {
 	t.Run("models with current marker", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
+			_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
 				{ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude 3.5 Sonnet"},
 			}})
 		}))
@@ -278,7 +278,7 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 
 	t.Run("models with no current (default)", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
+			_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
 				{ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude 3.5 Sonnet"},
 			}})
 		}))
@@ -314,7 +314,7 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
+			_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
 				{ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude 3.5 Sonnet"},
 			}})
 		}))
@@ -376,7 +376,7 @@ func TestHandleModelCommand_OAuthHardcodedList(t *testing.T) {
 
 func TestHandleModelCommand_SetModelClearsSessionState(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{{ID: "claude-opus-4-1"}}})
+		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{{ID: "claude-opus-4-1"}}})
 	}))
 	defer srv.Close()
 
@@ -416,7 +416,7 @@ func TestHandleModelCommand_SetModelClearsSessionState(t *testing.T) {
 
 func TestHandleModelCommand_SetModelDeleteSessionError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{{ID: "claude-opus-4-1"}}})
+		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{{ID: "claude-opus-4-1"}}})
 	}))
 	defer srv.Close()
 

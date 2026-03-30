@@ -28,7 +28,7 @@ func newTestController() *Controller {
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 
-	ctrl, err := New(fake.NewSimpleClientset(), ctrlClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
 	if err != nil {
 		panic("newTestController: " + err.Error())
 	}
@@ -133,7 +133,7 @@ func newTestControllerWithCreateInterceptor(funcs interceptor.Funcs) *Controller
 		WithInterceptorFuncs(funcs).
 		Build()
 
-	ctrl, err := New(fake.NewSimpleClientset(), ctrlClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
 	if err != nil {
 		panic("newTestControllerWithCreateInterceptor: " + err.Error())
 	}
@@ -525,11 +525,11 @@ func TestCleanupOrphans_IsNotFoundSkipped(t *testing.T) {
 
 	// Wrap with a client that returns NotFound on Delete for our sandbox.
 	wrappedClient := &deleteFailClient{
-		WithWatch: baseClient.(client.WithWatch),
+		WithWatch: baseClient,
 		failName:  "kraclaw-agent-gone-aaa111",
 	}
 
-	ctrl, err := New(fake.NewSimpleClientset(), wrappedClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), wrappedClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
 	if err != nil {
 		t.Fatal(err)
 	}
