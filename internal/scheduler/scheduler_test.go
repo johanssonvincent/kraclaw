@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,8 +106,7 @@ func TestPollConcurrency(t *testing.T) {
 
 			var running atomic.Int64
 			var maxRunning atomic.Int64
-			var mu sync.Mutex
-			_ = mu
+			// mu removed — unused and copying sync.Mutex triggers copylocks
 
 			executor := func(ctx context.Context, task store.ScheduledTask) error {
 				cur := running.Add(1)

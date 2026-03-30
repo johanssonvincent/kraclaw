@@ -16,9 +16,9 @@ func setup(t *testing.T) (*miniredis.Miniredis, *RedisBroker) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rdb.Close() })
+	t.Cleanup(func() { _ = rdb.Close() })
 	broker := NewRedisBroker(rdb, slog.Default())
-	t.Cleanup(func() { broker.Close() })
+	t.Cleanup(func() { _ = broker.Close() })
 	return mr, broker
 }
 
@@ -164,7 +164,7 @@ func TestCloseStopsSubscription(t *testing.T) {
 		t.Fatalf("SubscribeOutput: %v", err)
 	}
 
-	broker.Close()
+	_ = broker.Close()
 
 	// Channel should be closed eventually.
 	select {
@@ -284,7 +284,7 @@ func TestClose_CancelsAllGoroutines(t *testing.T) {
 	broker.mu.Unlock()
 
 	// Close should cancel all.
-	broker.Close()
+	_ = broker.Close()
 
 	// Wait for goroutines to clean up.
 	time.Sleep(100 * time.Millisecond)

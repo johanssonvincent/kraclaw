@@ -171,11 +171,11 @@ func TestLoad(t *testing.T) {
 				"SCHEDULER_POLL_INTERVAL", "ANTHROPIC_OAUTH_TOKEN",
 			}
 			for _, k := range envKeys {
-				os.Unsetenv(k)
+				_ = os.Unsetenv(k)
 			}
 
 			for k, v := range tt.env {
-				os.Setenv(k, v)
+				_ = os.Setenv(k, v)
 			}
 
 			cfg, err := Load()

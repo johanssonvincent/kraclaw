@@ -14,9 +14,9 @@ func setup(t *testing.T) (*miniredis.Miniredis, *RedisQueue) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rdb.Close() })
+	t.Cleanup(func() { _ = rdb.Close() })
 	q := NewRedisQueue(rdb, slog.Default())
-	t.Cleanup(func() { q.Close() })
+	t.Cleanup(func() { _ = q.Close() })
 	return mr, q
 }
 
@@ -204,7 +204,7 @@ func TestMultipleActiveGroups(t *testing.T) {
 		t.Errorf("ActiveCount = %d, want 3", count)
 	}
 
-	q.MarkInactive(ctx, "g2")
+	_ = q.MarkInactive(ctx, "g2")
 	count, _ = q.ActiveCount(ctx)
 	if count != 2 {
 		t.Errorf("ActiveCount = %d, want 2", count)
@@ -216,8 +216,8 @@ func TestMarkActiveIdempotent(t *testing.T) {
 	ctx := context.Background()
 	group := "idem-group"
 
-	q.MarkActive(ctx, group)
-	q.MarkActive(ctx, group)
+	_ = q.MarkActive(ctx, group)
+	_ = q.MarkActive(ctx, group)
 
 	count, _ := q.ActiveCount(ctx)
 	if count != 1 {

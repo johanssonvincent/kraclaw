@@ -348,7 +348,7 @@ func TestSSEStreaming_FlushesImmediately(t *testing.T) {
 			t.Fatal("expected flusher")
 		}
 		for i := 0; i < 3; i++ {
-			fmt.Fprintf(w, "event: message\ndata: {\"index\":%d}\n\n", i)
+			_, _ = fmt.Fprintf(w, "event: message\ndata: {\"index\":%d}\n\n", i)
 			flusher.Flush()
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -373,7 +373,7 @@ func TestSSEStreaming_FlushesImmediately(t *testing.T) {
 	go func() {
 		defer close(done)
 		handler.ServeHTTP(w, req)
-		pw.Close()
+		_ = pw.Close()
 	}()
 
 	buf := make([]byte, 4096)
