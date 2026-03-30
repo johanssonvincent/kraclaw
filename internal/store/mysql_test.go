@@ -47,7 +47,7 @@ func newTestStore(t *testing.T) (*MySQLStore, sqlmock.Sqlmock) {
 	if err != nil {
 		t.Fatalf("create sqlmock: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return newMySQLStoreFromDB(db), mock
 }
 

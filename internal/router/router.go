@@ -65,11 +65,11 @@ func (r *Router) FormatMessagesForAgent(messages []store.Message, assistantName 
 		if m.IsBotMessage {
 			name = assistantName
 		}
-		b.WriteString(fmt.Sprintf("<message sender=%q timestamp=%q>%s</message>\n",
+		fmt.Fprintf(&b, "<message sender=%q timestamp=%q>%s</message>\n",
 			escapeXML(name),
 			m.Timestamp.Format("2006-01-02T15:04:05"),
 			escapeXML(m.Content),
-		))
+		)
 	}
 	b.WriteString("</messages>")
 	return b.String()

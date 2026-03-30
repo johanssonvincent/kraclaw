@@ -89,7 +89,7 @@ func setupIntegrationEnv() *integrationEnv {
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		return db.Ping()
 	}); err != nil {
 		env.setupErr = fmt.Errorf("wait for mysql: %w", err)

@@ -153,5 +153,5 @@ func TestAllowlistListener_RejectsDisallowed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected read error on rejected connection, got nil")
 	}
-	conn.Close()
+	_ = conn.Close()
 }

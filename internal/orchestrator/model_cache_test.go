@@ -17,7 +17,7 @@ func TestModelCache_CacheHitSkipsHTTP(t *testing.T) {
 	var reqCount atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqCount.Add(1)
-		json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
+		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
 			{ID: "claude-3-5-sonnet-20241022"},
 		}})
 	}))
@@ -59,7 +59,7 @@ func TestModelCache_RefreshAfterTTL(t *testing.T) {
 	var reqCount atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqCount.Add(1)
-		json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
+		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
 			{ID: "claude-3-5-sonnet-20241022"},
 		}})
 	}))
@@ -100,7 +100,7 @@ func TestModelCache_ErrorRetainsStaleData(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
+		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
 			{ID: "claude-3-5-sonnet-20241022"},
 		}})
 	}))
@@ -148,7 +148,7 @@ func TestModelCache_SingleflightDedup(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqCount.Add(1)
 		<-barrier // Block until released.
-		json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
+		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
 			{ID: "claude-3-5-sonnet-20241022"},
 		}})
 	}))
@@ -197,7 +197,7 @@ func TestModelCache_SingleflightDedup(t *testing.T) {
 
 func TestModelCache_EmptyResponseError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{}})
+		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{}})
 	}))
 	defer srv.Close()
 
@@ -225,14 +225,14 @@ func TestModelCache_OAuthExchangeFallbackOnUnauthorized(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{{ID: "claude-3-5-sonnet-20241022"}}})
+			_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{{ID: "claude-3-5-sonnet-20241022"}}})
 		case "/api/oauth/claude_cli/create_api_key":
 			exchangeCalls.Add(1)
 			if got := r.Header.Get("Authorization"); got != "Bearer placeholder" {
 				t.Fatalf("exchange Authorization = %q, want Bearer placeholder", got)
 			}
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"api_key":"sk-ant-from-exchange"}`))
+			_, _ = w.Write([]byte(`{"api_key":"sk-ant-from-exchange"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

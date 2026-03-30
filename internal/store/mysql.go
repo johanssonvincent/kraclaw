@@ -364,7 +364,7 @@ func (s *MySQLStore) ListChats(ctx context.Context) ([]Chat, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list chats: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var chats []Chat
 	for rows.Next() {
@@ -413,7 +413,7 @@ func (s *MySQLStore) ListTasks(ctx context.Context) ([]ScheduledTask, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanTasks(rows)
 }
 
@@ -426,7 +426,7 @@ func (s *MySQLStore) ListTasksByGroup(ctx context.Context, groupFolder string) (
 	if err != nil {
 		return nil, fmt.Errorf("list tasks by group: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanTasks(rows)
 }
 
@@ -475,7 +475,7 @@ func (s *MySQLStore) GetDueTasks(ctx context.Context) ([]ScheduledTask, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get due tasks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanTasks(rows)
 }
 
@@ -500,7 +500,7 @@ func (s *MySQLStore) GetTaskRunLogs(ctx context.Context, taskID, groupFolder str
 	if err != nil {
 		return nil, fmt.Errorf("get task run logs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var logs []TaskRunLog
 	for rows.Next() {
@@ -627,7 +627,7 @@ func (s *MySQLStore) GetAllowlist(ctx context.Context, chatJID string) ([]Sender
 	if err != nil {
 		return nil, fmt.Errorf("get allowlist: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []SenderAllowlistEntry
 	for rows.Next() {

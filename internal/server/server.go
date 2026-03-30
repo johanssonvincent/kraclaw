@@ -226,7 +226,7 @@ func (s *Server) watchSandboxEvents(ctx context.Context) {
 func healthzHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}
 }
 
@@ -248,6 +248,6 @@ func readyzHandler(db *sql.DB, rdb *redis.Client) http.HandlerFunc {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}
 }

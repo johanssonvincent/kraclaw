@@ -77,7 +77,7 @@ func main() {
 		log.Error("failed to connect to Redis", "error", err)
 		os.Exit(1)
 	}
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 	log.Info("connected to Redis")
 
 	ipcBroker := ipc.NewRedisBroker(rdb, log)
@@ -255,7 +255,7 @@ func connectRedis(ctx context.Context, cfg config.RedisConfig) (*redis.Client, e
 
 	rdb := redis.NewClient(opts)
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		rdb.Close()
+		_ = rdb.Close()
 		return nil, fmt.Errorf("ping: %w", err)
 	}
 

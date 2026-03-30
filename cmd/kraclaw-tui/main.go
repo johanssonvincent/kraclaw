@@ -855,21 +855,21 @@ func (m model) renderDashboard() string {
 	fmt.Fprintf(&b, "  Active Tasks:       %d\n", s.ActiveTasks)
 
 	if s.UptimeSince != "" {
-		b.WriteString(fmt.Sprintf("  Uptime Since:       %s\n", s.UptimeSince))
+		fmt.Fprintf(&b, "  Uptime Since:       %s\n", s.UptimeSince)
 	}
 
 	b.WriteString("\n")
 	b.WriteString(titleStyle.Render("Dependencies"))
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  MySQL:       %s\n", connStatus(s.MysqlConnected)))
-	b.WriteString(fmt.Sprintf("  Redis:       %s\n", connStatus(s.RedisConnected)))
-	b.WriteString(fmt.Sprintf("  Kubernetes:  %s\n", connStatus(s.K8sConnected)))
+	fmt.Fprintf(&b, "  MySQL:       %s\n", connStatus(s.MysqlConnected))
+	fmt.Fprintf(&b, "  Redis:       %s\n", connStatus(s.RedisConnected))
+	fmt.Fprintf(&b, "  Kubernetes:  %s\n", connStatus(s.K8sConnected))
 
 	b.WriteString("\n")
 	b.WriteString(titleStyle.Render("Transport"))
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  gRPC mTLS:   %s\n", connStatus(m.statusErr == nil && m.status != nil)))
-	b.WriteString(fmt.Sprintf("  Event Stream:%s\n", " "+connStatus(m.eventStream != nil && m.eventsErr == nil)))
+	fmt.Fprintf(&b, "  gRPC mTLS:   %s\n", connStatus(m.statusErr == nil && m.status != nil))
+	fmt.Fprintf(&b, "  Event Stream:%s\n", " "+connStatus(m.eventStream != nil && m.eventsErr == nil))
 
 	return b.String()
 }
