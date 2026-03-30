@@ -175,8 +175,9 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 			}
 
 			if p.apiKey != "" {
-				// API key mode: strip incoming key, inject real one
+				// API key mode: strip incoming auth, inject real key
 				req.Header.Del("X-Api-Key")
+				req.Header.Del("Authorization")
 				req.Header.Set("X-Api-Key", p.apiKey)
 			} else {
 				// OAuth mode: only inject when no real X-Api-Key present (pre-exchange).
