@@ -162,9 +162,12 @@ kraclaw/
 │   ├── credproxy/            # Credential proxy
 │   ├── orchestrator/         # Top-level wiring + message loop
 │   └── metrics/              # Prometheus metrics
+├── agent/                    # TypeScript agent (runs inside K8s Jobs)
 ├── proto/kraclaw/v1/         # Protobuf service definitions
 ├── migrations/               # MySQL migrations (golang-migrate)
+├── integration/              # Docker-based backend integration tests
 ├── helm/                     # Helm chart for Kubernetes deployment
+├── argocd/                   # ArgoCD application manifest
 ├── .github/workflows/        # CI/CD pipeline
 ├── Dockerfile
 └── Makefile

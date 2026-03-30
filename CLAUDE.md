@@ -35,6 +35,7 @@ make docker-build   # Build container image
 | `internal/auth/` | Sender allowlist |
 | `internal/scheduler/` | Cron/interval/once task scheduler |
 | `internal/credproxy/` | HTTP reverse proxy injecting API keys |
+| `internal/orchestrator/` | Top-level wiring, message loop, channel lifecycle |
 | `internal/metrics/` | Prometheus metrics |
 | `proto/` | Protobuf service definitions |
 | `migrations/` | MySQL migration files (golang-migrate) |
@@ -56,6 +57,8 @@ make docker-build   # Build container image
 | `kraclaw:ipc:{group}:close` | Close signal (60s TTL) |
 | `kraclaw:queue:{groupJID}` | Per-group message list |
 | `kraclaw:active` | Set of active group JIDs |
+| `kraclaw:ipc:notify` | Pub/sub: IPC notifications |
+| `kraclaw:queue:notify` | Pub/sub: queue notifications |
 
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
@@ -85,11 +88,11 @@ Kraclaw is a K8s-native AI agent orchestrator written in Go. It routes messages 
 ## Runtime
 - Go 1.26-alpine (build container)
 - Alpine 3.21 (runtime container)
-- Kubernetes 1.35+ (for agent Job scheduling)
+- Kubernetes 1.23+ (for agent Job scheduling)
 - Go modules (go.mod/go.sum)
 - Lockfile: Present (go.sum with 100 dependencies)
 ## Frameworks
-- gRPC 1.79.2 - RPC protocol for server-to-client communication
+- gRPC 1.79.3 - RPC protocol for server-to-client communication
 - Protocol Buffers 1.36.10 - Message serialization and code generation
 - Bubbletea v2 2.0.2 - Terminal UI framework
 - Bubbles v2 2.0.0 - Bubbletea UI components
