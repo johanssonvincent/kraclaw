@@ -16,4 +16,22 @@ coverage.out
 
 # Environment
 .env
+.env.*
+
+# Secrets / credentials
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account.json
+kubeconfig
+*.kubeconfig
+
+# Claude Code
 .claude/worktrees/
+
+# Internal planning artifacts
+.planning/
+docs/superpowers/
+docs/diagrams/
