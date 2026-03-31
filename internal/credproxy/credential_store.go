@@ -14,6 +14,19 @@ type Credential struct {
 	OAuthToken string
 }
 
+// Validate checks that required Credential fields are set.
+func (c *Credential) Validate() error {
+	if c.GroupJID == "" {
+		return fmt.Errorf("credential: group JID is required")
+	}
+	if c.Provider == "" {
+		return fmt.Errorf("credential: provider is required")
+	}
+	if c.APIKey == "" && c.OAuthToken == "" {
+		return fmt.Errorf("credential: either API key or OAuth token is required")
+	}
+	return nil
+}
 // CredentialStore manages per-group credentials in MySQL with at-rest encryption.
 type CredentialStore struct {
 	db  *sql.DB
@@ -71,6 +84,10 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 
 // UpsertCredential encrypts and stores a credential for a group.
 func (s *CredentialStore) UpsertCredential(ctx context.Context, cred *Credential) error {
+	if err := cred.Validate(); err != nil {
+		return err
+	}
+
 	apiKeyEnc, err := s.enc.Encrypt(cred.APIKey)
 	if err != nil {
 		return fmt.Errorf("encrypt api key: %w", err)
