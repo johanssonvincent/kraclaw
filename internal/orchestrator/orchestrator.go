@@ -14,6 +14,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/config"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/queue"
 	"github.com/johanssonvincent/kraclaw/internal/router"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
@@ -44,10 +45,10 @@ type Orchestrator struct {
 	ipc     ipc.IPCBroker
 	sandbox sandboxController
 
-	router *router.Router
-	auth   *auth.Authorizer
-	sched  *scheduler.Scheduler
-	models *modelCache
+	router    *router.Router
+	auth      *auth.Authorizer
+	sched     *scheduler.Scheduler
+	providers *provider.Registry
 
 	channels []channel.Channel
 	registry *channel.Registry
@@ -115,7 +116,7 @@ func New(
 		ipc:                    broker,
 		sandbox:                sc,
 		registry:               reg,
-		models:                 newModelCache(cfg.Proxy.Addr, cfg.Proxy.AnthropicAPIVersion, time.Hour, cfg.Proxy.AnthropicAPIKey == "" && cfg.Proxy.AnthropicOAuthToken != "", log),
+		providers:              provider.NewRegistry(),
 		lastAgentTimestamp:     make(map[string]time.Time),
 		lastConfirmedTimestamp: make(map[string]time.Time),
 		sessions:               make(map[string]string),

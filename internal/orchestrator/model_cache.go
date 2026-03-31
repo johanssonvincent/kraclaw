@@ -64,7 +64,16 @@ func newModelCache(proxyAddr string, version string, ttl time.Duration, useHardc
 		client:                &http.Client{Timeout: 10 * time.Second},
 		log:                   log.With("component", "model-cache"),
 		useHardcodedModelList: useHardcodedModelList,
-		hardcodedModels:       defaultOAuthAllowedModels(),
+		hardcodedModels: []modelInfo{
+			{ID: "claude-opus-4-6", DisplayName: "Claude Opus 4.6"},
+			{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6"},
+			{ID: "claude-haiku-4-5", DisplayName: "Claude Haiku 4.5"},
+			{ID: "claude-sonnet-4-5", DisplayName: "Claude Sonnet 4.5"},
+			{ID: "claude-opus-4-5", DisplayName: "Claude Opus 4.5"},
+			{ID: "claude-opus-4-1", DisplayName: "Claude Opus 4.1"},
+			{ID: "claude-sonnet-4-0", DisplayName: "Claude Sonnet 4"},
+			{ID: "claude-opus-4-0", DisplayName: "Claude Opus 4"},
+		},
 		oauthExchangePath:     "/api/oauth/claude_cli/create_api_key",
 		oauthAPIKeyTTL:        15 * time.Minute,
 	}

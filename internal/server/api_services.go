@@ -21,6 +21,7 @@ import (
 
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
@@ -255,6 +256,13 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 			return nil, status.Errorf(codes.InvalidArgument, "invalid container config: %v", err)
 		}
 		group.ContainerConfig = cc
+	}
+
+	if group.ContainerConfig != nil && group.ContainerConfig.Provider != "" {
+		reg := provider.NewRegistry()
+		if err := reg.ValidateModel(group.ContainerConfig.Provider, group.ContainerConfig.Model); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid provider/model: %v", err)
+		}
 	}
 
 	if err := s.store.UpsertGroup(ctx, &group); err != nil {
