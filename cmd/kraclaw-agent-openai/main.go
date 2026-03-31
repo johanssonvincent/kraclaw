@@ -38,9 +38,7 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 	opts := []option.RequestOption{
 		option.WithAPIKey("placeholder"), // Proxy injects real key.
 	}
-	if proxyURL != "" {
-		opts = append(opts, option.WithBaseURL(proxyURL+"/v1"))
-	}
+	opts = append(opts, option.WithBaseURL(proxyURL+"/v1"))
 	opts = append(opts, option.WithHeader("X-Kraclaw-Group", groupJID))
 
 	client := openai.NewClient(opts...)
@@ -71,9 +69,12 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 					continue
 				}
 
+				msgs := make([]openai.ChatCompletionMessageParamUnion, len(history)+1)
+				copy(msgs, history)
+				msgs[len(history)] = openai.UserMessage(text)
 				stream := client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
 					Model:    model,
-					Messages: append(history, openai.UserMessage(text)),
+					Messages: msgs,
 				})
 
 				var fullResponse string
@@ -96,16 +97,16 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 					continue
 				}
 
-				// Only append to history after successful response.
-				history = append(history, openai.UserMessage(text))
-				history = append(history, openai.AssistantMessage(fullResponse))
-
 				if err := ipc.SendOutput(ctx, &agent.OutboundMessage{
 					Type: "message",
 					Text: fullResponse,
 				}); err != nil {
-					log.Error("failed to send response", "error", err)
+					log.Error("failed to send response, discarding from history", "error", err)
+					continue
 				}
+				// Only append to history after successful send.
+				history = append(history, openai.UserMessage(text))
+				history = append(history, openai.AssistantMessage(fullResponse))
 
 			case "set_model":
 				var payload struct {
