@@ -895,3 +895,38 @@ func TestDefaultResolver_PlatformFallback_RespectsRequestedProvider(t *testing.T
 		})
 	}
 }
+
+func TestDefaultResolver_RequestedProviderNotConfigured_ReturnsError(t *testing.T) {
+	tests := []struct {
+		name              string
+		cfg               config.ProxyConfig
+		requestedProvider string
+	}{
+		{
+			name: "request openai but only anthropic configured",
+			cfg: config.ProxyConfig{
+				AnthropicAPIKey:      "sk-anthropic",
+				AnthropicUpstreamURL: "https://api.anthropic.com",
+			},
+			requestedProvider: provider.ProviderOpenAI,
+		},
+		{
+			name: "request anthropic but only openai configured",
+			cfg: config.ProxyConfig{
+				OpenAIAPIKey:      "sk-openai",
+				OpenAIUpstreamURL: "https://api.openai.com",
+			},
+			requestedProvider: provider.ProviderAnthropic,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := NewDefaultResolver(nil, tt.cfg)
+			_, err := resolver.Resolve(context.Background(), "group-1", tt.requestedProvider)
+			if err == nil {
+				t.Fatalf("expected error when requesting %q with no matching credentials configured", tt.requestedProvider)
+			}
+		})
+	}
+}
