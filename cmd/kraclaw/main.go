@@ -145,10 +145,27 @@ func main() {
 	}
 
 	// Start credential proxy
-	proxy, err := credproxy.New(cfg.Proxy)
-	if err != nil {
-		log.Error("failed to create credential proxy", "error", err)
-		os.Exit(1)
+	var proxy *credproxy.Proxy
+	if cfg.Proxy.CredentialEncryptionKey != "" {
+		enc, err := credproxy.NewEncryptor(cfg.Proxy.CredentialEncryptionKey)
+		if err != nil {
+			log.Error("failed to create credential encryptor", "error", err)
+			os.Exit(1)
+		}
+		credStore := credproxy.NewCredentialStore(mysqlStore.DB(), enc)
+		resolver := credproxy.NewDefaultResolver(credStore, cfg.Proxy)
+		proxy, err = credproxy.NewMultiProviderProxy(cfg.Proxy, resolver)
+		if err != nil {
+			log.Error("failed to create multi-provider credential proxy", "error", err)
+			os.Exit(1)
+		}
+		log.Info("credential proxy configured with per-group credential support")
+	} else {
+		proxy, err = credproxy.New(cfg.Proxy)
+		if err != nil {
+			log.Error("failed to create credential proxy", "error", err)
+			os.Exit(1)
+		}
 	}
 	proxyErr := make(chan error, 1)
 	go func() {
