@@ -127,6 +127,12 @@ func (c *Config) Validate() error {
 	if c.Proxy.AnthropicAPIKey == "" && c.Proxy.AnthropicOAuthToken == "" && c.Proxy.OpenAIAPIKey == "" {
 		return fmt.Errorf("at least one provider credential must be set (ANTHROPIC_API_KEY, ANTHROPIC_OAUTH_TOKEN, or OPENAI_API_KEY)")
 	}
+	// OpenAI-only setups require the multi-provider proxy path (with encryption key)
+	// because the legacy proxy only supports Anthropic.
+	hasAnthropic := c.Proxy.AnthropicAPIKey != "" || c.Proxy.AnthropicOAuthToken != ""
+	if !hasAnthropic && c.Proxy.OpenAIAPIKey != "" && c.Proxy.CredentialEncryptionKey == "" {
+		return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY is required when only OpenAI credentials are configured (legacy proxy only supports Anthropic)")
+	}
 	if !c.Server.GRPCInsecure && (c.Server.GRPCTLSCertFile == "" || c.Server.GRPCTLSKeyFile == "" || c.Server.GRPCTLSClientCAFile == "") {
 		return fmt.Errorf("GRPC_TLS_CERT_FILE, GRPC_TLS_KEY_FILE, and GRPC_TLS_CLIENT_CA_FILE must all be set (or set GRPC_INSECURE=true)")
 	}

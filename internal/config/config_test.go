@@ -82,6 +82,28 @@ func TestValidate_ValidEncryptionKey(t *testing.T) {
 	}
 }
 
+func TestValidate_OpenAIOnlyRequiresEncryptionKey(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.AnthropicAPIKey = ""
+	cfg.Proxy.AnthropicOAuthToken = ""
+	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
+	cfg.Proxy.CredentialEncryptionKey = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when only OpenAI credentials set without encryption key")
+	}
+}
+
+func TestValidate_OpenAIOnlyWithEncryptionKeyPasses(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.AnthropicAPIKey = ""
+	cfg.Proxy.AnthropicOAuthToken = ""
+	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
+	cfg.Proxy.CredentialEncryptionKey = strings.Repeat("ab", 32)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoad(t *testing.T) {
 	tests := []struct {
 		name    string
