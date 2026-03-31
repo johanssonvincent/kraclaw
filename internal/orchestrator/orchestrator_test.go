@@ -227,6 +227,13 @@ func (m *mockQueue) IsActive(_ context.Context, groupJID string) (bool, error) {
 	return m.active[groupJID], nil
 }
 func (m *mockQueue) ActiveCount(_ context.Context) (int64, error) { return 0, nil }
+func (m *mockQueue) ActiveJIDs(_ context.Context) ([]string, error) {
+	jids := make([]string, 0, len(m.active))
+	for jid := range m.active {
+		jids = append(jids, jid)
+	}
+	return jids, nil
+}
 func (m *mockQueue) Subscribe(_ context.Context) (<-chan queue.QueueEvent, error) {
 	ch := make(chan queue.QueueEvent)
 	return ch, nil
@@ -1812,4 +1819,409 @@ func TestStart_CleanupOrphansSkippedWhenNilSandbox(t *testing.T) {
 
 	// Should not panic.
 	_ = o.Start(ctx)
+}
+
+// --- reconcileActiveSet Tests ---
+
+// mockSandboxWithHasActive allows controlling HasActiveSandbox per group folder.
+type mockSandboxWithHasActive struct {
+	mockSandboxControllerWithTracking
+	hasActive map[string]bool // folder -> whether a sandbox is running
+}
+
+func (m *mockSandboxWithHasActive) HasActiveSandbox(_ context.Context, groupFolder string) (bool, error) {
+	return m.hasActive[groupFolder], nil
+}
+
+func TestReconcileActiveSet_RemovesStaleJIDs(t *testing.T) {
+	s := newMockStore()
+	mq := newMockQueue()
+	ctx := context.Background()
+
+	// Pre-populate the active set with stale JIDs.
+	_ = mq.MarkActive(ctx, "tui:stale-1")
+	_ = mq.MarkActive(ctx, "tui:stale-2")
+	_ = mq.MarkActive(ctx, "tui:live-1")
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	sb := &mockSandboxWithHasActive{
+		hasActive: map[string]bool{
+			"live-folder": true, // tui:live-1 has a running sandbox
+			// stale-1 and stale-2 have no running sandboxes
+		},
+	}
+	o.sandbox = sb
+
+	// Register only the groups that are in the active set (stale ones will be
+	// unregistered, which should also cause removal).
+	o.registeredGroups["tui:stale-1"] = store.Group{JID: "tui:stale-1", Folder: "stale-1-folder"}
+	o.registeredGroups["tui:stale-2"] = store.Group{JID: "tui:stale-2", Folder: "stale-2-folder"}
+	o.registeredGroups["tui:live-1"] = store.Group{JID: "tui:live-1", Folder: "live-folder"}
+
+	o.reconcileActiveSet(ctx)
+
+	active1, _ := mq.IsActive(ctx, "tui:stale-1")
+	if active1 {
+		t.Error("tui:stale-1 should have been removed from active set")
+	}
+	active2, _ := mq.IsActive(ctx, "tui:stale-2")
+	if active2 {
+		t.Error("tui:stale-2 should have been removed from active set")
+	}
+	liveActive, _ := mq.IsActive(ctx, "tui:live-1")
+	if !liveActive {
+		t.Error("tui:live-1 should remain in active set (has running sandbox)")
+	}
+}
+
+func TestReconcileActiveSet_RemovesUnregisteredJIDs(t *testing.T) {
+	s := newMockStore()
+	mq := newMockQueue()
+	ctx := context.Background()
+
+	_ = mq.MarkActive(ctx, "tui:deleted-group")
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = &mockSandboxControllerWithTracking{}
+	// registeredGroups is empty — tui:deleted-group is not registered.
+
+	o.reconcileActiveSet(ctx)
+
+	active, _ := mq.IsActive(ctx, "tui:deleted-group")
+	if active {
+		t.Error("tui:deleted-group should have been removed from active set (unregistered)")
+	}
+}
+
+func TestReconcileActiveSet_EmptySet_NoOp(t *testing.T) {
+	s := newMockStore()
+	mq := newMockQueue()
+	ctx := context.Background()
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = &mockSandboxControllerWithTracking{}
+
+	// Should not panic and should not call MarkInactive for any JID.
+	o.reconcileActiveSet(ctx)
+
+	count, _ := mq.ActiveCount(ctx)
+	if count != 0 {
+		t.Errorf("ActiveCount = %d, want 0", count)
+	}
+}
+
+// --- handleSandboxEvent Tests ---
+
+func TestHandleSandboxEvent_CompletedSandbox_MarksGroupInactive(t *testing.T) {
+	s := newMockStore()
+	mq := newMockQueue()
+	ctx := context.Background()
+
+	_ = mq.MarkActive(ctx, "tui:test-1")
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	o.registeredGroups["tui:test-1"] = store.Group{
+		JID: "tui:test-1", Folder: "test-1-folder",
+	}
+
+	event := sandbox.SandboxEvent{
+		Type: "updated",
+		Status: sandbox.SandboxStatus{
+			Name:  "kraclaw-agent-test-1-abc123",
+			Group: "test-1-folder",
+			State: sandbox.StateCompleted,
+		},
+	}
+
+	o.handleSandboxEvent(ctx, event)
+
+	active, _ := mq.IsActive(ctx, "tui:test-1")
+	if active {
+		t.Error("tui:test-1 should be inactive after sandbox completed event")
+	}
+}
+
+func TestHandleSandboxEvent_DeletedSandbox_MarksGroupInactive(t *testing.T) {
+	s := newMockStore()
+	mq := newMockQueue()
+	ctx := context.Background()
+
+	_ = mq.MarkActive(ctx, "tui:test-2")
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	o.registeredGroups["tui:test-2"] = store.Group{
+		JID: "tui:test-2", Folder: "test-2-folder",
+	}
+
+	event := sandbox.SandboxEvent{
+		Type: "deleted",
+		Status: sandbox.SandboxStatus{
+			Name:  "kraclaw-agent-test-2-def456",
+			Group: "test-2-folder",
+			State: sandbox.StateRunning,
+		},
+	}
+
+	o.handleSandboxEvent(ctx, event)
+
+	active, _ := mq.IsActive(ctx, "tui:test-2")
+	if active {
+		t.Error("tui:test-2 should be inactive after sandbox deleted event")
+	}
+}
+
+func TestHandleSandboxEvent_RunningUpdate_NoChange(t *testing.T) {
+	s := newMockStore()
+	mq := newMockQueue()
+	ctx := context.Background()
+
+	_ = mq.MarkActive(ctx, "tui:test-3")
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	o.registeredGroups["tui:test-3"] = store.Group{
+		JID: "tui:test-3", Folder: "test-3-folder",
+	}
+
+	event := sandbox.SandboxEvent{
+		Type: "updated",
+		Status: sandbox.SandboxStatus{
+			Name:  "kraclaw-agent-test-3-ghi789",
+			Group: "test-3-folder",
+			State: sandbox.StateRunning,
+		},
+	}
+
+	o.handleSandboxEvent(ctx, event)
+
+	active, _ := mq.IsActive(ctx, "tui:test-3")
+	if !active {
+		t.Error("tui:test-3 should remain active after a running update event")
+	}
+}
+
+func TestHandleSandboxEvent_UnknownFolder_NoOp(t *testing.T) {
+	s := newMockStore()
+	mq := newMockQueue()
+	ctx := context.Background()
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	// No groups registered.
+
+	event := sandbox.SandboxEvent{
+		Type: "deleted",
+		Status: sandbox.SandboxStatus{
+			Name:  "kraclaw-agent-ghost-abc",
+			Group: "ghost-folder",
+			State: sandbox.StateCompleted,
+		},
+	}
+
+	// Should not panic.
+	o.handleSandboxEvent(ctx, event)
+
+	count, _ := mq.ActiveCount(ctx)
+	if count != 0 {
+		t.Errorf("ActiveCount = %d, want 0 (no group registered)", count)
+	}
+}
+
+func TestHandleSandboxEvent_StaleSandboxDeletion_PreservesActiveState(t *testing.T) {
+	s := newMockStore()
+	mq := newMockQueue()
+	ctx := context.Background()
+
+	_ = mq.MarkActive(ctx, "tui:test-stale")
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	o.registeredGroups["tui:test-stale"] = store.Group{
+		JID: "tui:test-stale", Folder: "stale-folder",
+	}
+	// Simulate: a new sandbox is the current one.
+	o.activeSandboxes["tui:test-stale"] = "kraclaw-agent-stale-new-xyz"
+
+	// An OLD sandbox for the same folder is deleted (orphan cleanup).
+	event := sandbox.SandboxEvent{
+		Type: "deleted",
+		Status: sandbox.SandboxStatus{
+			Name:  "kraclaw-agent-stale-old-abc",
+			Group: "stale-folder",
+			State: sandbox.StateCompleted,
+		},
+	}
+
+	o.handleSandboxEvent(ctx, event)
+
+	// Group should STILL be active because the deleted sandbox is not the current one.
+	active, _ := mq.IsActive(ctx, "tui:test-stale")
+	if !active {
+		t.Error("tui:test-stale should remain active — deleted sandbox was stale, not the current one")
+	}
+}
+
+func TestHandleSandboxEvent_CurrentSandboxDeletion_MarksInactive(t *testing.T) {
+	s := newMockStore()
+	mq := newMockQueue()
+	ctx := context.Background()
+
+	_ = mq.MarkActive(ctx, "tui:test-current")
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	o.registeredGroups["tui:test-current"] = store.Group{
+		JID: "tui:test-current", Folder: "current-folder",
+	}
+	o.activeSandboxes["tui:test-current"] = "kraclaw-agent-current-abc"
+
+	// The CURRENT sandbox is deleted.
+	event := sandbox.SandboxEvent{
+		Type: "deleted",
+		Status: sandbox.SandboxStatus{
+			Name:  "kraclaw-agent-current-abc",
+			Group: "current-folder",
+			State: sandbox.StateCompleted,
+		},
+	}
+
+	o.handleSandboxEvent(ctx, event)
+
+	active, _ := mq.IsActive(ctx, "tui:test-current")
+	if active {
+		t.Error("tui:test-current should be inactive — the current sandbox was deleted")
+	}
+}
+
+func TestHandleSandboxEvent_UntrackedSandbox_StillMarksInactive(t *testing.T) {
+	s := newMockStore()
+	mq := newMockQueue()
+	ctx := context.Background()
+
+	_ = mq.MarkActive(ctx, "tui:test-untracked")
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	o.registeredGroups["tui:test-untracked"] = store.Group{
+		JID: "tui:test-untracked", Folder: "untracked-folder",
+	}
+	// No activeSandboxes entry — simulates server restart.
+
+	event := sandbox.SandboxEvent{
+		Type: "deleted",
+		Status: sandbox.SandboxStatus{
+			Name:  "kraclaw-agent-untracked-xyz",
+			Group: "untracked-folder",
+			State: sandbox.StateCompleted,
+		},
+	}
+
+	o.handleSandboxEvent(ctx, event)
+
+	active, _ := mq.IsActive(ctx, "tui:test-untracked")
+	if active {
+		t.Error("tui:test-untracked should be inactive — untracked sandbox means safety-net should fire")
+	}
 }

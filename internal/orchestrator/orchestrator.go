@@ -59,6 +59,7 @@ type Orchestrator struct {
 	lastConfirmedTimestamp map[string]time.Time   // chatJID -> cursor (last confirmed by agent response)
 	sessions               map[string]string      // groupFolder -> sessionID
 	registeredGroups       map[string]store.Group // JID -> Group
+	activeSandboxes        map[string]string      // chatJID -> current sandbox name
 
 	rateLimiters   map[string]*TokenBucket
 	rateLimitersMu sync.Mutex
@@ -121,6 +122,7 @@ func New(
 		lastConfirmedTimestamp: make(map[string]time.Time),
 		sessions:               make(map[string]string),
 		registeredGroups:       make(map[string]store.Group),
+		activeSandboxes:        make(map[string]string),
 		rateLimiters:           make(map[string]*TokenBucket),
 		notify:                 make(chan struct{}, 1),
 		log:                    log.With("component", "orchestrator"),
@@ -194,6 +196,12 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 			// Non-fatal — continue startup.
 		}
 	}
+
+	// 5.55. Reconcile the Redis active set against actual K8s state.
+	// Sandboxes that completed or were deleted while the server was down leave
+	// stale entries in kraclaw:active.  If enough accumulate they exceed
+	// MaxConcurrent and prevent any new sandbox from starting.
+	o.reconcileActiveSet(ctx)
 
 	// 5.6. Start periodic orphan cleanup.
 	if o.sandbox != nil {
@@ -751,13 +759,18 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		return fmt.Errorf("create sandbox: %w", err)
 	}
 
+	o.mu.Lock()
+	o.activeSandboxes[chatJID] = status.Name
+	o.mu.Unlock()
+
 	if err := o.queue.MarkActive(ctx, chatJID); err != nil {
 		o.log.Error("failed to mark group active, cleaning up sandbox", "group", group.Name, "error", err)
 		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
 			o.log.Error("failed to cleanup sandbox after MarkActive failure", "group", group.Name, "job", status.Name, "error", cleanupErr)
 		}
-		// Roll back cursor.
+		// Roll back cursor and clean up sandbox tracking.
 		o.mu.Lock()
+		delete(o.activeSandboxes, chatJID)
 		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
 		if saveErr := o.saveState(ctx); saveErr != nil {
@@ -847,8 +860,88 @@ func (o *Orchestrator) runSandboxWatcher(ctx context.Context) error {
 			if !ok {
 				return fmt.Errorf("sandbox watch channel closed")
 			}
-			o.log.Debug("sandbox event", "type", event.Type, "sandbox", event.Status.Name)
+			o.log.Debug("sandbox event", "type", event.Type, "sandbox", event.Status.Name,
+				"state", event.Status.State)
+			o.handleSandboxEvent(ctx, event)
 		}
+	}
+}
+
+// handleSandboxEvent processes a single Sandbox lifecycle event.
+// When a sandbox reaches a terminal state (completed, failed) or is deleted,
+// the owning group is marked inactive so the active-set count stays accurate
+// and new sandboxes can be created on the next message poll.
+//
+// The watchGroupOutput goroutine is the primary path for marking groups inactive
+// when an agent shuts down normally.  handleSandboxEvent acts as a safety net
+// for cases where no watchGroupOutput is running — e.g. sandboxes that were
+// already complete when the server restarted and are reported by the initial
+// List inside WatchSandboxes, or sandboxes that disappear without sending an
+// IPC shutdown message.
+func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.SandboxEvent) {
+	terminal := event.Type == "deleted" ||
+		event.Status.State == sandbox.StateCompleted ||
+		event.Status.State == sandbox.StateFailed
+
+	if !terminal {
+		return
+	}
+
+	// Resolve the group folder to a chat JID via the registered groups map.
+	folder := event.Status.Group
+	if folder == "" {
+		return
+	}
+
+	o.mu.Lock()
+	var chatJID string
+	for jid, g := range o.registeredGroups {
+		if g.Folder == folder {
+			chatJID = jid
+			break
+		}
+	}
+	currentSandbox := o.activeSandboxes[chatJID]
+	o.mu.Unlock()
+
+	if chatJID == "" {
+		// Group may have been deleted or not yet registered; nothing to do.
+		return
+	}
+
+	// If the group has a tracked sandbox and this event is for a different
+	// sandbox (e.g. orphan cleanup of an old resource), skip it — the
+	// current sandbox is still running.
+	if currentSandbox != "" && event.Status.Name != currentSandbox {
+		o.log.Info("sandbox event: ignoring stale event for non-current sandbox",
+			"event_sandbox", event.Status.Name, "current_sandbox", currentSandbox,
+			"folder", folder, "jid", chatJID)
+		return
+	}
+
+	active, err := o.queue.IsActive(ctx, chatJID)
+	if err != nil {
+		o.log.Warn("sandbox event: failed to check active state",
+			"folder", folder, "jid", chatJID, "error", err)
+		return
+	}
+	if !active {
+		// Already inactive — watchGroupOutput already handled this or group was never active.
+		return
+	}
+
+	o.log.Info("sandbox event: terminal state detected, marking group inactive",
+		"type", event.Type, "sandbox", event.Status.Name, "state", event.Status.State,
+		"folder", folder, "jid", chatJID)
+
+	// Clear the tracked sandbox since it's terminal.
+	o.mu.Lock()
+	delete(o.activeSandboxes, chatJID)
+	o.mu.Unlock()
+
+	if err := o.queue.MarkInactive(ctx, chatJID); err != nil {
+		o.log.Error("sandbox event: failed to mark group inactive",
+			"folder", folder, "jid", chatJID, "error", err)
 	}
 }
 
@@ -923,6 +1016,10 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string) {
 		if err := o.queue.MarkInactive(ctx, chatJID); err != nil {
 			o.log.Error("failed to mark group inactive", "group", group.Name, "error", err)
 		}
+
+		o.mu.Lock()
+		delete(o.activeSandboxes, chatJID)
+		o.mu.Unlock()
 
 		// Roll back agent cursor to last confirmed position so any messages
 		// that were piped to the dead agent but never processed get re-sent.
@@ -1146,6 +1243,75 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 		TaskID:    task.ID,
 	}
 	return o.queue.Enqueue(ctx, task.ChatJID, qMsg)
+}
+
+// reconcileActiveSet removes stale entries from the Redis kraclaw:active set.
+// On server restart, sandbox processes that completed while the server was down
+// leave their group JIDs permanently in the set.  If enough accumulate they
+// inflate ActiveCount past MaxConcurrent, silently blocking new sandbox creation.
+// This method enumerates the active set and calls MarkInactive for any JID that
+// has no corresponding running or pending K8s sandbox.
+func (o *Orchestrator) reconcileActiveSet(ctx context.Context) {
+	activeJIDs, err := o.queue.ActiveJIDs(ctx)
+	if err != nil {
+		o.log.Error("reconcile active set: failed to list active JIDs", "error", err)
+		return
+	}
+	if len(activeJIDs) == 0 {
+		return
+	}
+
+	var removed int
+	for _, jid := range activeJIDs {
+		// Determine the group folder from the registered groups map.
+		o.mu.Lock()
+		group, ok := o.registeredGroups[jid]
+		o.mu.Unlock()
+
+		if !ok {
+			// JID not registered — stale entry from a deleted group; remove it.
+			if err := o.queue.MarkInactive(ctx, jid); err != nil {
+				o.log.Error("reconcile active set: failed to mark unregistered JID inactive",
+					"jid", jid, "error", err)
+			} else {
+				o.log.Info("reconcile active set: removed stale JID (group not registered)", "jid", jid)
+				removed++
+			}
+			continue
+		}
+
+		if o.sandbox == nil {
+			// No K8s — treat all as inactive.
+			if err := o.queue.MarkInactive(ctx, jid); err != nil {
+				o.log.Error("reconcile active set: failed to mark inactive (no sandbox ctrl)",
+					"jid", jid, "error", err)
+			} else {
+				removed++
+			}
+			continue
+		}
+
+		hasActive, err := o.sandbox.HasActiveSandbox(ctx, group.Folder)
+		if err != nil {
+			o.log.Warn("reconcile active set: failed to check sandbox liveness, skipping",
+				"jid", jid, "folder", group.Folder, "error", err)
+			continue
+		}
+		if !hasActive {
+			if err := o.queue.MarkInactive(ctx, jid); err != nil {
+				o.log.Error("reconcile active set: failed to mark inactive",
+					"jid", jid, "folder", group.Folder, "error", err)
+			} else {
+				o.log.Info("reconcile active set: removed stale JID (no running sandbox)",
+					"jid", jid, "folder", group.Folder)
+				removed++
+			}
+		}
+	}
+
+	if removed > 0 {
+		o.log.Info("reconcile active set: cleaned stale entries", "removed", removed, "total_was", len(activeJIDs))
+	}
 }
 
 // recoverPendingMessages checks each group for unprocessed messages on startup.
