@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -137,6 +138,17 @@ func (c *Config) Validate() error {
 	}
 	if c.Queue.MaxConcurrent <= 0 {
 		return fmt.Errorf("MAX_CONCURRENT must be positive, got %d", c.Queue.MaxConcurrent)
+	}
+	if c.K8s.AgentImage == "" && c.K8s.AgentImageAnthropic == "" && c.K8s.AgentImageOpenAI == "" {
+		return fmt.Errorf("at least one agent image must be set (AGENT_IMAGE, AGENT_IMAGE_ANTHROPIC, or AGENT_IMAGE_OPENAI)")
+	}
+	if c.Proxy.CredentialEncryptionKey != "" {
+		if len(c.Proxy.CredentialEncryptionKey) != 64 {
+			return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY must be 64 hex characters (32 bytes), got %d characters", len(c.Proxy.CredentialEncryptionKey))
+		}
+		if _, err := hex.DecodeString(c.Proxy.CredentialEncryptionKey); err != nil {
+			return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY must be valid hex: %w", err)
+		}
 	}
 	return nil
 }

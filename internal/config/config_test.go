@@ -2,9 +2,85 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
+
+func validConfig() Config {
+	return Config{
+		Server: ServerConfig{
+			GRPCInsecure:     true,
+			GRPCAllowedCIDRs: "10.0.0.0/8",
+		},
+		Proxy: ProxyConfig{
+			AnthropicAPIKey: "sk-test",
+		},
+		K8s: K8sConfig{
+			AgentImage: "ghcr.io/test/agent:latest",
+		},
+		Queue: QueueConfig{
+			MaxConcurrent: 5,
+		},
+		Channels: ChannelsConfig{
+			Timezone: "UTC",
+		},
+	}
+}
+
+func TestValidate_RequiresAtLeastOneAgentImage(t *testing.T) {
+	cfg := validConfig()
+	cfg.K8s.AgentImage = ""
+	cfg.K8s.AgentImageAnthropic = ""
+	cfg.K8s.AgentImageOpenAI = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when no agent image configured")
+	}
+}
+
+func TestValidate_AcceptsLegacyAgentImage(t *testing.T) {
+	cfg := validConfig()
+	cfg.K8s.AgentImage = "ghcr.io/test/agent:latest"
+	cfg.K8s.AgentImageAnthropic = ""
+	cfg.K8s.AgentImageOpenAI = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_AcceptsProviderSpecificImage(t *testing.T) {
+	cfg := validConfig()
+	cfg.K8s.AgentImage = ""
+	cfg.K8s.AgentImageAnthropic = "ghcr.io/test/anthropic:latest"
+	cfg.K8s.AgentImageOpenAI = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_InvalidEncryptionKeyLength(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.CredentialEncryptionKey = "tooshort"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for short encryption key")
+	}
+}
+
+func TestValidate_InvalidEncryptionKeyHex(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.CredentialEncryptionKey = strings.Repeat("zz", 32)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid hex")
+	}
+}
+
+func TestValidate_ValidEncryptionKey(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.CredentialEncryptionKey = strings.Repeat("ab", 32)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
 func TestLoad(t *testing.T) {
 	tests := []struct {
