@@ -1,4 +1,4 @@
-.PHONY: help build build-tui run test clean docker-build docker-push proto lint fmt tidy deps
+.PHONY: help build build-tui build-agent-openai run test clean docker-build docker-push proto lint fmt tidy deps
 
 # Variables
 APP_NAME := kraclaw
@@ -21,6 +21,10 @@ build-tui: ## Build the TUI client binary
 	@echo "Building $(TUI_NAME)..."
 	@go build -ldflags="-w -s" -o $(TUI_NAME) ./cmd/kraclaw-tui
 
+build-agent-openai: ## Build the OpenAI agent binary
+	@echo "Building kraclaw-agent-openai..."
+	@go build -ldflags="-w -s" -o kraclaw-agent-openai ./cmd/kraclaw-agent-openai
+
 run: ## Run the server locally
 	@echo "Running $(APP_NAME)..."
 	@go run ./cmd/kraclaw
@@ -39,7 +43,7 @@ test-integration: ## Run integration tests (requires Docker)
 
 clean: ## Clean build artifacts
 	@echo "Cleaning..."
-	@rm -f $(APP_NAME) $(TUI_NAME)
+	@rm -f $(APP_NAME) $(TUI_NAME) kraclaw-agent-openai
 
 docker-build: ## Build Docker image
 	@echo "Building Docker image: $(IMAGE):$(VERSION)..."
