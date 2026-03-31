@@ -147,24 +147,35 @@ func main() {
 
 	// Start credential proxy
 	var proxy *credproxy.Proxy
-	if cfg.Proxy.CredentialEncryptionKey != "" {
-		enc, err := credproxy.NewEncryptor(cfg.Proxy.CredentialEncryptionKey)
-		if err != nil {
-			log.Error("failed to create credential encryptor", "error", err)
-			os.Exit(1)
+
+	// Multi-provider proxy is needed when:
+	// 1. Per-group credential encryption is configured, OR
+	// 2. OpenAI platform credentials are set (needs provider-aware routing)
+	needsMultiProvider := cfg.Proxy.CredentialEncryptionKey != "" || cfg.Proxy.OpenAIAPIKey != ""
+
+	if needsMultiProvider {
+		var resolver credproxy.CredentialResolver
+		if cfg.Proxy.CredentialEncryptionKey != "" {
+			enc, err := credproxy.NewEncryptor(cfg.Proxy.CredentialEncryptionKey)
+			if err != nil {
+				log.Error("failed to create credential encryptor", "error", err)
+				os.Exit(1)
+			}
+			credStore, err := credproxy.NewCredentialStore(mysqlStore.DB(), enc)
+			if err != nil {
+				log.Error("failed to create credential store", "error", err)
+				os.Exit(1)
+			}
+			resolver = credproxy.NewDefaultResolver(credStore, cfg.Proxy)
+		} else {
+			resolver = credproxy.NewDefaultResolver(nil, cfg.Proxy)
 		}
-		credStore, err := credproxy.NewCredentialStore(mysqlStore.DB(), enc)
-		if err != nil {
-			log.Error("failed to create credential store", "error", err)
-			os.Exit(1)
-		}
-		resolver := credproxy.NewDefaultResolver(credStore, cfg.Proxy)
 		proxy, err = credproxy.NewMultiProviderProxy(cfg.Proxy, resolver)
 		if err != nil {
 			log.Error("failed to create multi-provider credential proxy", "error", err)
 			os.Exit(1)
 		}
-		log.Info("credential proxy configured with per-group credential support")
+		log.Info("credential proxy configured with multi-provider support")
 	} else {
 		proxy, err = credproxy.New(cfg.Proxy)
 		if err != nil {
