@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -629,7 +630,10 @@ func TestBuildSandbox_AdditionalMounts(t *testing.T) {
 		},
 	}
 
-	sb := ctrl.buildSandbox("test-sandbox", cfg)
+	sb, err := ctrl.buildSandbox("test-sandbox", cfg)
+	if err != nil {
+		t.Fatalf("buildSandbox: %v", err)
+	}
 	podSpec := sb.Spec.PodTemplate.Spec
 
 	// Base volumes: sessions, groups, data (3) + 2 extra = 5
@@ -680,7 +684,10 @@ func TestBuildSandbox_NoAdditionalMounts(t *testing.T) {
 		GroupJID:    "test@jid",
 	}
 
-	sb := ctrl.buildSandbox("test-sandbox", cfg)
+	sb, err := ctrl.buildSandbox("test-sandbox", cfg)
+	if err != nil {
+		t.Fatalf("buildSandbox: %v", err)
+	}
 	podSpec := sb.Spec.PodTemplate.Spec
 
 	// Base only: 3 volumes, 3 mounts.
@@ -704,7 +711,10 @@ func TestBuildSandbox_AdditionalMountFallback(t *testing.T) {
 		},
 	}
 
-	sb := ctrl.buildSandbox("test-sandbox", cfg)
+	sb, err := ctrl.buildSandbox("test-sandbox", cfg)
+	if err != nil {
+		t.Fatalf("buildSandbox: %v", err)
+	}
 	agentMounts := sb.Spec.PodTemplate.Spec.Containers[0].VolumeMounts
 
 	// When ContainerPath is empty, MountPath should fall back to HostPath.
@@ -722,7 +732,10 @@ func TestAgentImageForProvider_Anthropic(t *testing.T) {
 			"openai":    "ghcr.io/johanssonvincent/kraclaw-agent-openai:latest",
 		},
 	}
-	img := c.agentImageForProvider("anthropic")
+	img, err := c.agentImageForProvider("anthropic")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if img != "ghcr.io/johanssonvincent/kraclaw-agent-anthropic:latest" {
 		t.Fatalf("expected anthropic image, got %q", img)
 	}
@@ -734,7 +747,10 @@ func TestAgentImageForProvider_OpenAI(t *testing.T) {
 			"openai": "ghcr.io/johanssonvincent/kraclaw-agent-openai:latest",
 		},
 	}
-	img := c.agentImageForProvider("openai")
+	img, err := c.agentImageForProvider("openai")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if img != "ghcr.io/johanssonvincent/kraclaw-agent-openai:latest" {
 		t.Fatalf("expected openai image, got %q", img)
 	}
@@ -744,8 +760,12 @@ func TestAgentImageForProvider_FallbackToLegacy(t *testing.T) {
 	c := &Controller{
 		agentImage:  "legacy-image:latest",
 		agentImages: map[string]string{},
+		log:         slog.Default(),
 	}
-	img := c.agentImageForProvider("anthropic")
+	img, err := c.agentImageForProvider("anthropic")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if img != "legacy-image:latest" {
 		t.Fatalf("expected legacy fallback, got %q", img)
 	}
@@ -758,7 +778,10 @@ func TestAgentImageForProvider_EmptyProviderUsesLegacy(t *testing.T) {
 			"anthropic": "new-image:latest",
 		},
 	}
-	img := c.agentImageForProvider("")
+	img, err := c.agentImageForProvider("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if img != "legacy-image:latest" {
 		t.Fatalf("expected legacy fallback for empty provider, got %q", img)
 	}
@@ -781,7 +804,10 @@ func TestBuildSandbox_OpenAIEnvVars(t *testing.T) {
 			Model:    "gpt-5.4",
 		},
 	}
-	sb := c.buildSandbox("test-sandbox", cfg)
+	sb, err := c.buildSandbox("test-sandbox", cfg)
+	if err != nil {
+		t.Fatalf("buildSandbox: %v", err)
+	}
 	envs := sb.Spec.PodTemplate.Spec.Containers[0].Env
 
 	foundProvider := false
@@ -814,7 +840,10 @@ func TestBuildSandbox_AnthropicLegacyCommand(t *testing.T) {
 		GroupFolder: "testgroup",
 		GroupJID:    "discord:123",
 	}
-	sb := c.buildSandbox("test-sandbox", cfg)
+	sb, err := c.buildSandbox("test-sandbox", cfg)
+	if err != nil {
+		t.Fatalf("buildSandbox: %v", err)
+	}
 	container := sb.Spec.PodTemplate.Spec.Containers[0]
 
 	// Legacy anthropic agent should have explicit node command.
@@ -843,11 +872,44 @@ func TestBuildSandbox_OpenAINoCommand(t *testing.T) {
 			Provider: "openai",
 		},
 	}
-	sb := c.buildSandbox("test-sandbox", cfg)
+	sb, err := c.buildSandbox("test-sandbox", cfg)
+	if err != nil {
+		t.Fatalf("buildSandbox: %v", err)
+	}
 	container := sb.Spec.PodTemplate.Spec.Containers[0]
 
 	// OpenAI agent should NOT have explicit command (uses Dockerfile ENTRYPOINT).
 	if len(container.Command) != 0 {
 		t.Fatalf("expected no command for openai container, got %v", container.Command)
+	}
+}
+
+func TestAgentImageForProvider_IncompatibleFallbackReturnsError(t *testing.T) {
+	c := &Controller{
+		agentImage:  "legacy-node:latest",
+		agentImages: map[string]string{},
+		log:         slog.Default(),
+	}
+	_, err := c.agentImageForProvider("openai")
+	if err == nil {
+		t.Fatal("expected error when falling back to legacy image for non-Anthropic provider")
+	}
+	if !strings.Contains(err.Error(), "no agent image") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAgentImageForProvider_AnthropicFallbackOK(t *testing.T) {
+	c := &Controller{
+		agentImage:  "legacy-node:latest",
+		agentImages: map[string]string{},
+		log:         slog.Default(),
+	}
+	img, err := c.agentImageForProvider("anthropic")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if img != "legacy-node:latest" {
+		t.Fatalf("expected legacy fallback, got %q", img)
 	}
 }

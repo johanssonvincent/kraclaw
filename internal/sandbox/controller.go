@@ -116,18 +116,22 @@ func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *re
 }
 
 // agentImageForProvider returns the container image for the given provider,
-// falling back to the legacy agentImage when no provider-specific image is configured.
-func (c *Controller) agentImageForProvider(provider string) string {
-	if provider != "" {
-		if img, ok := c.agentImages[provider]; ok && img != "" {
-			return img
+// falling back to the legacy agentImage only for Anthropic. Non-Anthropic providers
+// with no configured image return an error to prevent silent incompatible fallback.
+func (c *Controller) agentImageForProvider(prov string) (string, error) {
+	if prov != "" {
+		if img, ok := c.agentImages[prov]; ok && img != "" {
+			return img, nil
+		}
+		if prov != provider.ProviderAnthropic {
+			return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_%s)", prov, strings.ToUpper(prov))
 		}
 		if c.log != nil {
-			c.log.Warn("no agent image configured for provider, using legacy fallback",
-				"provider", provider, "fallback_image", c.agentImage)
+			c.log.Warn("no provider-specific image for anthropic, using legacy fallback",
+				"fallback_image", c.agentImage)
 		}
 	}
-	return c.agentImage
+	return c.agentImage, nil
 }
 
 // isTransientError reports whether err is likely a transient K8s API failure
@@ -173,7 +177,10 @@ func (c *Controller) CreateSandbox(ctx context.Context, cfg SandboxConfig) (*San
 			backoff *= 2
 		}
 
-		sb := c.buildSandbox(name, cfg)
+		sb, err := c.buildSandbox(name, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: build sandbox: %w", err)
+		}
 		if err := c.ctrlClient.Create(ctx, sb); err != nil {
 			lastErr = err
 			if isTransientError(err) {
@@ -283,7 +290,7 @@ func pvcName(configured, defaultName string) string {
 // buildSandbox constructs a Sandbox resource with the full pod spec and GROUP_FOLDER injected.
 // The pod spec mirrors the kraclaw-agent-template SandboxTemplate but with per-group env vars
 // resolved at creation time, which is required because SandboxClaimSpec has no injection mechanism.
-func (c *Controller) buildSandbox(name string, cfg SandboxConfig) *agentsandboxv1alpha1.Sandbox {
+func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandboxv1alpha1.Sandbox, error) {
 	labels := map[string]string{
 		labelManagedBy: managedByValue,
 		labelRole:      roleAgent,
@@ -300,7 +307,10 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) *agentsandboxv
 	if cfg.ContainerConfig != nil {
 		providerID = cfg.ContainerConfig.Provider
 	}
-	image := c.agentImageForProvider(providerID)
+	image, err := c.agentImageForProvider(providerID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build env vars based on provider.
 	envVars := []corev1.EnvVar{
@@ -471,7 +481,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) *agentsandboxv
 		}
 	}
 
-	return sb
+	return sb, nil
 }
 
 func sandboxToStatus(sandbox *agentsandboxv1alpha1.Sandbox) *SandboxStatus {
