@@ -32,9 +32,13 @@ env:
 jobs:
   test-unit:
     uses: ./.github/workflows/test-unit.yaml
+    permissions:
+      contents: read
 
   lint:
     uses: ./.github/workflows/lint.yaml
+    permissions:
+      contents: read
 
   build:
     needs: [test-unit, lint]
