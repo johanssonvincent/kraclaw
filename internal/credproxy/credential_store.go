@@ -21,8 +21,14 @@ type CredentialStore struct {
 }
 
 // NewCredentialStore creates a credential store backed by MySQL.
-func NewCredentialStore(db *sql.DB, enc *Encryptor) *CredentialStore {
-	return &CredentialStore{db: db, enc: enc}
+func NewCredentialStore(db *sql.DB, enc *Encryptor) (*CredentialStore, error) {
+	if db == nil {
+		return nil, fmt.Errorf("credential store: database connection is required")
+	}
+	if enc == nil {
+		return nil, fmt.Errorf("credential store: encryptor is required")
+	}
+	return &CredentialStore{db: db, enc: enc}, nil
 }
 
 // GetCredential retrieves and decrypts a credential for a group.

@@ -30,7 +30,10 @@ func TestCredentialStore_UpsertAndGet(t *testing.T) {
 	defer db.Close()
 
 	enc := testEncryptor(t)
-	store := NewCredentialStore(db, enc)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	cred := &Credential{
 		GroupJID: "discord:123",
@@ -59,7 +62,10 @@ func TestCredentialStore_Delete(t *testing.T) {
 	defer db.Close()
 
 	enc := testEncryptor(t)
-	store := NewCredentialStore(db, enc)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	mock.ExpectExec("DELETE FROM credentials WHERE group_jid").
 		WithArgs("discord:123").

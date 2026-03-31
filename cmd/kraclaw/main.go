@@ -153,7 +153,11 @@ func main() {
 			log.Error("failed to create credential encryptor", "error", err)
 			os.Exit(1)
 		}
-		credStore := credproxy.NewCredentialStore(mysqlStore.DB(), enc)
+		credStore, err := credproxy.NewCredentialStore(mysqlStore.DB(), enc)
+		if err != nil {
+			log.Error("failed to create credential store", "error", err)
+			os.Exit(1)
+		}
 		resolver := credproxy.NewDefaultResolver(credStore, cfg.Proxy)
 		proxy, err = credproxy.NewMultiProviderProxy(cfg.Proxy, resolver)
 		if err != nil {
