@@ -26,7 +26,13 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 		model = "gpt-5.4"
 	}
 	proxyURL := os.Getenv("KRACLAW_PROXY_URL")
+	if proxyURL == "" {
+		return fmt.Errorf("KRACLAW_PROXY_URL is required")
+	}
 	groupJID := os.Getenv("KRACLAW_GROUP")
+	if groupJID == "" {
+		return fmt.Errorf("KRACLAW_GROUP is required")
+	}
 
 	// Create OpenAI client pointing at the credential proxy.
 	opts := []option.RequestOption{
@@ -65,11 +71,9 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 					continue
 				}
 
-				history = append(history, openai.UserMessage(text))
-
 				stream := client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
 					Model:    model,
-					Messages: history,
+					Messages: append(history, openai.UserMessage(text)),
 				})
 
 				var fullResponse string
@@ -92,6 +96,8 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 					continue
 				}
 
+				// Only append to history after successful response.
+				history = append(history, openai.UserMessage(text))
 				history = append(history, openai.AssistantMessage(fullResponse))
 
 				if err := ipc.SendOutput(ctx, &agent.OutboundMessage{
@@ -105,7 +111,11 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 				var payload struct {
 					Model string `json:"model"`
 				}
-				if err := json.Unmarshal(msg.Payload, &payload); err == nil && payload.Model != "" {
+				if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+					log.Error("failed to unmarshal set_model payload", "error", err)
+				} else if payload.Model == "" {
+					log.Warn("set_model received with empty model")
+				} else {
 					model = payload.Model
 					log.Info("model updated", "model", model)
 				}
