@@ -33,15 +33,15 @@ func TestProxyWriteTimeoutIsSet(t *testing.T) {
 	}
 }
 
-func TestNew_NoAuth_LogsInfo(t *testing.T) {
-	p, err := New(config.ProxyConfig{
+func TestNew_NoAuth_ReturnsError(t *testing.T) {
+	_, err := New(config.ProxyConfig{
 		AnthropicUpstreamURL: "https://api.anthropic.com",
 	})
-	if err != nil {
-		t.Fatalf("expected no error when no auth configured, got: %v", err)
+	if err == nil {
+		t.Fatal("expected error when no Anthropic credentials configured in legacy mode")
 	}
-	if p == nil {
-		t.Fatal("expected non-nil proxy")
+	if !strings.Contains(err.Error(), "AnthropicAPIKey or AnthropicOAuthToken") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
 }
 

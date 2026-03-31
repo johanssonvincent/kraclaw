@@ -129,7 +129,7 @@ func New(cfg config.ProxyConfig) (*Proxy, error) {
 		return nil, fmt.Errorf("credproxy: invalid upstream URL: %w", err)
 	}
 	if cfg.AnthropicAPIKey == "" && cfg.AnthropicOAuthToken == "" {
-		slog.Info("credproxy: no Anthropic credentials configured, Anthropic requests will use per-group credentials")
+		return nil, fmt.Errorf("credproxy: either AnthropicAPIKey or AnthropicOAuthToken must be set (use NewMultiProviderProxy for per-group credentials)")
 	}
 	if cfg.AnthropicAPIKey != "" && cfg.AnthropicOAuthToken != "" {
 		slog.Warn("both ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN set, API key takes precedence")
