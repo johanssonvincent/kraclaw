@@ -15,7 +15,10 @@ func TestIPCClient_SendOutput(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
 
-	client := NewIPCClient(rdb, "testgroup")
+	client, err := NewIPCClient(rdb, "testgroup")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	msg := &OutboundMessage{
 		Type: "message",
@@ -40,7 +43,10 @@ func TestIPCClient_ReadInput(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
 
-	client := NewIPCClient(rdb, "testgroup")
+	client, err := NewIPCClient(rdb, "testgroup")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	payload, _ := json.Marshal(map[string]string{"messages": "Hello"})
 	data, _ := json.Marshal(map[string]interface{}{
@@ -76,7 +82,10 @@ func TestIPCClient_CheckCloseSignal(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
 
-	client := NewIPCClient(rdb, "testgroup")
+	client, err := NewIPCClient(rdb, "testgroup")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	closed, err := client.CheckCloseSignal(context.Background())
 	if err != nil {
@@ -94,5 +103,70 @@ func TestIPCClient_CheckCloseSignal(t *testing.T) {
 	}
 	if !closed {
 		t.Fatal("expected closed")
+	}
+}
+
+func TestIPCClient_SendOutput_MessageContent(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	client, err := NewIPCClient(rdb, "testgroup")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg := &OutboundMessage{Type: "message", Text: "Hello from agent"}
+	if err := client.SendOutput(context.Background(), msg); err != nil {
+		t.Fatalf("send output: %v", err)
+	}
+
+	entries, err := rdb.XRange(context.Background(), "kraclaw:ipc:testgroup:output", "-", "+").Result()
+	if err != nil {
+		t.Fatalf("xrange: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	raw, ok := entries[0].Values["data"].(string)
+	if !ok {
+		t.Fatal("expected data field to be a string")
+	}
+	var ipcMsg struct {
+		Group   string          `json:"group"`
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(raw), &ipcMsg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ipcMsg.Group != "testgroup" {
+		t.Fatalf("expected group testgroup, got %q", ipcMsg.Group)
+	}
+	if ipcMsg.Type != "message" {
+		t.Fatalf("expected type message, got %q", ipcMsg.Type)
+	}
+	var payload struct{ Text string `json:"text"` }
+	if err := json.Unmarshal(ipcMsg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.Text != "Hello from agent" {
+		t.Fatalf("expected 'Hello from agent', got %q", payload.Text)
+	}
+}
+
+func TestNewIPCClient_Validation(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	_, err := NewIPCClient(nil, "group")
+	if err == nil {
+		t.Fatal("expected error for nil rdb")
+	}
+	_, err = NewIPCClient(rdb, "")
+	if err == nil {
+		t.Fatal("expected error for empty group")
 	}
 }

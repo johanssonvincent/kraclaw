@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -29,8 +30,14 @@ type IPCClient struct {
 }
 
 // NewIPCClient creates an IPC client for a specific group.
-func NewIPCClient(rdb redis.Cmdable, group string) *IPCClient {
-	return &IPCClient{rdb: rdb, group: group}
+func NewIPCClient(rdb redis.Cmdable, group string) (*IPCClient, error) {
+	if rdb == nil {
+		return nil, fmt.Errorf("ipc client: redis connection is required")
+	}
+	if group == "" {
+		return nil, fmt.Errorf("ipc client: group is required")
+	}
+	return &IPCClient{rdb: rdb, group: group}, nil
 }
 
 func (c *IPCClient) outputKey() string { return fmt.Sprintf("kraclaw:ipc:%s:output", c.group) }
@@ -64,7 +71,9 @@ func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error 
 		return fmt.Errorf("xadd output: %w", err)
 	}
 
-	_ = c.rdb.Publish(ctx, "kraclaw:ipc:notify", c.group).Err()
+	if err := c.rdb.Publish(ctx, "kraclaw:ipc:notify", c.group).Err(); err != nil {
+		slog.Warn("failed to publish ipc notification", "group", c.group, "error", err)
+	}
 	return nil
 }
 
@@ -104,6 +113,8 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, erro
 				if errors.Is(err, redis.Nil) {
 					continue
 				}
+				slog.Error("ipc read error", "stream", stream, "error", err)
+				time.Sleep(time.Second)
 				continue
 			}
 
@@ -111,6 +122,10 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, erro
 				for _, entry := range s.Messages {
 					raw, ok := entry.Values["data"].(string)
 					if !ok {
+						slog.Warn("ipc message missing data field", "entry_id", entry.ID, "stream", stream)
+						if err := c.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err(); err != nil {
+							slog.Warn("failed to ack malformed ipc message", "entry_id", entry.ID, "stream", stream, "error", err)
+						}
 						continue
 					}
 					var ipcMsg struct {
@@ -118,6 +133,10 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, erro
 						Payload json.RawMessage `json:"payload"`
 					}
 					if err := json.Unmarshal([]byte(raw), &ipcMsg); err != nil {
+						slog.Error("ipc message unmarshal failed", "entry_id", entry.ID, "error", err)
+						if err := c.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err(); err != nil {
+							slog.Warn("failed to ack malformed ipc message", "entry_id", entry.ID, "stream", stream, "error", err)
+						}
 						continue
 					}
 
@@ -132,7 +151,9 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, erro
 						return
 					}
 
-					_ = c.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err()
+					if err := c.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err(); err != nil {
+						slog.Warn("failed to ack ipc message", "entry_id", entry.ID, "stream", stream, "error", err)
+					}
 				}
 			}
 		}

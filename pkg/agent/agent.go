@@ -42,13 +42,14 @@ func LoadConfig() (*Config, error) {
 }
 
 // ConnectRedis creates a Redis client from a URL.
-func ConnectRedis(ctx context.Context, redisURL string) (redis.Cmdable, error) {
+func ConnectRedis(ctx context.Context, redisURL string) (*redis.Client, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse redis url: %w", err)
 	}
 	rdb := redis.NewClient(opts)
 	if err := rdb.Ping(ctx).Err(); err != nil {
+		_ = rdb.Close()
 		return nil, fmt.Errorf("ping redis: %w", err)
 	}
 	return rdb, nil
@@ -72,8 +73,12 @@ func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) err
 	if err != nil {
 		return fmt.Errorf("connect redis: %w", err)
 	}
+	defer rdb.Close()
 
-	ipcClient := NewIPCClient(rdb, cfg.Group)
+	ipcClient, err := NewIPCClient(rdb, cfg.Group)
+	if err != nil {
+		return fmt.Errorf("create ipc client: %w", err)
+	}
 
 	if err := handler(ctx, ipcClient, log); err != nil {
 		return fmt.Errorf("agent handler: %w", err)
