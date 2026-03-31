@@ -74,8 +74,12 @@ func (o *Orchestrator) handleModelsCommand(ctx context.Context, chatJID string) 
 		currentModel = group.ContainerConfig.Model
 	}
 
+	p, ok := o.providers.Get(providerID)
+	if !ok {
+		o.sendSystemMessage(ctx, chatJID, fmt.Sprintf("Unknown provider %q configured for this group. Contact an admin.", providerID))
+		return
+	}
 	var b strings.Builder
-	p, _ := o.providers.Get(providerID)
 	b.WriteString(fmt.Sprintf("Models (%s):\n", p.DisplayName))
 
 	for _, m := range models {

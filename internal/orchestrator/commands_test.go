@@ -267,6 +267,25 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 		}
 	})
 
+	t.Run("unknown provider returns error message", func(t *testing.T) {
+		s := newMockStore()
+		s.groups = []store.Group{
+			{JID: "group1@g.us", Folder: "group1", Name: "Test",
+				ContainerConfig: &store.ContainerConfig{Provider: "opanai"}},
+		}
+		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
+
+		o.handleModelsCommand(context.Background(), "group1@g.us")
+
+		if len(ch.sent) == 0 {
+			t.Fatal("expected sent message")
+		}
+		if !strings.Contains(ch.sent[0].text, "Unknown provider") {
+			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "Unknown provider")
+		}
+	})
+
 	t.Run("models for openai provider", func(t *testing.T) {
 		s := newMockStore()
 		s.groups = []store.Group{
