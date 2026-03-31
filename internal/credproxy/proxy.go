@@ -19,7 +19,78 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/metrics"
 )
 
-// Proxy is a credential-injecting reverse proxy for the Anthropic API.
+// resolvedCredential contains provider-specific routing info for a single request.
+type resolvedCredential struct {
+	Provider    string
+	APIKey      string
+	OAuthToken  string
+	UpstreamURL string
+}
+
+// CredentialResolver looks up credentials for a group.
+type CredentialResolver interface {
+	Resolve(ctx context.Context, groupJID string) (*resolvedCredential, error)
+}
+
+// defaultCredentialResolver wraps CredentialStore + platform fallback config.
+type defaultCredentialResolver struct {
+	credStore *CredentialStore
+	cfg       config.ProxyConfig
+}
+
+// NewDefaultResolver creates a CredentialResolver that checks per-group credentials
+// first, then falls back to platform-level credentials from config.
+func NewDefaultResolver(credStore *CredentialStore, cfg config.ProxyConfig) *defaultCredentialResolver {
+	return &defaultCredentialResolver{credStore: credStore, cfg: cfg}
+}
+
+// Resolve looks up credentials for a group, falling back to platform-level config.
+func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string) (*resolvedCredential, error) {
+	// Try per-group credential first.
+	if r.credStore != nil && groupJID != "" {
+		cred, err := r.credStore.GetCredential(ctx, groupJID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve credential: %w", err)
+		}
+		if cred != nil {
+			rc := &resolvedCredential{
+				Provider:   cred.Provider,
+				APIKey:     cred.APIKey,
+				OAuthToken: cred.OAuthToken,
+			}
+			switch cred.Provider {
+			case "openai":
+				rc.UpstreamURL = r.cfg.OpenAIUpstreamURL
+			default:
+				rc.UpstreamURL = r.cfg.AnthropicUpstreamURL
+			}
+			return rc, nil
+		}
+	}
+
+	// Platform-level fallback: Anthropic.
+	if r.cfg.AnthropicAPIKey != "" || r.cfg.AnthropicOAuthToken != "" {
+		return &resolvedCredential{
+			Provider:    "anthropic",
+			APIKey:      r.cfg.AnthropicAPIKey,
+			OAuthToken:  r.cfg.AnthropicOAuthToken,
+			UpstreamURL: r.cfg.AnthropicUpstreamURL,
+		}, nil
+	}
+
+	// Platform-level fallback: OpenAI.
+	if r.cfg.OpenAIAPIKey != "" {
+		return &resolvedCredential{
+			Provider:    "openai",
+			APIKey:      r.cfg.OpenAIAPIKey,
+			UpstreamURL: r.cfg.OpenAIUpstreamURL,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no credentials found for group %q and no platform fallback configured", groupJID)
+}
+
+// Proxy is a credential-injecting reverse proxy for AI provider APIs.
 // Agent containers connect here instead of directly to the upstream API,
 // so they never see real credentials.
 type Proxy struct {
@@ -30,6 +101,7 @@ type Proxy struct {
 	server      *http.Server
 	addr        string
 	log         *slog.Logger
+	resolver    CredentialResolver // nil = legacy single-provider mode
 
 	mu              sync.RWMutex
 	cachedAPIKey    string
@@ -63,17 +135,45 @@ func New(cfg config.ProxyConfig) (*Proxy, error) {
 	}, nil
 }
 
-// Start begins serving the proxy. It blocks until the context is cancelled
-// or an error occurs.
-func (p *Proxy) Start(ctx context.Context) error {
+// NewMultiProviderProxy creates a credential proxy that supports multiple
+// upstream providers via per-group credential resolution. When the resolver
+// is set and a request includes the X-Kraclaw-Group header, credentials are
+// resolved dynamically per request.
+func NewMultiProviderProxy(cfg config.ProxyConfig, resolver CredentialResolver) (*Proxy, error) {
+	if cfg.AnthropicUpstreamURL == "" {
+		cfg.AnthropicUpstreamURL = "https://api.anthropic.com"
+	}
+	upstream, err := url.Parse(cfg.AnthropicUpstreamURL)
+	if err != nil {
+		return nil, fmt.Errorf("credproxy: invalid upstream URL: %w", err)
+	}
+	return &Proxy{
+		upstream:        upstream,
+		allowedHost:     upstream.Host,
+		apiKey:          cfg.AnthropicAPIKey,
+		oauthToken:      cfg.AnthropicOAuthToken,
+		addr:            cfg.Addr,
+		log:             slog.Default().With("component", "credproxy"),
+		cachedAPIKeyTTL: 15 * time.Minute,
+		resolver:        resolver,
+	}, nil
+}
+
+// handler returns the HTTP handler for the proxy, useful for testing.
+func (p *Proxy) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", p.handleHealthz)
 	mux.HandleFunc("/readyz", p.handleReadyz)
 	mux.Handle("/", p.metricsMiddleware(p.hostGuard(p.newReverseProxy())))
+	return mux
+}
 
+// Start begins serving the proxy. It blocks until the context is cancelled
+// or an error occurs.
+func (p *Proxy) Start(ctx context.Context) error {
 	p.server = &http.Server{
 		Addr:              p.addr,
-		Handler:           mux,
+		Handler:           p.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      600 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -143,6 +243,67 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 		Transport:     transport,
 		FlushInterval: -1, // flush SSE events immediately
 		Director: func(req *http.Request) {
+			// Check for multi-provider routing via X-Kraclaw-Group header.
+			groupJID := req.Header.Get("X-Kraclaw-Group")
+
+			if p.resolver != nil && groupJID != "" {
+				// Multi-provider path: resolve credentials for this group.
+				cred, err := p.resolver.Resolve(req.Context(), groupJID)
+				if err != nil {
+					p.log.Error("credential resolution failed",
+						"group", groupJID,
+						"error", err,
+					)
+					req.Header.Del("X-Api-Key")
+					req.Header.Del("Authorization")
+					req.Header.Del("X-Kraclaw-Group")
+					req.Header.Del("X-Kraclaw-Provider")
+					return
+				}
+
+				// Parse and set upstream URL from resolved credential.
+				upstreamURL, err := url.Parse(cred.UpstreamURL)
+				if err != nil {
+					p.log.Error("invalid resolved upstream URL",
+						"upstream_url", cred.UpstreamURL,
+						"error", err,
+					)
+					req.Header.Del("X-Api-Key")
+					req.Header.Del("Authorization")
+					req.Header.Del("X-Kraclaw-Group")
+					req.Header.Del("X-Kraclaw-Provider")
+					return
+				}
+
+				req.URL.Scheme = upstreamURL.Scheme
+				req.URL.Host = upstreamURL.Host
+				req.Host = upstreamURL.Host
+
+				// Strip hop-by-hop and kraclaw-internal headers.
+				req.Header.Del("Connection")
+				req.Header.Del("Keep-Alive")
+				req.Header.Del("Transfer-Encoding")
+				req.Header.Del("X-Kraclaw-Group")
+				req.Header.Del("X-Kraclaw-Provider")
+
+				// Inject provider-specific auth headers.
+				switch cred.Provider {
+				case "openai":
+					req.Header.Del("X-Api-Key")
+					req.Header.Set("Authorization", "Bearer "+cred.APIKey)
+				default: // anthropic
+					if cred.APIKey != "" {
+						req.Header.Del("Authorization")
+						req.Header.Set("X-Api-Key", cred.APIKey)
+					} else if cred.OAuthToken != "" {
+						req.Header.Del("X-Api-Key")
+						req.Header.Set("Authorization", "Bearer "+cred.OAuthToken)
+					}
+				}
+				return
+			}
+
+			// Legacy single-provider path (backwards compatible).
 			// Rewrite target to configured upstream.
 			req.URL.Scheme = p.upstream.Scheme
 			req.URL.Host = p.upstream.Host
@@ -237,8 +398,16 @@ func (p *Proxy) metricsMiddleware(next http.Handler) http.Handler {
 // hostGuard rejects requests with a Host header that does not match the
 // proxy's own listen address or is explicitly targeting an external host.
 // This is a defense-in-depth measure against SSRF via Host header manipulation.
+// When a resolver is configured, the guard is bypassed since the upstream
+// changes dynamically per request based on the resolved provider.
 func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// When a resolver is set, the upstream is determined dynamically by the
+		// Director, so static host checking is not applicable.
+		if p.resolver != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
 		// If the request has an explicit upstream target in the URL (absolute URI),
 		// verify it matches the allowed upstream host.
 		if r.URL.Host != "" && r.URL.Host != p.allowedHost {
