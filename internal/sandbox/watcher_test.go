@@ -39,7 +39,7 @@ func TestWatchSandboxes_ListBeforeWatch(t *testing.T) {
 		WithObjects(existing).
 		Build()
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", nil, "redis://localhost:6379", "http://localhost:3001")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestWatchSandboxes_ChannelClosesOnCtxCancel(t *testing.T) {
 		WithStatusSubresource(&agentsandboxv1alpha1.Sandbox{}).
 		Build()
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", nil, "redis://localhost:6379", "http://localhost:3001")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestWatchSandboxes(t *testing.T) {
 		WithStatusSubresource(&agentsandboxv1alpha1.Sandbox{}).
 		Build()
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", nil, "redis://localhost:6379", "http://localhost:3001")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestWatchMapping_Lifecycle(t *testing.T) {
 		WithStatusSubresource(&agentsandboxv1alpha1.Sandbox{}).
 		Build()
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", nil, "redis://localhost:6379", "http://localhost:3001")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
