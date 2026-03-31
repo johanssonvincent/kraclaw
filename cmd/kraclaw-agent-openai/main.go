@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -52,10 +53,22 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 		return fmt.Errorf("read input: %w", err)
 	}
 
+	closeTicker := time.NewTicker(5 * time.Second)
+	defer closeTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-closeTicker.C:
+			closed, err := ipc.CheckCloseSignal(ctx)
+			if err != nil {
+				log.Warn("close signal check failed", "error", err)
+			}
+			if closed {
+				log.Info("close signal detected")
+				return nil
+			}
 		case msg, ok := <-inputCh:
 			if !ok {
 				return nil
@@ -128,16 +141,6 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 			default:
 				log.Debug("unknown message type", "type", msg.Type)
 			}
-		}
-
-		// Check close signal.
-		closed, err := ipc.CheckCloseSignal(ctx)
-		if err != nil {
-			log.Warn("close signal check failed", "error", err)
-		}
-		if closed {
-			log.Info("close signal detected")
-			return nil
 		}
 	}
 }
