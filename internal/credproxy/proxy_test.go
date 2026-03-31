@@ -2,6 +2,7 @@ package credproxy
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/johanssonvincent/kraclaw/internal/config"
 )
 
@@ -733,5 +735,104 @@ func TestDefaultCredentialResolver_NoCredentials_ReturnsError(t *testing.T) {
 	_, err := r.Resolve(context.Background(), "discord:123")
 	if err == nil {
 		t.Fatal("expected error when no credentials configured")
+	}
+}
+
+func TestDefaultCredentialResolver_PerGroupOpenAI(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	enc := newTestEncryptor(t)
+	credStore, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	encKey, _ := enc.Encrypt("sk-group-openai-key")
+	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted", "oauth_token_encrypted"}).
+		AddRow("openai", encKey, nil)
+	mock.ExpectQuery("SELECT").WithArgs("discord:123").WillReturnRows(rows)
+
+	r := NewDefaultResolver(credStore, config.ProxyConfig{
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+		OpenAIUpstreamURL:    "https://api.openai.com",
+		AnthropicAPIKey:      "sk-platform-anthropic",
+	})
+
+	cred, err := r.Resolve(context.Background(), "discord:123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Provider != "openai" {
+		t.Fatalf("expected openai provider, got %q", cred.Provider)
+	}
+	if cred.APIKey != "sk-group-openai-key" {
+		t.Fatalf("expected group API key, got %q", cred.APIKey)
+	}
+	if cred.UpstreamURL != "https://api.openai.com" {
+		t.Fatalf("expected OpenAI upstream, got %q", cred.UpstreamURL)
+	}
+}
+
+func TestDefaultCredentialResolver_PerGroupNotFound_FallsThroughToPlatform(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	enc := newTestEncryptor(t)
+	credStore, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT").WithArgs("discord:456").WillReturnError(sql.ErrNoRows)
+
+	r := NewDefaultResolver(credStore, config.ProxyConfig{
+		AnthropicAPIKey:      "sk-platform-anthropic",
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+	})
+
+	cred, err := r.Resolve(context.Background(), "discord:456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Provider != "anthropic" {
+		t.Fatalf("expected anthropic fallback, got %q", cred.Provider)
+	}
+	if cred.APIKey != "sk-platform-anthropic" {
+		t.Fatalf("expected platform API key, got %q", cred.APIKey)
+	}
+}
+
+func TestDefaultCredentialResolver_PerGroupStoreError_PropagatesError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	enc := newTestEncryptor(t)
+	credStore, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT").WithArgs("discord:789").WillReturnError(fmt.Errorf("connection refused"))
+
+	r := NewDefaultResolver(credStore, config.ProxyConfig{
+		AnthropicAPIKey: "sk-platform",
+	})
+
+	_, err = r.Resolve(context.Background(), "discord:789")
+	if err == nil {
+		t.Fatal("expected error from store failure")
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("expected wrapped error, got: %v", err)
 	}
 }
