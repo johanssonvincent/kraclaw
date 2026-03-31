@@ -645,10 +645,35 @@ func TestProxy_ResolverError_ClearsHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	proxy.handler().ServeHTTP(w, req)
 
-	// The request should fail (502) since the Director cleared credentials
-	// and did not set a valid upstream.
-	if w.Code == http.StatusOK {
-		t.Fatal("expected non-200 response when resolver errors")
+	// The credential middleware returns 502 before the request reaches the Director.
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+}
+
+func TestProxy_ResolverError_Returns502WithMessage(t *testing.T) {
+	resolver := &staticCredentialResolver{
+		err: fmt.Errorf("database connection failed"),
+	}
+
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr: ":0",
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("X-Kraclaw-Group", "discord:123")
+	w := httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "credential resolution failed") {
+		t.Fatalf("expected error message in body, got %q", body)
 	}
 }
 

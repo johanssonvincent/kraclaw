@@ -41,7 +41,7 @@ type defaultCredentialResolver struct {
 
 // NewDefaultResolver creates a CredentialResolver that checks per-group credentials
 // first, then falls back to platform-level credentials from config.
-func NewDefaultResolver(credStore *CredentialStore, cfg config.ProxyConfig) *defaultCredentialResolver {
+func NewDefaultResolver(credStore *CredentialStore, cfg config.ProxyConfig) CredentialResolver {
 	return &defaultCredentialResolver{credStore: credStore, cfg: cfg}
 }
 
@@ -89,6 +89,15 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 	}
 
 	return nil, fmt.Errorf("no credentials found for group %q and no platform fallback configured", groupJID)
+}
+
+type contextKey int
+
+const credentialContextKey contextKey = iota
+
+type resolvedData struct {
+	cred        *resolvedCredential
+	upstreamURL *url.URL
 }
 
 // Proxy is a credential-injecting reverse proxy for AI provider APIs.
@@ -165,7 +174,8 @@ func (p *Proxy) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", p.handleHealthz)
 	mux.HandleFunc("/readyz", p.handleReadyz)
-	mux.Handle("/", p.metricsMiddleware(p.hostGuard(p.newReverseProxy())))
+	rp := p.newReverseProxy()
+	mux.Handle("/", p.metricsMiddleware(p.hostGuard(p.credentialMiddleware(rp))))
 	return mux
 }
 
@@ -244,41 +254,11 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 		Transport:     transport,
 		FlushInterval: -1, // flush SSE events immediately
 		Director: func(req *http.Request) {
-			// Check for multi-provider routing via X-Kraclaw-Group header.
-			groupJID := req.Header.Get("X-Kraclaw-Group")
-
-			if p.resolver != nil && groupJID != "" {
-				// Multi-provider path: resolve credentials for this group.
-				cred, err := p.resolver.Resolve(req.Context(), groupJID)
-				if err != nil {
-					p.log.Error("credential resolution failed",
-						"group", groupJID,
-						"error", err,
-					)
-					req.Header.Del("X-Api-Key")
-					req.Header.Del("Authorization")
-					req.Header.Del("X-Kraclaw-Group")
-					req.Header.Del("X-Kraclaw-Provider")
-					return
-				}
-
-				// Parse and set upstream URL from resolved credential.
-				upstreamURL, err := url.Parse(cred.UpstreamURL)
-				if err != nil {
-					p.log.Error("invalid resolved upstream URL",
-						"upstream_url", cred.UpstreamURL,
-						"error", err,
-					)
-					req.Header.Del("X-Api-Key")
-					req.Header.Del("Authorization")
-					req.Header.Del("X-Kraclaw-Group")
-					req.Header.Del("X-Kraclaw-Provider")
-					return
-				}
-
-				req.URL.Scheme = upstreamURL.Scheme
-				req.URL.Host = upstreamURL.Host
-				req.Host = upstreamURL.Host
+			// Check for pre-resolved credentials from middleware.
+			if rd, ok := req.Context().Value(credentialContextKey).(*resolvedData); ok {
+				req.URL.Scheme = rd.upstreamURL.Scheme
+				req.URL.Host = rd.upstreamURL.Host
+				req.Host = rd.upstreamURL.Host
 
 				// Strip hop-by-hop and kraclaw-internal headers.
 				req.Header.Del("Connection")
@@ -288,17 +268,17 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 				req.Header.Del("X-Kraclaw-Provider")
 
 				// Inject provider-specific auth headers.
-				switch cred.Provider {
+				switch rd.cred.Provider {
 				case provider.ProviderOpenAI:
 					req.Header.Del("X-Api-Key")
-					req.Header.Set("Authorization", "Bearer "+cred.APIKey)
+					req.Header.Set("Authorization", "Bearer "+rd.cred.APIKey)
 				default: // anthropic
-					if cred.APIKey != "" {
+					if rd.cred.APIKey != "" {
 						req.Header.Del("Authorization")
-						req.Header.Set("X-Api-Key", cred.APIKey)
-					} else if cred.OAuthToken != "" {
+						req.Header.Set("X-Api-Key", rd.cred.APIKey)
+					} else if rd.cred.OAuthToken != "" {
 						req.Header.Del("X-Api-Key")
-						req.Header.Set("Authorization", "Bearer "+cred.OAuthToken)
+						req.Header.Set("Authorization", "Bearer "+rd.cred.OAuthToken)
 					}
 				}
 				return
@@ -419,6 +399,46 @@ func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 			http.Error(w, "Forbidden: target host not allowed", http.StatusForbidden)
 			return
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// credentialMiddleware resolves credentials before the reverse proxy Director runs.
+// This allows returning proper HTTP errors when credential resolution fails,
+// which is not possible from inside the Director function.
+func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		groupJID := r.Header.Get("X-Kraclaw-Group")
+
+		if p.resolver != nil && groupJID != "" {
+			cred, err := p.resolver.Resolve(r.Context(), groupJID)
+			if err != nil {
+				p.log.Error("credential resolution failed",
+					"group", groupJID,
+					"error", err,
+				)
+				http.Error(w, "credential resolution failed", http.StatusBadGateway)
+				return
+			}
+
+			upstreamURL, err := url.Parse(cred.UpstreamURL)
+			if err != nil {
+				p.log.Error("invalid resolved upstream URL",
+					"upstream_url", cred.UpstreamURL,
+					"error", err,
+				)
+				http.Error(w, "invalid upstream URL for resolved credential", http.StatusBadGateway)
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), credentialContextKey, &resolvedData{
+				cred:        cred,
+				upstreamURL: upstreamURL,
+			})
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
