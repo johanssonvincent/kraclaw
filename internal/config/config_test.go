@@ -147,8 +147,8 @@ func TestLoad(t *testing.T) {
 				"ANTHROPIC_OAUTH_TOKEN": "oauth-test",
 			},
 			check: func(t *testing.T, cfg *Config) {
-				if cfg.Proxy.OAuthToken != "oauth-test" {
-					t.Errorf("unexpected OAuth token: %s", cfg.Proxy.OAuthToken)
+				if cfg.Proxy.AnthropicOAuthToken != "oauth-test" {
+					t.Errorf("unexpected OAuth token: %s", cfg.Proxy.AnthropicOAuthToken)
 				}
 			},
 		},
@@ -162,7 +162,9 @@ func TestLoad(t *testing.T) {
 				"GRPC_TLS_CERT_FILE", "GRPC_TLS_KEY_FILE", "GRPC_TLS_CLIENT_CA_FILE",
 				"GRPC_ALLOWED_CIDRS", "GRPC_REFLECTION_ENABLED",
 				"REDIS_URL", "K8S_NAMESPACE", "K8S_IN_CLUSTER",
-				"PROXY_ADDR", "PROXY_UPSTREAM_URL", "ANTHROPIC_API_KEY",
+				"PROXY_ADDR", "ANTHROPIC_UPSTREAM_URL", "ANTHROPIC_API_KEY",
+				"OPENAI_UPSTREAM_URL", "OPENAI_API_KEY", "CREDENTIAL_ENCRYPTION_KEY",
+				"AGENT_IMAGE_ANTHROPIC", "AGENT_IMAGE_OPENAI",
 				"MAX_CONCURRENT", "IDLE_TIMEOUT", "LOG_LEVEL", "LOG_FORMAT",
 				"ASSISTANT_NAME", "TZ", "DISCORD_TOKEN", "TELEGRAM_TOKEN",
 				"METRICS_ENABLED", "METRICS_PATH",

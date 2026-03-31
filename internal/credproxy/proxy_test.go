@@ -33,19 +33,22 @@ func TestProxyWriteTimeoutIsSet(t *testing.T) {
 	}
 }
 
-func TestNew_RequiresAuth(t *testing.T) {
-	_, err := New(config.ProxyConfig{
-		UpstreamURL: "https://api.anthropic.com",
+func TestNew_NoAuth_LogsInfo(t *testing.T) {
+	p, err := New(config.ProxyConfig{
+		AnthropicUpstreamURL: "https://api.anthropic.com",
 	})
-	if err == nil {
-		t.Fatal("expected error when no auth configured")
+	if err != nil {
+		t.Fatalf("expected no error when no auth configured, got: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected non-nil proxy")
 	}
 }
 
 func TestNew_InvalidURL(t *testing.T) {
 	_, err := New(config.ProxyConfig{
-		UpstreamURL: "://bad",
-		APIKey:      "sk-test",
+		AnthropicUpstreamURL: "://bad",
+		AnthropicAPIKey:      "sk-test",
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid upstream URL")
@@ -55,9 +58,9 @@ func TestNew_InvalidURL(t *testing.T) {
 func newTestProxy(t *testing.T, upstream string, apiKey, oauthToken string) *Proxy {
 	t.Helper()
 	p, err := New(config.ProxyConfig{
-		UpstreamURL: upstream,
-		APIKey:      apiKey,
-		OAuthToken:  oauthToken,
+		AnthropicUpstreamURL: upstream,
+		AnthropicAPIKey:      apiKey,
+		AnthropicOAuthToken:  oauthToken,
 	})
 	if err != nil {
 		t.Fatal(err)

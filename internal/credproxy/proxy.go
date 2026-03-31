@@ -39,24 +39,24 @@ type Proxy struct {
 
 // New creates a new credential proxy from the given config.
 func New(cfg config.ProxyConfig) (*Proxy, error) {
-	if cfg.UpstreamURL == "" {
-		cfg.UpstreamURL = "https://api.anthropic.com"
+	if cfg.AnthropicUpstreamURL == "" {
+		cfg.AnthropicUpstreamURL = "https://api.anthropic.com"
 	}
-	upstream, err := url.Parse(cfg.UpstreamURL)
+	upstream, err := url.Parse(cfg.AnthropicUpstreamURL)
 	if err != nil {
 		return nil, fmt.Errorf("credproxy: invalid upstream URL: %w", err)
 	}
-	if cfg.APIKey == "" && cfg.OAuthToken == "" {
-		return nil, fmt.Errorf("credproxy: either APIKey or OAuthToken must be set")
+	if cfg.AnthropicAPIKey == "" && cfg.AnthropicOAuthToken == "" {
+		slog.Info("credproxy: no Anthropic credentials configured, Anthropic requests will use per-group credentials")
 	}
-	if cfg.APIKey != "" && cfg.OAuthToken != "" {
+	if cfg.AnthropicAPIKey != "" && cfg.AnthropicOAuthToken != "" {
 		slog.Warn("both ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN set, API key takes precedence")
 	}
 	return &Proxy{
 		upstream:        upstream,
 		allowedHost:     upstream.Host,
-		apiKey:          cfg.APIKey,
-		oauthToken:      cfg.OAuthToken,
+		apiKey:          cfg.AnthropicAPIKey,
+		oauthToken:      cfg.AnthropicOAuthToken,
 		addr:            cfg.Addr,
 		log:             slog.Default().With("component", "credproxy"),
 		cachedAPIKeyTTL: 15 * time.Minute,

@@ -115,7 +115,7 @@ func New(
 		ipc:                    broker,
 		sandbox:                sc,
 		registry:               reg,
-		models:                 newModelCache(cfg.Proxy.Addr, cfg.Proxy.APIVersion, time.Hour, cfg.Proxy.APIKey == "" && cfg.Proxy.OAuthToken != "", log),
+		models:                 newModelCache(cfg.Proxy.Addr, cfg.Proxy.AnthropicAPIVersion, time.Hour, cfg.Proxy.AnthropicAPIKey == "" && cfg.Proxy.AnthropicOAuthToken != "", log),
 		lastAgentTimestamp:     make(map[string]time.Time),
 		lastConfirmedTimestamp: make(map[string]time.Time),
 		sessions:               make(map[string]string),
