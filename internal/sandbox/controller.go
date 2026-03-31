@@ -17,6 +17,7 @@ import (
 	agentsandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
@@ -291,26 +292,26 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) *agentsandboxv
 
 	groupFolderEnv := corev1.EnvVar{Name: "GROUP_FOLDER", Value: cfg.GroupFolder}
 
-	provider := ""
+	providerID := ""
 	if cfg.ContainerConfig != nil {
-		provider = cfg.ContainerConfig.Provider
+		providerID = cfg.ContainerConfig.Provider
 	}
-	image := c.agentImageForProvider(provider)
+	image := c.agentImageForProvider(providerID)
 
 	// Build env vars based on provider.
 	envVars := []corev1.EnvVar{
 		groupFolderEnv,
 		{Name: "REDIS_URL", Value: c.redisURL},
 		{Name: "KRACLAW_PROXY_URL", Value: c.proxyURL},
-		{Name: "KRACLAW_PROVIDER", Value: provider},
+		{Name: "KRACLAW_PROVIDER", Value: providerID},
 		{Name: "KRACLAW_GROUP", Value: cfg.GroupJID},
 	}
 
 	// Determine HOME path for session mount.
 	homePath := "/home/node"
 
-	switch provider {
-	case "openai":
+	switch providerID {
+	case provider.ProviderOpenAI:
 		model := ""
 		if cfg.ContainerConfig != nil {
 			model = cfg.ContainerConfig.Model
@@ -358,7 +359,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) *agentsandboxv
 	}
 
 	// Legacy Node.js agent needs explicit command.
-	if (provider == "" || provider == "anthropic") && image == c.agentImage {
+	if (providerID == "" || providerID == provider.ProviderAnthropic) && image == c.agentImage {
 		container.Command = []string{"node", "/app/dist/index.js", "--group", "$(GROUP_FOLDER)"}
 	}
 

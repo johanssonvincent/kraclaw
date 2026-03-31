@@ -17,6 +17,7 @@ import (
 
 	"github.com/johanssonvincent/kraclaw/internal/config"
 	"github.com/johanssonvincent/kraclaw/internal/metrics"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 )
 
 // resolvedCredential contains provider-specific routing info for a single request.
@@ -59,7 +60,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 				OAuthToken: cred.OAuthToken,
 			}
 			switch cred.Provider {
-			case "openai":
+			case provider.ProviderOpenAI:
 				rc.UpstreamURL = r.cfg.OpenAIUpstreamURL
 			default:
 				rc.UpstreamURL = r.cfg.AnthropicUpstreamURL
@@ -71,7 +72,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 	// Platform-level fallback: Anthropic.
 	if r.cfg.AnthropicAPIKey != "" || r.cfg.AnthropicOAuthToken != "" {
 		return &resolvedCredential{
-			Provider:    "anthropic",
+			Provider:    provider.ProviderAnthropic,
 			APIKey:      r.cfg.AnthropicAPIKey,
 			OAuthToken:  r.cfg.AnthropicOAuthToken,
 			UpstreamURL: r.cfg.AnthropicUpstreamURL,
@@ -81,7 +82,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 	// Platform-level fallback: OpenAI.
 	if r.cfg.OpenAIAPIKey != "" {
 		return &resolvedCredential{
-			Provider:    "openai",
+			Provider:    provider.ProviderOpenAI,
 			APIKey:      r.cfg.OpenAIAPIKey,
 			UpstreamURL: r.cfg.OpenAIUpstreamURL,
 		}, nil
@@ -288,7 +289,7 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 
 				// Inject provider-specific auth headers.
 				switch cred.Provider {
-				case "openai":
+				case provider.ProviderOpenAI:
 					req.Header.Del("X-Api-Key")
 					req.Header.Set("Authorization", "Bearer "+cred.APIKey)
 				default: // anthropic

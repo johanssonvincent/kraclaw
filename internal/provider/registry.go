@@ -2,6 +2,12 @@ package provider
 
 import "fmt"
 
+// Provider ID constants.
+const (
+	ProviderAnthropic = "anthropic"
+	ProviderOpenAI    = "openai"
+)
+
 // ModelInfo describes a single model offered by a provider.
 type ModelInfo struct {
 	ID          string
@@ -25,8 +31,8 @@ type Registry struct {
 func NewRegistry() *Registry {
 	r := &Registry{providers: make(map[string]ProviderInfo)}
 
-	r.providers["anthropic"] = ProviderInfo{
-		ID:           "anthropic",
+	r.providers[ProviderAnthropic] = ProviderInfo{
+		ID:           ProviderAnthropic,
 		DisplayName:  "Anthropic",
 		DefaultModel: "claude-sonnet-4-6",
 		Models: []ModelInfo{
@@ -41,8 +47,8 @@ func NewRegistry() *Registry {
 		},
 	}
 
-	r.providers["openai"] = ProviderInfo{
-		ID:           "openai",
+	r.providers[ProviderOpenAI] = ProviderInfo{
+		ID:           ProviderOpenAI,
 		DisplayName:  "OpenAI",
 		DefaultModel: "gpt-5.4",
 		Models: []ModelInfo{
@@ -66,7 +72,7 @@ func (r *Registry) Get(id string) (ProviderInfo, bool) {
 
 // DefaultProvider returns "anthropic" for backwards compatibility.
 func (r *Registry) DefaultProvider() string {
-	return "anthropic"
+	return ProviderAnthropic
 }
 
 // ValidateModel checks that model belongs to provider. Empty model is valid (uses default).

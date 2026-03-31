@@ -24,6 +24,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/orchestrator"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/queue"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 	"github.com/johanssonvincent/kraclaw/internal/server"
@@ -98,8 +99,8 @@ func main() {
 			log.Warn("failed to create controller-runtime client; sandbox admin APIs will be degraded", "error", err)
 		} else {
 			agentImages := map[string]string{
-				"anthropic": cfg.K8s.AgentImageAnthropic,
-				"openai":    cfg.K8s.AgentImageOpenAI,
+				provider.ProviderAnthropic: cfg.K8s.AgentImageAnthropic,
+				provider.ProviderOpenAI:    cfg.K8s.AgentImageOpenAI,
 			}
 			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, cfg.K8s.AgentImage, agentImages, cfg.Redis.URL, cfg.K8s.SandboxProxyURL)
 			if err != nil {
