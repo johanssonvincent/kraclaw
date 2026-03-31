@@ -122,6 +122,10 @@ func (c *Controller) agentImageForProvider(provider string) string {
 		if img, ok := c.agentImages[provider]; ok && img != "" {
 			return img
 		}
+		if c.log != nil {
+			c.log.Warn("no agent image configured for provider, using legacy fallback",
+				"provider", provider, "fallback_image", c.agentImage)
+		}
 	}
 	return c.agentImage
 }
