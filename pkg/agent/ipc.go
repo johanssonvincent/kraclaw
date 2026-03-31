@@ -11,6 +11,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const maxConsecutiveReadErrors = 30
+
 // InboundMessage is a message received from the server.
 type InboundMessage struct {
 	Type    string          `json:"type"`
@@ -91,6 +93,7 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, erro
 	ch := make(chan *InboundMessage, 64)
 	go func() {
 		defer close(ch)
+		var consecutiveErrors int
 		for {
 			select {
 			case <-ctx.Done():
@@ -111,12 +114,19 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, erro
 					return
 				}
 				if errors.Is(err, redis.Nil) {
+					consecutiveErrors = 0
 					continue
 				}
-				slog.Error("ipc read error", "stream", stream, "error", err)
+				consecutiveErrors++
+				slog.Error("ipc read error", "stream", stream, "error", err, "consecutive_errors", consecutiveErrors)
+				if consecutiveErrors >= maxConsecutiveReadErrors {
+					slog.Error("ipc read: too many consecutive errors, stopping", "stream", stream)
+					return
+				}
 				time.Sleep(time.Second)
 				continue
 			}
+			consecutiveErrors = 0
 
 			for _, s := range results {
 				for _, entry := range s.Messages {

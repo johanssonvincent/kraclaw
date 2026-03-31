@@ -156,6 +156,45 @@ func TestIPCClient_SendOutput_MessageContent(t *testing.T) {
 	}
 }
 
+func TestReadInput_StopsAfterConsecutiveErrors(t *testing.T) {
+	mr := miniredis.RunT(t)
+	// Use short dial/read timeouts so each failed attempt resolves quickly.
+	rdb := redis.NewClient(&redis.Options{
+		Addr:         mr.Addr(),
+		DialTimeout:  50 * time.Millisecond,
+		ReadTimeout:  50 * time.Millisecond,
+		MaxRetries:   0,
+	})
+	defer rdb.Close()
+
+	client, err := NewIPCClient(rdb, "error-limit-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ch, err := client.ReadInput(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Close miniredis to cause persistent errors.
+	mr.Close()
+
+	// Channel should close when consecutive error limit is reached.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected channel to close, got a message")
+		}
+		// Channel closed — correct behavior.
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for channel to close after persistent errors")
+	}
+}
+
 func TestNewIPCClient_Validation(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
