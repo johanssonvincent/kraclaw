@@ -14,6 +14,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/johanssonvincent/kraclaw/internal/config"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 )
 
 func TestProxyWriteTimeoutIsSet(t *testing.T) {
@@ -472,7 +473,7 @@ type staticCredentialResolver struct {
 	err  error
 }
 
-func (r *staticCredentialResolver) Resolve(_ context.Context, _ string) (*resolvedCredential, error) {
+func (r *staticCredentialResolver) Resolve(_ context.Context, _ string, _ string) (*resolvedCredential, error) {
 	return r.cred, r.err
 }
 
@@ -699,7 +700,7 @@ func TestDefaultCredentialResolver_PlatformFallbackAnthropic(t *testing.T) {
 		AnthropicUpstreamURL: "https://api.anthropic.com",
 	})
 
-	cred, err := r.Resolve(context.Background(), "")
+	cred, err := r.Resolve(context.Background(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +718,7 @@ func TestDefaultCredentialResolver_PlatformFallbackOpenAI(t *testing.T) {
 		OpenAIUpstreamURL: "https://api.openai.com",
 	})
 
-	cred, err := r.Resolve(context.Background(), "")
+	cred, err := r.Resolve(context.Background(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,7 +733,7 @@ func TestDefaultCredentialResolver_PlatformFallbackOpenAI(t *testing.T) {
 func TestDefaultCredentialResolver_NoCredentials_ReturnsError(t *testing.T) {
 	r := NewDefaultResolver(nil, config.ProxyConfig{})
 
-	_, err := r.Resolve(context.Background(), "discord:123")
+	_, err := r.Resolve(context.Background(), "discord:123", "")
 	if err == nil {
 		t.Fatal("expected error when no credentials configured")
 	}
@@ -762,7 +763,7 @@ func TestDefaultCredentialResolver_PerGroupOpenAI(t *testing.T) {
 		AnthropicAPIKey:      "sk-platform-anthropic",
 	})
 
-	cred, err := r.Resolve(context.Background(), "discord:123")
+	cred, err := r.Resolve(context.Background(), "discord:123", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,7 +798,7 @@ func TestDefaultCredentialResolver_PerGroupNotFound_FallsThroughToPlatform(t *te
 		AnthropicUpstreamURL: "https://api.anthropic.com",
 	})
 
-	cred, err := r.Resolve(context.Background(), "discord:456")
+	cred, err := r.Resolve(context.Background(), "discord:456", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,11 +829,69 @@ func TestDefaultCredentialResolver_PerGroupStoreError_PropagatesError(t *testing
 		AnthropicAPIKey: "sk-platform",
 	})
 
-	_, err = r.Resolve(context.Background(), "discord:789")
+	_, err = r.Resolve(context.Background(), "discord:789", "")
 	if err == nil {
 		t.Fatal("expected error from store failure")
 	}
 	if !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestDefaultResolver_PlatformFallback_RespectsRequestedProvider(t *testing.T) {
+	cfg := config.ProxyConfig{
+		AnthropicAPIKey:      "sk-anthropic",
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+		OpenAIAPIKey:         "sk-openai",
+		OpenAIUpstreamURL:    "https://api.openai.com",
+	}
+	resolver := NewDefaultResolver(nil, cfg)
+
+	tests := []struct {
+		name              string
+		requestedProvider string
+		wantProvider      string
+		wantAPIKey        string
+		wantUpstream      string
+	}{
+		{
+			name:              "explicit openai request gets openai creds",
+			requestedProvider: provider.ProviderOpenAI,
+			wantProvider:      provider.ProviderOpenAI,
+			wantAPIKey:        "sk-openai",
+			wantUpstream:      "https://api.openai.com",
+		},
+		{
+			name:              "explicit anthropic request gets anthropic creds",
+			requestedProvider: provider.ProviderAnthropic,
+			wantProvider:      provider.ProviderAnthropic,
+			wantAPIKey:        "sk-anthropic",
+			wantUpstream:      "https://api.anthropic.com",
+		},
+		{
+			name:              "empty provider defaults to anthropic",
+			requestedProvider: "",
+			wantProvider:      provider.ProviderAnthropic,
+			wantAPIKey:        "sk-anthropic",
+			wantUpstream:      "https://api.anthropic.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cred, err := resolver.Resolve(context.Background(), "group-1", tt.requestedProvider)
+			if err != nil {
+				t.Fatalf("Resolve() error = %v", err)
+			}
+			if cred.Provider != tt.wantProvider {
+				t.Errorf("Provider = %q, want %q", cred.Provider, tt.wantProvider)
+			}
+			if cred.APIKey != tt.wantAPIKey {
+				t.Errorf("APIKey = %q, want %q", cred.APIKey, tt.wantAPIKey)
+			}
+			if cred.UpstreamURL != tt.wantUpstream {
+				t.Errorf("UpstreamURL = %q, want %q", cred.UpstreamURL, tt.wantUpstream)
+			}
+		})
 	}
 }

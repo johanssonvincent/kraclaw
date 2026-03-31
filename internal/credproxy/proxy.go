@@ -30,7 +30,7 @@ type resolvedCredential struct {
 
 // CredentialResolver looks up credentials for a group.
 type CredentialResolver interface {
-	Resolve(ctx context.Context, groupJID string) (*resolvedCredential, error)
+	Resolve(ctx context.Context, groupJID string, requestedProvider string) (*resolvedCredential, error)
 }
 
 // defaultCredentialResolver wraps CredentialStore + platform fallback config.
@@ -46,7 +46,7 @@ func NewDefaultResolver(credStore *CredentialStore, cfg config.ProxyConfig) Cred
 }
 
 // Resolve looks up credentials for a group, falling back to platform-level config.
-func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string) (*resolvedCredential, error) {
+func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string, requestedProvider string) (*resolvedCredential, error) {
 	// Try per-group credential first.
 	if r.credStore != nil && groupJID != "" {
 		cred, err := r.credStore.GetCredential(ctx, groupJID)
@@ -69,26 +69,45 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 		}
 	}
 
-	// Platform-level fallback: Anthropic.
-	if r.cfg.AnthropicAPIKey != "" || r.cfg.AnthropicOAuthToken != "" {
-		return &resolvedCredential{
-			Provider:    provider.ProviderAnthropic,
-			APIKey:      r.cfg.AnthropicAPIKey,
-			OAuthToken:  r.cfg.AnthropicOAuthToken,
-			UpstreamURL: r.cfg.AnthropicUpstreamURL,
-		}, nil
+	// Platform-level fallback: honour the requested provider.
+	switch requestedProvider {
+	case provider.ProviderOpenAI:
+		if r.cfg.OpenAIAPIKey != "" {
+			return &resolvedCredential{
+				Provider:    provider.ProviderOpenAI,
+				APIKey:      r.cfg.OpenAIAPIKey,
+				UpstreamURL: r.cfg.OpenAIUpstreamURL,
+			}, nil
+		}
+	case provider.ProviderAnthropic:
+		if r.cfg.AnthropicAPIKey != "" || r.cfg.AnthropicOAuthToken != "" {
+			return &resolvedCredential{
+				Provider:    provider.ProviderAnthropic,
+				APIKey:      r.cfg.AnthropicAPIKey,
+				OAuthToken:  r.cfg.AnthropicOAuthToken,
+				UpstreamURL: r.cfg.AnthropicUpstreamURL,
+			}, nil
+		}
+	default:
+		// No explicit provider requested — try Anthropic first, then OpenAI.
+		if r.cfg.AnthropicAPIKey != "" || r.cfg.AnthropicOAuthToken != "" {
+			return &resolvedCredential{
+				Provider:    provider.ProviderAnthropic,
+				APIKey:      r.cfg.AnthropicAPIKey,
+				OAuthToken:  r.cfg.AnthropicOAuthToken,
+				UpstreamURL: r.cfg.AnthropicUpstreamURL,
+			}, nil
+		}
+		if r.cfg.OpenAIAPIKey != "" {
+			return &resolvedCredential{
+				Provider:    provider.ProviderOpenAI,
+				APIKey:      r.cfg.OpenAIAPIKey,
+				UpstreamURL: r.cfg.OpenAIUpstreamURL,
+			}, nil
+		}
 	}
 
-	// Platform-level fallback: OpenAI.
-	if r.cfg.OpenAIAPIKey != "" {
-		return &resolvedCredential{
-			Provider:    provider.ProviderOpenAI,
-			APIKey:      r.cfg.OpenAIAPIKey,
-			UpstreamURL: r.cfg.OpenAIUpstreamURL,
-		}, nil
-	}
-
-	return nil, fmt.Errorf("no credentials found for group %q and no platform fallback configured", groupJID)
+	return nil, fmt.Errorf("no credentials found for group %q (requested provider %q) and no matching platform fallback configured", groupJID, requestedProvider)
 }
 
 type contextKey int
@@ -411,7 +430,8 @@ func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 		groupJID := r.Header.Get("X-Kraclaw-Group")
 
 		if p.resolver != nil && groupJID != "" {
-			cred, err := p.resolver.Resolve(r.Context(), groupJID)
+			requestedProvider := r.Header.Get("X-Kraclaw-Provider")
+			cred, err := p.resolver.Resolve(r.Context(), groupJID, requestedProvider)
 			if err != nil {
 				p.log.Error("credential resolution failed",
 					"group", groupJID,
