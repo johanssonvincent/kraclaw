@@ -45,8 +45,9 @@ type adminService struct {
 type groupService struct {
 	kraclawv1.UnimplementedGroupServiceServer
 
-	store store.Store
-	log   *slog.Logger
+	store     store.Store
+	providers *provider.Registry
+	log       *slog.Logger
 }
 
 type taskService struct {
@@ -79,8 +80,9 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 		log:       cfg.Log.With("component", "grpc-admin"),
 	}
 	groups := &groupService{
-		store: cfg.Store,
-		log:   cfg.Log.With("component", "grpc-groups"),
+		store:     cfg.Store,
+		providers: provider.NewRegistry(),
+		log:       cfg.Log.With("component", "grpc-groups"),
 	}
 	tasks := &taskService{
 		store: cfg.Store,
@@ -259,8 +261,7 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 	}
 
 	if group.ContainerConfig != nil && group.ContainerConfig.Provider != "" {
-		reg := provider.NewRegistry()
-		if err := reg.ValidateModel(group.ContainerConfig.Provider, group.ContainerConfig.Model); err != nil {
+		if err := s.providers.ValidateModel(group.ContainerConfig.Provider, group.ContainerConfig.Model); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid provider/model: %v", err)
 		}
 	}
