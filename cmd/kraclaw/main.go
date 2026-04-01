@@ -37,8 +37,12 @@ var (
 )
 
 func init() {
-	_ = clientgoscheme.AddToScheme(scheme)
-	_ = agentsandboxv1alpha1.AddToScheme(scheme)
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("failed to add client-go scheme: %v", err))
+	}
+	if err := agentsandboxv1alpha1.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("failed to add agent-sandbox scheme: %v", err))
+	}
 }
 
 func main() {
