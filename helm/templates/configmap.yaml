@@ -27,7 +27,10 @@ data:
   SANDBOX_STARTUP_TIMEOUT: {{ .Values.k8s.sandboxStartupTimeout | quote }}
   SANDBOX_PROXY_URL: {{ .Values.sandbox.proxyUrl | quote }}
   # Credential proxy (non-secret)
-  PROXY_UPSTREAM_URL: {{ .Values.credproxy.upstreamUrl | quote }}
+  ANTHROPIC_UPSTREAM_URL: {{ .Values.credproxy.anthropicUpstreamUrl | default .Values.credproxy.upstreamUrl | quote }}
+  {{- if .Values.credproxy.openaiUpstreamUrl }}
+  OPENAI_UPSTREAM_URL: {{ .Values.credproxy.openaiUpstreamUrl | quote }}
+  {{- end }}
   ANTHROPIC_VERSION: {{ .Values.credproxy.anthropicVersion | quote }}
   # MySQL (non-secret connection params)
   MYSQL_MAX_OPEN_CONNS: {{ .Values.mysql.maxOpenConns | quote }}
