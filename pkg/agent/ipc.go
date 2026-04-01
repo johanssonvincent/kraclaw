@@ -79,18 +79,21 @@ func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error 
 	return nil
 }
 
-// ReadInput returns a channel that receives messages from the input stream.
-func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, error) {
+// ReadInput returns a channel that receives messages from the input stream,
+// and an error channel that receives a non-nil error if the reader stops due
+// to consecutive failures.
+func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-chan error, error) {
 	stream := c.inputKey()
 	consumerGroup := "agent"
 	consumer := "agent-0"
 
 	err := c.rdb.XGroupCreateMkStream(ctx, stream, consumerGroup, "0").Err()
 	if err != nil && !isGroupExistsErr(err) {
-		return nil, fmt.Errorf("create consumer group: %w", err)
+		return nil, nil, fmt.Errorf("create consumer group: %w", err)
 	}
 
 	ch := make(chan *InboundMessage, 64)
+	errCh := make(chan error, 1)
 	go func() {
 		defer close(ch)
 		var consecutiveErrors int
@@ -121,6 +124,7 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, erro
 				slog.Error("ipc read error", "stream", stream, "error", err, "consecutive_errors", consecutiveErrors)
 				if consecutiveErrors >= maxConsecutiveReadErrors {
 					slog.Error("ipc read: too many consecutive errors, stopping", "stream", stream)
+					errCh <- fmt.Errorf("ipc read: %d consecutive errors, last: %w", consecutiveErrors, err)
 					return
 				}
 				time.Sleep(time.Second)
@@ -169,7 +173,7 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, erro
 		}
 	}()
 
-	return ch, nil
+	return ch, errCh, nil
 }
 
 // CheckCloseSignal checks whether the server has set the close signal.

@@ -62,7 +62,7 @@ func TestIPCClient_ReadInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	ch, err := client.ReadInput(ctx)
+	ch, _, err := client.ReadInput(ctx)
 	if err != nil {
 		t.Fatalf("read input: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestReadInput_StopsAfterConsecutiveErrors(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	ch, err := client.ReadInput(ctx)
+	ch, errCh, err := client.ReadInput(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +192,59 @@ func TestReadInput_StopsAfterConsecutiveErrors(t *testing.T) {
 		// Channel closed — correct behavior.
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for channel to close after persistent errors")
+	}
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected non-nil error from errCh")
+		}
+	default:
+		t.Fatal("expected error on errCh")
+	}
+}
+
+func TestReadInput_ReturnsErrorOnConsecutiveFailures(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{
+		Addr:        mr.Addr(),
+		DialTimeout: 50 * time.Millisecond,
+		ReadTimeout: 50 * time.Millisecond,
+		MaxRetries:  0,
+	})
+	defer rdb.Close()
+
+	client, err := NewIPCClient(rdb, "error-propagation-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ch, errCh, err := client.ReadInput(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mr.Close()
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected channel to close, got a message")
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for channel to close")
+	}
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected non-nil error from errCh")
+		}
+	default:
+		t.Fatal("expected error on errCh after consecutive failures")
 	}
 }
 

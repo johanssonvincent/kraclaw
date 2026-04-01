@@ -48,7 +48,7 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 
 	var history []openai.ChatCompletionMessageParamUnion
 
-	inputCh, err := ipc.ReadInput(ctx)
+	inputCh, ipcErrCh, err := ipc.ReadInput(ctx)
 	if err != nil {
 		return fmt.Errorf("read input: %w", err)
 	}
@@ -69,9 +69,11 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 				log.Info("close signal detected")
 				return nil
 			}
+		case err := <-ipcErrCh:
+			return fmt.Errorf("ipc read failure: %w", err)
 		case msg, ok := <-inputCh:
 			if !ok {
-				return nil
+				return fmt.Errorf("ipc input channel closed unexpectedly")
 			}
 
 			switch msg.Type {
