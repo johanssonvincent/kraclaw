@@ -107,6 +107,9 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 			}, nil
 		}
 		if r.cfg.OpenAIAPIKey != "" {
+			slog.Warn("no anthropic credentials available, falling back to openai platform credentials",
+				"group", groupJID,
+			)
 			return &resolvedCredential{
 				Provider:    provider.ProviderOpenAI,
 				APIKey:      r.cfg.OpenAIAPIKey,
