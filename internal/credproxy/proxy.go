@@ -131,14 +131,15 @@ type resolvedData struct {
 // Agent containers connect here instead of directly to the upstream API,
 // so they never see real credentials.
 type Proxy struct {
-	upstream    *url.URL
-	allowedHost string // upstream host for credential injection validation
-	apiKey      string
-	oauthToken  string
-	server      *http.Server
-	addr        string
-	log         *slog.Logger
-	resolver    CredentialResolver // nil = legacy single-provider mode
+	upstream             *url.URL
+	allowedHost          string          // upstream host for credential injection validation
+	allowedUpstreamHosts map[string]bool // defense-in-depth for multi-provider mode
+	apiKey               string
+	oauthToken           string
+	server               *http.Server
+	addr                 string
+	log                  *slog.Logger
+	resolver             CredentialResolver // nil = legacy single-provider mode
 
 	mu              sync.RWMutex
 	cachedAPIKey    string
@@ -184,15 +185,27 @@ func NewMultiProviderProxy(cfg config.ProxyConfig, resolver CredentialResolver) 
 	if err != nil {
 		return nil, fmt.Errorf("credproxy: invalid upstream URL: %w", err)
 	}
+	allowedHosts := map[string]bool{
+		upstream.Host: true,
+	}
+	if cfg.OpenAIUpstreamURL != "" {
+		if u, err := url.Parse(cfg.OpenAIUpstreamURL); err == nil {
+			allowedHosts[u.Host] = true
+		}
+	} else {
+		allowedHosts["api.openai.com"] = true
+	}
+
 	return &Proxy{
-		upstream:        upstream,
-		allowedHost:     upstream.Host,
-		apiKey:          cfg.AnthropicAPIKey,
-		oauthToken:      cfg.AnthropicOAuthToken,
-		addr:            cfg.Addr,
-		log:             slog.Default().With("component", "credproxy"),
-		cachedAPIKeyTTL: 15 * time.Minute,
-		resolver:        resolver,
+		upstream:             upstream,
+		allowedHost:          upstream.Host,
+		allowedUpstreamHosts: allowedHosts,
+		apiKey:               cfg.AnthropicAPIKey,
+		oauthToken:           cfg.AnthropicOAuthToken,
+		addr:                 cfg.Addr,
+		log:                  slog.Default().With("component", "credproxy"),
+		cachedAPIKeyTTL:      15 * time.Minute,
+		resolver:             resolver,
 	}, nil
 }
 
@@ -456,6 +469,16 @@ func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 					"error", err,
 				)
 				http.Error(w, "invalid upstream URL for resolved credential", http.StatusBadGateway)
+				return
+			}
+
+			// Defense-in-depth: verify the resolved upstream is an allowed host.
+			if len(p.allowedUpstreamHosts) > 0 && !p.allowedUpstreamHosts[upstreamURL.Host] {
+				p.log.Error("blocked request to non-allowed upstream host",
+					"upstream_host", upstreamURL.Host,
+					"group", groupJID,
+				)
+				http.Error(w, "Forbidden: resolved upstream host not allowed", http.StatusForbidden)
 				return
 			}
 

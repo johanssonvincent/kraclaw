@@ -504,7 +504,10 @@ func TestProxy_InjectsOpenAIBearerToken(t *testing.T) {
 		},
 	}
 
-	proxy, err := NewMultiProviderProxy(config.ProxyConfig{Addr: ":0"}, resolver)
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr:              ":0",
+		OpenAIUpstreamURL: upstream.URL,
+	}, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +543,10 @@ func TestProxy_InjectsAnthropicKeyViaResolver(t *testing.T) {
 		},
 	}
 
-	proxy, err := NewMultiProviderProxy(config.ProxyConfig{Addr: ":0"}, resolver)
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr:                 ":0",
+		AnthropicUpstreamURL: upstream.URL,
+	}, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +582,10 @@ func TestProxy_AnthropicOAuthViaResolver(t *testing.T) {
 		},
 	}
 
-	proxy, err := NewMultiProviderProxy(config.ProxyConfig{Addr: ":0"}, resolver)
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr:                 ":0",
+		AnthropicUpstreamURL: upstream.URL,
+	}, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -931,6 +940,34 @@ func TestDefaultCredentialResolver_PerGroupProviderMismatch_FallsThroughToPlatfo
 	}
 	if cred.APIKey != "sk-openai-platform" {
 		t.Fatalf("expected platform OpenAI key, got %q", cred.APIKey)
+	}
+}
+
+func TestProxy_MultiProvider_RejectsUnknownUpstreamHost(t *testing.T) {
+	resolver := &staticCredentialResolver{
+		cred: &resolvedCredential{
+			Provider:    "anthropic",
+			APIKey:      "sk-test",
+			UpstreamURL: "https://evil.example.com",
+		},
+	}
+
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr:                 ":0",
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+		OpenAIUpstreamURL:    "https://api.openai.com",
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("X-Kraclaw-Group", "discord:123")
+	w := httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for unknown upstream host, got %d", w.Code)
 	}
 }
 
