@@ -47,6 +47,8 @@ type Queue interface {
 	MarkInactive(ctx context.Context, groupJID string) error
 	IsActive(ctx context.Context, groupJID string) (bool, error)
 	ActiveCount(ctx context.Context) (int64, error)
+	// ActiveJIDs returns all group JIDs currently in the active set.
+	ActiveJIDs(ctx context.Context) ([]string, error)
 	Subscribe(ctx context.Context) (<-chan QueueEvent, error)
 	Close() error
 }
@@ -158,6 +160,15 @@ func (q *RedisQueue) IsActive(ctx context.Context, groupJID string) (bool, error
 // ActiveCount returns the number of active groups.
 func (q *RedisQueue) ActiveCount(ctx context.Context) (int64, error) {
 	return q.rdb.SCard(ctx, activeSetKey()).Result()
+}
+
+// ActiveJIDs returns all group JIDs currently in the active set.
+func (q *RedisQueue) ActiveJIDs(ctx context.Context) ([]string, error) {
+	members, err := q.rdb.SMembers(ctx, activeSetKey()).Result()
+	if err != nil {
+		return nil, fmt.Errorf("smembers: %w", err)
+	}
+	return members, nil
 }
 
 // Subscribe returns a channel that receives queue events via pub/sub.

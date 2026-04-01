@@ -211,6 +211,54 @@ func TestMultipleActiveGroups(t *testing.T) {
 	}
 }
 
+func TestActiveJIDs(t *testing.T) {
+	_, q := setup(t)
+	ctx := context.Background()
+
+	jids, err := q.ActiveJIDs(ctx)
+	if err != nil {
+		t.Fatalf("ActiveJIDs on empty set: %v", err)
+	}
+	if len(jids) != 0 {
+		t.Errorf("expected empty slice, got %v", jids)
+	}
+
+	groups := []string{"g1", "g2", "g3"}
+	for _, g := range groups {
+		if err := q.MarkActive(ctx, g); err != nil {
+			t.Fatalf("MarkActive(%s): %v", g, err)
+		}
+	}
+
+	jids, err = q.ActiveJIDs(ctx)
+	if err != nil {
+		t.Fatalf("ActiveJIDs: %v", err)
+	}
+	if len(jids) != 3 {
+		t.Errorf("len(ActiveJIDs) = %d, want 3", len(jids))
+	}
+
+	// All expected JIDs should be present.
+	got := make(map[string]bool)
+	for _, j := range jids {
+		got[j] = true
+	}
+	for _, g := range groups {
+		if !got[g] {
+			t.Errorf("expected JID %q in ActiveJIDs result", g)
+		}
+	}
+
+	// After removing one, it should no longer appear.
+	_ = q.MarkInactive(ctx, "g2")
+	jids, _ = q.ActiveJIDs(ctx)
+	for _, j := range jids {
+		if j == "g2" {
+			t.Error("expected g2 to be absent after MarkInactive")
+		}
+	}
+}
+
 func TestMarkActiveIdempotent(t *testing.T) {
 	_, q := setup(t)
 	ctx := context.Background()
