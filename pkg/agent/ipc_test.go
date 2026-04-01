@@ -165,7 +165,7 @@ func TestReadInput_StopsAfterConsecutiveErrors(t *testing.T) {
 		ReadTimeout:  50 * time.Millisecond,
 		MaxRetries:   0,
 	})
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	client, err := NewIPCClient(rdb, "error-limit-test")
 	if err != nil {

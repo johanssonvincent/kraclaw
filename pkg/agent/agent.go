@@ -73,7 +73,7 @@ func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) err
 	if err != nil {
 		return fmt.Errorf("connect redis: %w", err)
 	}
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	ipcClient, err := NewIPCClient(rdb, cfg.Group)
 	if err != nil {

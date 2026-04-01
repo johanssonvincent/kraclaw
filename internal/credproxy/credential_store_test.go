@@ -29,7 +29,7 @@ func TestCredentialStore_UpsertAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := testEncryptor(t)
 	store, err := NewCredentialStore(db, enc)
@@ -61,7 +61,7 @@ func TestCredentialStore_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := testEncryptor(t)
 	store, err := NewCredentialStore(db, enc)
@@ -118,7 +118,7 @@ func TestUpsertCredential_RejectsEmptyAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
 	store, err := NewCredentialStore(db, enc)
@@ -140,7 +140,7 @@ func TestGetCredential_Found(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
 	store, err := NewCredentialStore(db, enc)
@@ -179,7 +179,7 @@ func TestGetCredential_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
 	store, err := NewCredentialStore(db, enc)
@@ -205,7 +205,7 @@ func TestGetCredential_NullOAuthToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
 	store, err := NewCredentialStore(db, enc)

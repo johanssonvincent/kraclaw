@@ -80,7 +80,7 @@ func (o *Orchestrator) handleModelsCommand(ctx context.Context, chatJID string) 
 		return
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Models (%s):\n", p.DisplayName))
+	fmt.Fprintf(&b, "Models (%s):\n", p.DisplayName)
 
 	for _, m := range models {
 		name := m.ID
@@ -98,7 +98,7 @@ func (o *Orchestrator) handleModelsCommand(ctx context.Context, chatJID string) 
 	}
 
 	if currentModel == "" {
-		b.WriteString(fmt.Sprintf("Current: %s (default)", p.DefaultModel))
+		fmt.Fprintf(&b, "Current: %s (default)", p.DefaultModel)
 	}
 
 	o.sendSystemMessage(ctx, chatJID, strings.TrimRight(b.String(), "\n"))

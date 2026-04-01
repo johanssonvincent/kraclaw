@@ -753,7 +753,7 @@ func TestDefaultCredentialResolver_PerGroupOpenAI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
 	credStore, err := NewCredentialStore(db, enc)
@@ -792,7 +792,7 @@ func TestDefaultCredentialResolver_PerGroupNotFound_FallsThroughToPlatform(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
 	credStore, err := NewCredentialStore(db, enc)
@@ -824,7 +824,7 @@ func TestDefaultCredentialResolver_PerGroupStoreError_PropagatesError(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
 	credStore, err := NewCredentialStore(db, enc)
@@ -910,7 +910,7 @@ func TestDefaultCredentialResolver_PerGroupProviderMismatch_FallsThroughToPlatfo
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
 	credStore, err := NewCredentialStore(db, enc)
