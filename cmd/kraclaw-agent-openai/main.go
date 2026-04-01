@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/openai/openai-go"
@@ -92,24 +93,30 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 					Messages: msgs,
 				})
 
-				var fullResponse string
+				var buf strings.Builder
 				for stream.Next() {
 					chunk := stream.Current()
 					for _, choice := range chunk.Choices {
 						if choice.Delta.Content != "" {
-							fullResponse += choice.Delta.Content
+							buf.WriteString(choice.Delta.Content)
 						}
 					}
 				}
+				fullResponse := buf.String()
 				if err := stream.Err(); err != nil {
 					log.Error("openai stream error", "error", err)
 					if sendErr := ipc.SendOutput(ctx, &agent.OutboundMessage{
 						Type: "message",
-						Text: fmt.Sprintf("Error: %v", err),
+						Text: "I encountered an error processing your message. Please try again.",
 					}); sendErr != nil {
 						log.Error("failed to send error message", "error", sendErr)
 					}
 					continue
+				}
+
+				if fullResponse == "" {
+					log.Warn("openai returned empty response", "model", model)
+					fullResponse = "I received an empty response from the model. Please try again."
 				}
 
 				if err := ipc.SendOutput(ctx, &agent.OutboundMessage{
