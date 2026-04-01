@@ -54,18 +54,26 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 			return nil, fmt.Errorf("resolve credential: %w", err)
 		}
 		if cred != nil {
-			rc := &resolvedCredential{
-				Provider:   cred.Provider,
-				APIKey:     cred.APIKey,
-				OAuthToken: cred.OAuthToken,
+			if requestedProvider != "" && cred.Provider != requestedProvider {
+				slog.Debug("per-group credential provider mismatch, falling through to platform",
+					"group", groupJID,
+					"stored_provider", cred.Provider,
+					"requested_provider", requestedProvider,
+				)
+			} else {
+				rc := &resolvedCredential{
+					Provider:   cred.Provider,
+					APIKey:     cred.APIKey,
+					OAuthToken: cred.OAuthToken,
+				}
+				switch cred.Provider {
+				case provider.ProviderOpenAI:
+					rc.UpstreamURL = r.cfg.OpenAIUpstreamURL
+				default:
+					rc.UpstreamURL = r.cfg.AnthropicUpstreamURL
+				}
+				return rc, nil
 			}
-			switch cred.Provider {
-			case provider.ProviderOpenAI:
-				rc.UpstreamURL = r.cfg.OpenAIUpstreamURL
-			default:
-				rc.UpstreamURL = r.cfg.AnthropicUpstreamURL
-			}
-			return rc, nil
 		}
 	}
 

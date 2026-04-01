@@ -896,6 +896,44 @@ func TestDefaultResolver_PlatformFallback_RespectsRequestedProvider(t *testing.T
 	}
 }
 
+func TestDefaultCredentialResolver_PerGroupProviderMismatch_FallsThroughToPlatform(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	enc := newTestEncryptor(t)
+	credStore, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Group has Anthropic credentials stored.
+	encKey, _ := enc.Encrypt("sk-group-anthropic")
+	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted", "oauth_token_encrypted"}).
+		AddRow("anthropic", encKey, nil)
+	mock.ExpectQuery("SELECT").WithArgs("discord:mismatch").WillReturnRows(rows)
+
+	r := NewDefaultResolver(credStore, config.ProxyConfig{
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+		OpenAIUpstreamURL:    "https://api.openai.com",
+		OpenAIAPIKey:         "sk-openai-platform",
+	})
+
+	// Agent requests OpenAI, but group has Anthropic creds — should fall through to platform OpenAI.
+	cred, err := r.Resolve(context.Background(), "discord:mismatch", provider.ProviderOpenAI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Provider != provider.ProviderOpenAI {
+		t.Fatalf("expected openai provider (platform fallback), got %q", cred.Provider)
+	}
+	if cred.APIKey != "sk-openai-platform" {
+		t.Fatalf("expected platform OpenAI key, got %q", cred.APIKey)
+	}
+}
+
 func TestDefaultResolver_RequestedProviderNotConfigured_ReturnsError(t *testing.T) {
 	tests := []struct {
 		name              string
