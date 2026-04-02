@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
@@ -881,6 +882,70 @@ func TestBuildSandbox_OpenAINoCommand(t *testing.T) {
 	// OpenAI agent should NOT have explicit command (uses Dockerfile ENTRYPOINT).
 	if len(container.Command) != 0 {
 		t.Fatalf("expected no command for openai container, got %v", container.Command)
+	}
+}
+
+func TestBuildSandbox_AnthropicGoAgentEnvVars(t *testing.T) {
+	ctrl := &Controller{
+		namespace:   "test-ns",
+		agentImage:  "legacy-node-agent:latest",
+		agentImages: map[string]string{
+			provider.ProviderAnthropic: "ghcr.io/johanssonvincent/kraclaw-agent-anthropic:latest",
+		},
+		redisURL: "redis://redis:6379",
+		proxyURL: "http://proxy:3001",
+		log:      slog.Default(),
+	}
+
+	cfg := SandboxConfig{
+		GroupFolder: "test-group",
+		GroupJID:    "discord:123",
+		ContainerConfig: &store.ContainerConfig{
+			Provider: provider.ProviderAnthropic,
+			Model:    "claude-opus-4-6",
+		},
+	}
+
+	sb, err := ctrl.buildSandbox("test-sandbox", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	container := sb.Spec.PodTemplate.Spec.Containers[0]
+
+	// Should use the Go agent image, not the legacy Node.js image.
+	if container.Image != "ghcr.io/johanssonvincent/kraclaw-agent-anthropic:latest" {
+		t.Errorf("expected Anthropic Go agent image, got %q", container.Image)
+	}
+
+	// Should have ANTHROPIC_MODEL env var.
+	var foundModel bool
+	for _, env := range container.Env {
+		if env.Name == "ANTHROPIC_MODEL" {
+			foundModel = true
+			if env.Value != "claude-opus-4-6" {
+				t.Errorf("expected ANTHROPIC_MODEL=claude-opus-4-6, got %q", env.Value)
+			}
+		}
+	}
+	if !foundModel {
+		t.Error("expected ANTHROPIC_MODEL env var to be set")
+	}
+
+	// Should NOT have the legacy Node.js command.
+	if len(container.Command) > 0 {
+		t.Errorf("Go agent should not have explicit command, got %v", container.Command)
+	}
+
+	// HOME should be /home/nonroot for distroless image.
+	var foundHome bool
+	for _, env := range container.Env {
+		if env.Name == "HOME" && env.Value == "/home/nonroot" {
+			foundHome = true
+		}
+	}
+	if !foundHome {
+		t.Error("expected HOME=/home/nonroot for Go agent")
 	}
 }
 
