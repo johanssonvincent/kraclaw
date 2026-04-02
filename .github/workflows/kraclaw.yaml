@@ -2,7 +2,7 @@ name: Build and Push Kraclaw Container
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feat/multi-provider-support ]
     tags: [ 'v*' ]
     paths:
       - '**/*.go'

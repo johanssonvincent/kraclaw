@@ -10,7 +10,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/johanssonvincent/kraclaw.git
-    targetRevision: HEAD
+    targetRevision: feat/multi-provider-support
     path: helm
     helm:
       releaseName: kraclaw

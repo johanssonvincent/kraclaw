@@ -2,7 +2,7 @@ name: Build and Push Anthropic Agent
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feat/multi-provider-support ]
     tags: [ 'v*' ]
     paths:
       - 'cmd/kraclaw-agent-anthropic/**'

@@ -53,7 +53,9 @@ redis:
 #
 # Kubernetes / sandbox configuration
 k8s:
-  agentImage: ""                        # AGENT_IMAGE — REQUIRED: set before helm install
+  agentImage: ""                        # AGENT_IMAGE — legacy fallback; set at least one image before helm install
+  agentImageAnthropic: ""              # AGENT_IMAGE_ANTHROPIC — Go-based Anthropic agent
+  agentImageOpenAI: ""                 # AGENT_IMAGE_OPENAI — Go-based OpenAI agent
   inCluster: true                       # K8S_IN_CLUSTER
   sessionsPvc: ""                        # K8S_SESSIONS_PVC — auto-computed from fullname if empty
   groupsPvc: ""                          # K8S_GROUPS_PVC — auto-computed from fullname if empty

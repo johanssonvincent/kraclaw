@@ -5,9 +5,9 @@
 # HA deployment: 3 replicas for production resilience
 replicaCount: 3
 
-# Explicit image tag (production release, not latest)
+# Explicit image tag (feat/multi-provider-support branch build)
 image:
-  tag: "v0.7.1"
+  tag: "feat-multi-provider-support"
 
 # Production-grade resource limits
 resources:
@@ -34,10 +34,15 @@ resources:
 #   data:
 #     size: "10Gi"
 
+# Provider-specific agent images (feat/multi-provider-support branch builds)
+k8s:
+  agentImageAnthropic: "ghcr.io/johanssonvincent/kraclaw-agent-anthropic:feat-multi-provider-support"
+  agentImageOpenAI: "ghcr.io/johanssonvincent/kraclaw-agent-openai:feat-multi-provider-support"
+
 # Agent sandbox production configuration
 sandbox:
-  # Agent image: use explicit production version tag
-  agentImage: "ghcr.io/johanssonvincent/kraclaw-agent:v0.7.1"
+  # Agent image: Anthropic Go agent (used as SandboxTemplate default)
+  agentImage: "ghcr.io/johanssonvincent/kraclaw-agent-anthropic:feat-multi-provider-support"
 
   # Production-grade agent resources
   agentResources:
