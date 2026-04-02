@@ -352,12 +352,23 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 			)
 		}
 	default:
-		// Unknown provider or empty — legacy fallback.
-		envVars = append(envVars,
-			corev1.EnvVar{Name: "ANTHROPIC_BASE_URL", Value: c.proxyURL},
-			corev1.EnvVar{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: "placeholder"},
-			corev1.EnvVar{Name: "HOME", Value: "/home/node"},
-		)
+		// Unknown provider or empty — treat as Anthropic.
+		// Use Go agent path if AGENT_IMAGE_ANTHROPIC is configured, otherwise legacy Node.js.
+		if _, hasGoImage := c.agentImages[provider.ProviderAnthropic]; hasGoImage {
+			model := ""
+			if cfg.ContainerConfig != nil {
+				model = cfg.ContainerConfig.Model
+			}
+			envVars = append(envVars, corev1.EnvVar{Name: "ANTHROPIC_MODEL", Value: model})
+			envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
+			homePath = "/home/nonroot"
+		} else {
+			envVars = append(envVars,
+				corev1.EnvVar{Name: "ANTHROPIC_BASE_URL", Value: c.proxyURL},
+				corev1.EnvVar{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: "placeholder"},
+				corev1.EnvVar{Name: "HOME", Value: "/home/node"},
+			)
+		}
 	}
 
 	nonRoot := true
@@ -390,8 +401,9 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		},
 	}
 
-	// Legacy Node.js agent needs explicit command.
-	if (providerID == "" || providerID == provider.ProviderAnthropic) && image == c.agentImage {
+	// Legacy Node.js agent needs explicit command — only when Go Anthropic image is not configured.
+	_, hasGoAnthropicImage := c.agentImages[provider.ProviderAnthropic]
+	if (providerID == "" || providerID == provider.ProviderAnthropic) && image == c.agentImage && !hasGoAnthropicImage {
 		container.Command = []string{"node", "/app/dist/index.js", "--group", "$(GROUP_FOLDER)"}
 	}
 
