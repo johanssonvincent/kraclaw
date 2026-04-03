@@ -142,7 +142,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 			return nil, fmt.Errorf("unmarshal queue message: %w", err)
 		}
 		if err := msg.Ack(); err != nil {
-			q.logger.Error("ack dequeued message", "error", err)
+			return nil, fmt.Errorf("dequeue: ack: %w", err)
 		}
 		return &qm, nil
 	}
@@ -282,7 +282,11 @@ func (q *NATSQueue) Subscribe(ctx context.Context) (<-chan QueueEvent, error) {
 
 	go func() {
 		defer close(ch)
-		defer func() { _ = sub.Drain() }()
+		defer func() {
+			if err := sub.Drain(); err != nil {
+				q.logger.Warn("queue event subscription drain", "error", err)
+			}
+		}()
 		defer cancel()
 		select {
 		case <-ctx.Done():

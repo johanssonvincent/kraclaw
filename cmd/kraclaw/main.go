@@ -173,6 +173,14 @@ func main() {
 		log.Info("orchestrator running")
 	}
 
+	// Monitor orchestrator for late failures (same pattern as proxy monitor below).
+	go func() {
+		if err := <-orchErr; err != nil && ctx.Err() == nil {
+			log.Error("orchestrator died, initiating shutdown", "error", err)
+			cancel()
+		}
+	}()
+
 	// Start credential proxy
 	var proxy *credproxy.Proxy
 
