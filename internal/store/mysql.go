@@ -41,6 +41,10 @@ func retryWithBackoff(attempts int, baseDelay time.Duration, operation string, f
 		if err == nil {
 			return nil
 		}
+		var nonRetryable *dirtyMigrationError
+		if errors.As(err, &nonRetryable) {
+			return err
+		}
 		if i == attempts-1 {
 			break
 		}
@@ -68,7 +72,9 @@ func NewMySQLStore(dsn string, maxOpen, maxIdle int, connMaxLifetime time.Durati
 	if err := retryWithBackoff(5, 1*time.Second, "ping mysql", func() error {
 		return db.Ping()
 	}); err != nil {
-		_ = db.Close()
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close db on ping failure", "error", cerr)
+		}
 		return nil, err
 	}
 
@@ -126,16 +132,16 @@ func runMigrations(dsn string) error {
 			return nil
 		}
 		_, dirty, verr := m.Version()
-		if verr == nil && dirty {
+		if verr != nil {
+			slog.Error("failed to read migration version after migration error", "error", verr, "migration_error", err)
+			return &dirtyMigrationError{msg: "migration failed and version check also failed — manual intervention required"}
+		}
+		if dirty {
 			// Dirty migration state requires manual intervention — do not retry.
 			return &dirtyMigrationError{msg: "dirty migration state detected at startup — manual intervention required: inspect schema and run 'migrate force <version>'"}
 		}
 		return err
 	}); err != nil {
-		var dirtyErr *dirtyMigrationError
-		if errors.As(err, &dirtyErr) {
-			return fmt.Errorf("%s", dirtyErr.msg)
-		}
 		return fmt.Errorf("migrate up: %w", err)
 	}
 
