@@ -8,51 +8,51 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/redis/go-redis/v9"
+	nats "github.com/nats-io/nats.go"
 )
 
 // Config holds common agent configuration from environment.
 type Config struct {
-	RedisURL string
-	Group    string
+	NATSURL  string
 	GroupJID string
+	AgentID  string
 	ProxyURL string
 	Provider string
+	Group    string // group folder (GROUP_FOLDER)
 }
 
 // LoadConfig reads agent config from environment variables.
 func LoadConfig() (*Config, error) {
 	cfg := &Config{
-		RedisURL: os.Getenv("REDIS_URL"),
-		Group:    os.Getenv("KRACLAW_GROUP_FOLDER"),
+		NATSURL:  os.Getenv("NATS_URL"),
 		GroupJID: os.Getenv("KRACLAW_GROUP"),
+		AgentID:  os.Getenv("KRACLAW_AGENT_ID"),
 		ProxyURL: os.Getenv("KRACLAW_PROXY_URL"),
 		Provider: os.Getenv("KRACLAW_PROVIDER"),
+		Group:    os.Getenv("GROUP_FOLDER"),
 	}
-	if cfg.RedisURL == "" {
-		cfg.RedisURL = "redis://localhost:6379"
+	if cfg.NATSURL == "" {
+		cfg.NATSURL = "nats://localhost:4222"
+	}
+	if cfg.AgentID == "" {
+		cfg.AgentID = "main"
+	}
+	if cfg.GroupJID == "" {
+		return nil, fmt.Errorf("KRACLAW_GROUP is required")
 	}
 	if cfg.Group == "" {
-		cfg.Group = os.Getenv("GROUP_FOLDER")
-	}
-	if cfg.Group == "" {
-		return nil, fmt.Errorf("KRACLAW_GROUP_FOLDER or GROUP_FOLDER is required")
+		return nil, fmt.Errorf("GROUP_FOLDER is required")
 	}
 	return cfg, nil
 }
 
-// ConnectRedis creates a Redis client from a URL.
-func ConnectRedis(ctx context.Context, redisURL string) (*redis.Client, error) {
-	opts, err := redis.ParseURL(redisURL)
+// ConnectNATS creates a NATS client from a URL.
+func ConnectNATS(url string) (*nats.Conn, error) {
+	nc, err := nats.Connect(url)
 	if err != nil {
-		return nil, fmt.Errorf("parse redis url: %w", err)
+		return nil, fmt.Errorf("connect nats: %w", err)
 	}
-	rdb := redis.NewClient(opts)
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		_ = rdb.Close()
-		return nil, fmt.Errorf("ping redis: %w", err)
-	}
-	return rdb, nil
+	return nc, nil
 }
 
 // Run is the main agent lifecycle: connect, process, shutdown.
@@ -64,18 +64,18 @@ func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) err
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	log.Info("agent starting", "group", cfg.Group, "provider", cfg.Provider)
+	log.Info("agent starting", "group", cfg.Group, "agent_id", cfg.AgentID, "provider", cfg.Provider)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	rdb, err := ConnectRedis(ctx, cfg.RedisURL)
+	nc, err := ConnectNATS(cfg.NATSURL)
 	if err != nil {
-		return fmt.Errorf("connect redis: %w", err)
+		return fmt.Errorf("connect nats: %w", err)
 	}
-	defer func() { _ = rdb.Close() }()
+	defer nc.Close()
 
-	ipcClient, err := NewIPCClient(rdb, cfg.Group)
+	ipcClient, err := NewIPCClient(nc, cfg.GroupJID, cfg.AgentID, log)
 	if err != nil {
 		return fmt.Errorf("create ipc client: %w", err)
 	}

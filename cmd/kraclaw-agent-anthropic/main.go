@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -54,22 +53,10 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 		return fmt.Errorf("read input: %w", err)
 	}
 
-	closeTicker := time.NewTicker(5 * time.Second)
-	defer closeTicker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-closeTicker.C:
-			closed, err := ipc.CheckCloseSignal(ctx)
-			if err != nil {
-				log.Warn("close signal check failed", "error", err)
-			}
-			if closed {
-				log.Info("close signal detected")
-				return nil
-			}
 		case err := <-ipcErrCh:
 			return fmt.Errorf("ipc read failure: %w", err)
 		case msg, ok := <-inputCh:

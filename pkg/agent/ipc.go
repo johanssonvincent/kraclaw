@@ -2,16 +2,19 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
-const maxConsecutiveReadErrors = 30
+const ipcStreamMaxAge = time.Hour // must match server-side NATSBroker
 
 // InboundMessage is a message received from the server.
 type InboundMessage struct {
@@ -25,34 +28,88 @@ type OutboundMessage struct {
 	Text string `json:"text,omitempty"`
 }
 
-// IPCClient handles Redis Streams communication for a Go agent.
+// sanitizeGroupID returns the first 16 bytes of SHA-256 as hex (32 chars).
+// Must match the server-side implementation in internal/ipc/nats_broker.go.
+func sanitizeGroupID(groupJID string) string {
+	h := sha256.Sum256([]byte(groupJID))
+	return hex.EncodeToString(h[:16])
+}
+
+// IPCClient handles NATS JetStream communication for a Go agent.
 type IPCClient struct {
-	rdb   redis.Cmdable
-	group string
+	nc       *nats.Conn
+	js       jetstream.JetStream
+	groupJID string // raw JID (used for sanitization to match server)
+	agentID  string
+	logger   *slog.Logger
 }
 
 // NewIPCClient creates an IPC client for a specific group.
-func NewIPCClient(rdb redis.Cmdable, group string) (*IPCClient, error) {
-	if rdb == nil {
-		return nil, fmt.Errorf("ipc client: redis connection is required")
+func NewIPCClient(nc *nats.Conn, groupJID, agentID string, logger *slog.Logger) (*IPCClient, error) {
+	if nc == nil {
+		return nil, fmt.Errorf("ipc client: NATS connection is required")
 	}
-	if group == "" {
-		return nil, fmt.Errorf("ipc client: group is required")
+	if groupJID == "" {
+		return nil, fmt.Errorf("ipc client: groupJID is required")
 	}
-	return &IPCClient{rdb: rdb, group: group}, nil
+	if agentID == "" {
+		agentID = "main"
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("ipc client: jetstream: %w", err)
+	}
+	return &IPCClient{
+		nc:       nc,
+		js:       js,
+		groupJID: groupJID,
+		agentID:  agentID,
+		logger:   logger,
+	}, nil
 }
 
-func (c *IPCClient) outputKey() string { return fmt.Sprintf("kraclaw:ipc:%s:output", c.group) }
-func (c *IPCClient) inputKey() string  { return fmt.Sprintf("kraclaw:ipc:%s:input", c.group) }
-func (c *IPCClient) closeKey() string  { return fmt.Sprintf("kraclaw:ipc:%s:close", c.group) }
+func (c *IPCClient) sanitized() string { return sanitizeGroupID(c.groupJID) }
 
-// SendOutput publishes a message to the output stream (agent -> server).
+func (c *IPCClient) streamName() string {
+	return "KRACLAW_IPC_" + strings.ToUpper(c.sanitized())
+}
+
+func (c *IPCClient) inputSubject() string {
+	return "kraclaw.ipc." + c.sanitized() + "." + c.agentID + ".input"
+}
+
+func (c *IPCClient) outputSubject() string {
+	return "kraclaw.ipc." + c.sanitized() + "." + c.agentID + ".output"
+}
+
+// ensureStream creates the IPC stream if it does not exist.
+// The server creates it first, but the agent calls this defensively.
+func (c *IPCClient) ensureStream(ctx context.Context) error {
+	sanitized := c.sanitized()
+	_, err := c.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name: c.streamName(),
+		Subjects: []string{
+			"kraclaw.ipc." + sanitized + ".*.input",
+			"kraclaw.ipc." + sanitized + ".*.output",
+		},
+		Retention: jetstream.InterestPolicy, // must match NATSBroker
+		Storage:   jetstream.FileStorage,
+		MaxAge:    ipcStreamMaxAge,
+		Replicas:  1,
+	})
+	return err
+}
+
+// SendOutput publishes a message from this agent to the server.
 func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error {
 	ipcMsg := map[string]interface{}{
-		"group": c.group,
-		"type":  msg.Type,
+		"group":    c.groupJID,
+		"agent_id": c.agentID,
+		"type":     msg.Type,
 	}
-
 	if msg.Text != "" {
 		payload, err := json.Marshal(map[string]string{"text": msg.Text})
 		if err != nil {
@@ -60,43 +117,46 @@ func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error 
 		}
 		ipcMsg["payload"] = json.RawMessage(payload)
 	}
-
 	data, err := json.Marshal(ipcMsg)
 	if err != nil {
 		return fmt.Errorf("marshal ipc message: %w", err)
 	}
-
-	if err := c.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: c.outputKey(),
-		Values: map[string]interface{}{"data": string(data)},
-	}).Err(); err != nil {
-		return fmt.Errorf("xadd output: %w", err)
-	}
-
-	if err := c.rdb.Publish(ctx, "kraclaw:ipc:notify", c.group).Err(); err != nil {
-		slog.Warn("failed to publish ipc notification", "group", c.group, "error", err)
+	if _, err := c.js.Publish(ctx, c.outputSubject(), data); err != nil {
+		return fmt.Errorf("publish output: %w", err)
 	}
 	return nil
 }
 
-// ReadInput returns a channel that receives messages from the input stream,
-// and an error channel that receives a non-nil error if the reader stops due
-// to consecutive failures.
+// ReadInput returns a channel that receives messages from the server, and an
+// error channel that receives a non-nil error if the reader stops due to
+// fatal failures.
 func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-chan error, error) {
-	stream := c.inputKey()
-	consumerGroup := "agent"
-	consumer := "agent-0"
+	if err := c.ensureStream(ctx); err != nil {
+		return nil, nil, fmt.Errorf("ensure ipc stream: %w", err)
+	}
 
-	err := c.rdb.XGroupCreateMkStream(ctx, stream, consumerGroup, "0").Err()
-	if err != nil && !isGroupExistsErr(err) {
-		return nil, nil, fmt.Errorf("create consumer group: %w", err)
+	cons, err := c.js.CreateOrUpdateConsumer(ctx, c.streamName(), jetstream.ConsumerConfig{
+		Durable:       "agent-" + c.agentID,
+		FilterSubject: c.inputSubject(),
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("create input consumer: %w", err)
 	}
 
 	ch := make(chan *InboundMessage, 64)
 	errCh := make(chan error, 1)
+
 	go func() {
 		defer close(ch)
-		var consecutiveErrors int
+
+		iter, err := cons.Messages()
+		if err != nil {
+			errCh <- fmt.Errorf("create message iterator: %w", err)
+			return
+		}
+		defer iter.Stop()
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -104,87 +164,39 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 			default:
 			}
 
-			results, err := c.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
-				Group:    consumerGroup,
-				Consumer: consumer,
-				Streams:  []string{stream, ">"},
-				Count:    10,
-				Block:    500 * time.Millisecond,
-			}).Result()
-
+			jmsg, err := iter.Next()
 			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				if ctx.Err() != nil {
 					return
 				}
-				if errors.Is(err, redis.Nil) {
-					consecutiveErrors = 0
-					continue
+				errCh <- fmt.Errorf("ipc read: %w", err)
+				return
+			}
+
+			var ipcMsg struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			if err := json.Unmarshal(jmsg.Data(), &ipcMsg); err != nil {
+				c.logger.Error("unmarshal ipc message", "error", err)
+				if err := jmsg.Ack(); err != nil {
+					c.logger.Warn("ack malformed message", "error", err)
 				}
-				consecutiveErrors++
-				slog.Error("ipc read error", "stream", stream, "error", err, "consecutive_errors", consecutiveErrors)
-				if consecutiveErrors >= maxConsecutiveReadErrors {
-					slog.Error("ipc read: too many consecutive errors, stopping", "stream", stream)
-					errCh <- fmt.Errorf("ipc read: %d consecutive errors, last: %w", consecutiveErrors, err)
-					return
-				}
-				time.Sleep(time.Second)
 				continue
 			}
-			consecutiveErrors = 0
 
-			for _, s := range results {
-				for _, entry := range s.Messages {
-					raw, ok := entry.Values["data"].(string)
-					if !ok {
-						slog.Warn("ipc message missing data field", "entry_id", entry.ID, "stream", stream)
-						if err := c.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err(); err != nil {
-							slog.Warn("failed to ack malformed ipc message", "entry_id", entry.ID, "stream", stream, "error", err)
-						}
-						continue
-					}
-					var ipcMsg struct {
-						Type    string          `json:"type"`
-						Payload json.RawMessage `json:"payload"`
-					}
-					if err := json.Unmarshal([]byte(raw), &ipcMsg); err != nil {
-						slog.Error("ipc message unmarshal failed", "entry_id", entry.ID, "error", err)
-						if err := c.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err(); err != nil {
-							slog.Warn("failed to ack malformed ipc message", "entry_id", entry.ID, "stream", stream, "error", err)
-						}
-						continue
-					}
+			msg := &InboundMessage{Type: ipcMsg.Type, Payload: ipcMsg.Payload}
 
-					msg := &InboundMessage{
-						Type:    ipcMsg.Type,
-						Payload: ipcMsg.Payload,
-					}
-
-					select {
-					case ch <- msg:
-					case <-ctx.Done():
-						return
-					}
-
-					if err := c.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err(); err != nil {
-						slog.Warn("failed to ack ipc message", "entry_id", entry.ID, "stream", stream, "error", err)
-					}
+			select {
+			case ch <- msg:
+				if err := jmsg.Ack(); err != nil {
+					c.logger.Error("ack ipc message", "error", err)
 				}
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
 
 	return ch, errCh, nil
-}
-
-// CheckCloseSignal checks whether the server has set the close signal.
-func (c *IPCClient) CheckCloseSignal(ctx context.Context) (bool, error) {
-	n, err := c.rdb.Exists(ctx, c.closeKey()).Result()
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
-
-func isGroupExistsErr(err error) bool {
-	return err != nil && err.Error() == "BUSYGROUP Consumer Group name already exists"
 }
