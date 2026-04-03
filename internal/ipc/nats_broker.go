@@ -257,7 +257,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer) <-cha
 				if ctx.Err() != nil {
 					return
 				}
-				b.logger.Warn("ipc message iterator error", "error", err)
+				b.logger.Error("ipc message iterator error", "error", err)
 				return
 			}
 

@@ -48,7 +48,7 @@ func NewIPCClient(nc *nats.Conn, groupJID, agentID string, logger *slog.Logger) 
 		return nil, fmt.Errorf("ipc client: groupJID is required")
 	}
 	if agentID == "" {
-		agentID = "main"
+		agentID = ipc.DefaultAgentID
 	}
 	if logger == nil {
 		logger = slog.Default()

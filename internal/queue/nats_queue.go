@@ -2,8 +2,6 @@ package queue
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -22,10 +21,7 @@ const (
 	queueEventSubject = "kraclaw.queue.events"
 )
 
-func sanitizeQueueGroupID(groupJID string) string {
-	h := sha256.Sum256([]byte(groupJID))
-	return hex.EncodeToString(h[:16])
-}
+func sanitizeQueueGroupID(groupJID string) string { return ipc.SanitizeGroupID(groupJID) }
 
 func queueStreamName(sanitized string) string {
 	return "KRACLAW_QUEUE_" + strings.ToUpper(sanitized)
@@ -140,7 +136,9 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 				"subject", msg.Subject(),
 				"sequence", seq,
 				"raw", string(msg.Data()))
-			_ = msg.Ack()
+			if err := msg.Ack(); err != nil {
+				q.logger.Error("ack malformed queue message", "subject", msg.Subject(), "sequence", seq, "error", err)
+			}
 			return nil, fmt.Errorf("unmarshal queue message: %w", err)
 		}
 		if err := msg.Ack(); err != nil {
