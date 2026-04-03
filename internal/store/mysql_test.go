@@ -49,6 +49,22 @@ func TestRetryWithBackoff(t *testing.T) {
 			wantCalls:   1,
 			errContains: "dirty",
 		},
+		{
+			name:       "non-retryable error is unwrappable as dirtyMigrationError",
+			attempts:   3,
+			returnErrs: []error{&dirtyMigrationError{msg: "dirty"}},
+			wantErr:    true,
+			wantCalls:  1,
+			// errContains left empty; assertion is done via errors.As below
+		},
+		{
+			name:        "attempts=1 calls fn once and returns error",
+			attempts:    1,
+			returnErrs:  []error{errors.New("single-attempt fail")},
+			wantErr:     true,
+			wantCalls:   1,
+			errContains: "failed after 1 attempts",
+		},
 	}
 
 	for _, tt := range tests {
@@ -73,6 +89,12 @@ func TestRetryWithBackoff(t *testing.T) {
 			}
 			if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
 				t.Fatalf("expected error containing %q, got %q", tt.errContains, err.Error())
+			}
+			if tt.name == "non-retryable error is unwrappable as dirtyMigrationError" {
+				var dme *dirtyMigrationError
+				if !errors.As(err, &dme) {
+					t.Fatalf("expected dirtyMigrationError to be unwrappable via errors.As, got %T: %v", err, err)
+				}
 			}
 		})
 	}
