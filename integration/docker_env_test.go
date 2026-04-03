@@ -1,7 +1,6 @@
 package integration_test
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -12,15 +11,12 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
-	"github.com/redis/go-redis/v9"
 )
 
 type integrationEnv struct {
 	pool          *dockertest.Pool
 	mysqlResource *dockertest.Resource
-	redisResource *dockertest.Resource
 	mysqlDSN      string
-	redisAddr     string
 	setupErr      error
 }
 
@@ -97,40 +93,12 @@ func setupIntegrationEnv() *integrationEnv {
 		return env
 	}
 
-	env.redisResource, err = pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: "redis",
-		Tag:        "7-alpine",
-	}, func(hc *docker.HostConfig) {
-		hc.AutoRemove = true
-		hc.RestartPolicy = docker.RestartPolicy{Name: "no"}
-	})
-	if err != nil {
-		env.setupErr = fmt.Errorf("start redis container: %w", err)
-		env.close()
-		return env
-	}
-
-	env.redisAddr = fmt.Sprintf("localhost:%s", env.redisResource.GetPort("6379/tcp"))
-
-	if err := pool.Retry(func() error {
-		rdb := redis.NewClient(&redis.Options{Addr: env.redisAddr})
-		defer func() { _ = rdb.Close() }()
-		return rdb.Ping(context.Background()).Err()
-	}); err != nil {
-		env.setupErr = fmt.Errorf("wait for redis: %w", err)
-		env.close()
-		return env
-	}
-
 	return env
 }
 
 func (e *integrationEnv) close() {
 	if e == nil || e.pool == nil {
 		return
-	}
-	if e.redisResource != nil {
-		_ = e.pool.Purge(e.redisResource)
 	}
 	if e.mysqlResource != nil {
 		_ = e.pool.Purge(e.mysqlResource)

@@ -12,7 +12,6 @@ import (
 type Config struct {
 	Server    ServerConfig
 	MySQL     MySQLConfig
-	Redis     RedisConfig
 	NATS      NATSConfig
 	K8s       K8sConfig
 	Proxy     ProxyConfig
@@ -39,10 +38,6 @@ type MySQLConfig struct {
 	MaxOpenConns    int           `envconfig:"MYSQL_MAX_OPEN_CONNS" default:"10"`
 	MaxIdleConns    int           `envconfig:"MYSQL_MAX_IDLE_CONNS" default:"5"`
 	ConnMaxLifetime time.Duration `envconfig:"MYSQL_CONN_MAX_LIFETIME" default:"5m"`
-}
-
-type RedisConfig struct {
-	URL string `envconfig:"REDIS_URL" default:"redis://localhost:6379"`
 }
 
 type NATSConfig struct {
