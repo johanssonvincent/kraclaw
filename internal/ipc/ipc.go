@@ -28,19 +28,23 @@ const (
 // IPCMessage represents a message exchanged between agent and server.
 type IPCMessage struct {
 	Group   string          `json:"group"`
+	AgentID string          `json:"agent_id"`
 	Type    IPCMessageType  `json:"type"`
 	Payload json.RawMessage `json:"payload"`
-	ID      string          `json:"id"` // Stream entry ID
+	ID      string          `json:"id"` // Message ID set by broker on receive
 }
 
-// IPCBroker defines the interface for IPC communication.
+// IPCBroker defines the interface for IPC communication between server and agents.
 type IPCBroker interface {
-	PublishOutput(ctx context.Context, group string, msg *IPCMessage) error
+	// SendInput sends a message from the server to a specific agent in a group.
+	SendInput(ctx context.Context, group, agentID string, msg *IPCMessage) error
+	// PublishOutput sends a message from an agent to the server.
+	PublishOutput(ctx context.Context, group, agentID string, msg *IPCMessage) error
+	// SubscribeOutput returns a channel receiving output from all agents in a group (wildcard).
 	SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, error)
-	SendInput(ctx context.Context, group string, msg *IPCMessage) error
-	ReadInput(ctx context.Context, group string) (<-chan *IPCMessage, error)
-	SetCloseSignal(ctx context.Context, group string) error
-	CheckCloseSignal(ctx context.Context, group string) (bool, error)
+	// ReadInput returns a channel receiving input messages for a specific agent.
+	ReadInput(ctx context.Context, group, agentID string) (<-chan *IPCMessage, error)
+	// DeleteStreams removes all IPC data for a group (all agents).
 	DeleteStreams(ctx context.Context, group string) error
 	Close() error
 }
@@ -50,12 +54,10 @@ const (
 	// Keep the blocking read short so broker shutdown does not stall waiting
 	// for Redis to return from XREADGROUP.
 	readTimeout = 500 * time.Millisecond
-	closeTTL    = 60 * time.Second
 )
 
 func outputKey(group string) string { return fmt.Sprintf("kraclaw:ipc:%s:output", group) }
 func inputKey(group string) string  { return fmt.Sprintf("kraclaw:ipc:%s:input", group) }
-func closeKey(group string) string  { return fmt.Sprintf("kraclaw:ipc:%s:close", group) }
 func notifyChannel() string         { return "kraclaw:ipc:notify" }
 
 // RedisBroker implements IPCBroker using Redis streams and pub/sub.
@@ -97,7 +99,7 @@ func isConsumerGroupExistsErr(err error) bool {
 }
 
 // PublishOutput adds a message to the output stream (agent -> server).
-func (b *RedisBroker) PublishOutput(ctx context.Context, group string, msg *IPCMessage) error {
+func (b *RedisBroker) PublishOutput(ctx context.Context, group, agentID string, msg *IPCMessage) error {
 	stream := outputKey(group)
 	if err := b.ensureConsumerGroup(ctx, stream); err != nil {
 		return err
@@ -133,7 +135,7 @@ func (b *RedisBroker) SubscribeOutput(ctx context.Context, group string) (<-chan
 }
 
 // SendInput adds a message to the input stream (server -> agent).
-func (b *RedisBroker) SendInput(ctx context.Context, group string, msg *IPCMessage) error {
+func (b *RedisBroker) SendInput(ctx context.Context, group, agentID string, msg *IPCMessage) error {
 	stream := inputKey(group)
 	if err := b.ensureConsumerGroup(ctx, stream); err != nil {
 		return err
@@ -159,7 +161,7 @@ func (b *RedisBroker) SendInput(ctx context.Context, group string, msg *IPCMessa
 }
 
 // ReadInput returns a channel that receives messages from the input stream.
-func (b *RedisBroker) ReadInput(ctx context.Context, group string) (<-chan *IPCMessage, error) {
+func (b *RedisBroker) ReadInput(ctx context.Context, group, agentID string) (<-chan *IPCMessage, error) {
 	stream := inputKey(group)
 	if err := b.ensureConsumerGroup(ctx, stream); err != nil {
 		return nil, err
@@ -167,23 +169,9 @@ func (b *RedisBroker) ReadInput(ctx context.Context, group string) (<-chan *IPCM
 	return b.readStream(ctx, stream, "input-reader"), nil
 }
 
-// SetCloseSignal sets the close sentinel with a TTL.
-func (b *RedisBroker) SetCloseSignal(ctx context.Context, group string) error {
-	return b.rdb.Set(ctx, closeKey(group), "1", closeTTL).Err()
-}
-
-// CheckCloseSignal checks whether the close sentinel is set.
-func (b *RedisBroker) CheckCloseSignal(ctx context.Context, group string) (bool, error) {
-	n, err := b.rdb.Exists(ctx, closeKey(group)).Result()
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
-
-// DeleteStreams removes the input, output, and close keys for a group.
+// DeleteStreams removes the input and output keys for a group.
 func (b *RedisBroker) DeleteStreams(ctx context.Context, group string) error {
-	keys := []string{outputKey(group), inputKey(group), closeKey(group)}
+	keys := []string{outputKey(group), inputKey(group)}
 	if err := b.rdb.Del(ctx, keys...).Err(); err != nil {
 		return fmt.Errorf("delete ipc streams for %s: %w", group, err)
 	}
