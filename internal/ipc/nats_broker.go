@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -58,6 +59,7 @@ type NATSBroker struct {
 
 	mu       sync.Mutex
 	cancels  []context.CancelFunc
+	iters    []jetstream.MessagesContext // track iterators for cleanup
 	closed   bool
 	closedCh chan struct{}
 }
@@ -181,7 +183,7 @@ func (b *NATSBroker) DeleteStreams(ctx context.Context, group string) error {
 	streamName := ipcStreamName(sanitized)
 	if err := b.js.DeleteStream(ctx, streamName); err != nil {
 		// Treat "stream not found" as success (idempotent delete).
-		if strings.Contains(err.Error(), "stream not found") {
+		if errors.Is(err, jetstream.ErrStreamNotFound) {
 			return nil
 		}
 		return fmt.Errorf("delete ipc stream %s: %w", streamName, err)
@@ -197,6 +199,12 @@ func (b *NATSBroker) Close() error {
 		return nil
 	}
 	b.closed = true
+	// Stop all iterators first — this unblocks iter.Next() calls.
+	for _, iter := range b.iters {
+		iter.Stop()
+	}
+	b.iters = nil
+	// Then cancel all contexts.
 	for _, cancel := range b.cancels {
 		cancel()
 	}
@@ -210,19 +218,23 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer) <-cha
 	ch := make(chan *IPCMessage, 64)
 
 	ctx, cancel := context.WithCancel(ctx)
+
+	iter, err := cons.Messages()
+	if err != nil {
+		cancel()
+		b.logger.Error("create message iterator", "error", err)
+		close(ch)
+		return ch
+	}
+
 	b.mu.Lock()
 	b.cancels = append(b.cancels, cancel)
+	b.iters = append(b.iters, iter)
 	b.mu.Unlock()
 
 	go func() {
 		defer close(ch)
 		defer cancel()
-
-		iter, err := cons.Messages()
-		if err != nil {
-			b.logger.Error("create message iterator", "error", err)
-			return
-		}
 		defer iter.Stop()
 
 		for {
