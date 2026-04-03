@@ -36,7 +36,7 @@ func (e *dirtyMigrationError) Error() string { return e.msg }
 // attempt count if all attempts are exhausted.
 func retryWithBackoff(attempts int, baseDelay time.Duration, operation string, fn func() error) error {
 	var err error
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		err = fn()
 		if err == nil {
 			return nil
