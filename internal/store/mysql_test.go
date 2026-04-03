@@ -2,7 +2,7 @@ package store
 
 import (
 	"context"
-	"os"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -10,86 +10,71 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-// TestRunMigrations_DirtyReturnsError verifies that the runMigrations function
-// contains fail-fast behavior for dirty migration state rather than auto-reset.
-// Because runMigrations opens its own DB connection from a DSN, it cannot be
-// unit-tested with sqlmock. Instead we verify the source code contains the
-// expected error path and does NOT contain the dangerous auto-reset pattern.
-func TestRunMigrations_DirtyReturnsError(t *testing.T) {
-	src, err := os.ReadFile("mysql.go")
-	if err != nil {
-		t.Fatalf("read mysql.go: %v", err)
-	}
-	source := string(src)
-
-	// Must contain the fail-fast error message.
-	if !strings.Contains(source, "dirty migration state detected at startup") {
-		t.Fatal("mysql.go missing fail-fast error message for dirty migration state")
-	}
-
-	// Must use errors.Is for ErrNoChange comparison.
-	if !strings.Contains(source, "errors.Is(err, migrate.ErrNoChange)") {
-		t.Fatal("mysql.go should use errors.Is for ErrNoChange comparison")
-	}
-
-	// Must NOT contain the dangerous auto-reset pattern.
-	if strings.Contains(source, "m.Force(-1)") {
-		t.Fatal("mysql.go still contains m.Force(-1) — dirty migration auto-reset must be removed")
-	}
-	if strings.Contains(source, "forcing version reset and retrying") {
-		t.Fatal("mysql.go still contains old auto-reset log message")
-	}
-}
-
-// TestRetryWithBackoff_SourceInspection verifies via source inspection that
-// retryWithBackoff exists in mysql.go, that retry logging is present, and that
-// dirty migration state is NOT retried (fail-fast is preserved).
-func TestRetryWithBackoff_SourceInspection(t *testing.T) {
-	src, err := os.ReadFile("mysql.go")
-	if err != nil {
-		t.Fatalf("read mysql.go: %v", err)
-	}
-	source := string(src)
-
-	// Must define a retryWithBackoff function.
-	if !strings.Contains(source, "func retryWithBackoff(") {
-		t.Fatal("mysql.go missing retryWithBackoff function definition")
+func TestRetryWithBackoff(t *testing.T) {
+	tests := []struct {
+		name        string
+		attempts    int
+		returnErrs  []error
+		wantErr     bool
+		wantCalls   int
+		errContains string
+	}{
+		{
+			name:      "succeeds on first attempt",
+			attempts:  3,
+			returnErrs: []error{nil},
+			wantErr:   false,
+			wantCalls: 1,
+		},
+		{
+			name:      "succeeds on second attempt",
+			attempts:  3,
+			returnErrs: []error{errors.New("transient"), nil},
+			wantErr:   false,
+			wantCalls: 2,
+		},
+		{
+			name:        "exhausts all attempts",
+			attempts:    3,
+			returnErrs:  []error{errors.New("fail"), errors.New("fail"), errors.New("fail")},
+			wantErr:     true,
+			wantCalls:   3,
+			errContains: "failed after 3 attempts",
+		},
+		{
+			name:        "non-retryable error exits immediately",
+			attempts:    5,
+			returnErrs:  []error{&dirtyMigrationError{msg: "dirty"}},
+			wantErr:     true,
+			wantCalls:   1,
+			errContains: "dirty",
+		},
 	}
 
-	// Must call retryWithBackoff at least twice (ping + migrations).
-	count := strings.Count(source, "retryWithBackoff(")
-	// Subtract 1 for the definition itself.
-	callCount := count - 1
-	if callCount < 2 {
-		t.Fatalf("mysql.go should call retryWithBackoff at least 2 times (ping + migrations), got %d call(s)", callCount)
-	}
-
-	// Must log retry attempts.
-	if !strings.Contains(source, "retrying operation") {
-		t.Fatal("mysql.go missing retry log message 'retrying operation'")
-	}
-
-	// Must use exponential backoff (2^attempt pattern).
-	if !strings.Contains(source, "baseDelay") {
-		t.Fatal("mysql.go missing baseDelay variable in retryWithBackoff")
-	}
-
-	// Dirty migration state error must be a guard that returns immediately and
-	// must NOT appear inside the retry helper body after the function definition.
-	dirtyIdx := strings.Index(source, "dirty migration state detected at startup")
-	retryFuncIdx := strings.Index(source, "func retryWithBackoff(")
-	if dirtyIdx == -1 {
-		t.Fatal("mysql.go missing dirty migration state error — fail-fast check removed")
-	}
-	if retryFuncIdx != -1 && dirtyIdx > retryFuncIdx {
-		// The dirty check must be OUTSIDE (before or clearly separated from) the retry
-		// helper body. The dirty check lives in runMigrations; retryWithBackoff is a
-		// generic helper. This is satisfied as long as dirty check exists at all.
-	}
-
-	// Must still use errors.Is for ErrNoChange.
-	if !strings.Contains(source, "errors.Is(err, migrate.ErrNoChange)") {
-		t.Fatal("mysql.go should use errors.Is for ErrNoChange comparison")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			callCount := 0
+			idx := 0
+			fn := func() error {
+				callCount++
+				if idx < len(tt.returnErrs) {
+					err := tt.returnErrs[idx]
+					idx++
+					return err
+				}
+				return nil
+			}
+			err := retryWithBackoff(tt.attempts, time.Millisecond, "test-op", fn)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("wantErr=%v got err=%v", tt.wantErr, err)
+			}
+			if callCount != tt.wantCalls {
+				t.Fatalf("wantCalls=%d got %d", tt.wantCalls, callCount)
+			}
+			if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+				t.Fatalf("expected error containing %q, got %q", tt.errContains, err.Error())
+			}
+		})
 	}
 }
 
