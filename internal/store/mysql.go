@@ -661,6 +661,74 @@ func (s *MySQLStore) DeleteAllowlistEntry(ctx context.Context, id int64) error {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// GroupActiveStore
+// ---------------------------------------------------------------------------
+
+// MarkGroupActive sets is_active = TRUE and last_active_at = NOW() for the group.
+func (s *MySQLStore) MarkGroupActive(ctx context.Context, jid string) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE `groups` SET is_active = TRUE, last_active_at = NOW() WHERE jid = ?", jid)
+	if err != nil {
+		return fmt.Errorf("mark group active: %w", err)
+	}
+	return nil
+}
+
+// MarkGroupInactive sets is_active = FALSE for the group.
+func (s *MySQLStore) MarkGroupInactive(ctx context.Context, jid string) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE `groups` SET is_active = FALSE WHERE jid = ?", jid)
+	if err != nil {
+		return fmt.Errorf("mark group inactive: %w", err)
+	}
+	return nil
+}
+
+// IsGroupActive returns true if the group has is_active = TRUE.
+func (s *MySQLStore) IsGroupActive(ctx context.Context, jid string) (bool, error) {
+	var active bool
+	err := s.db.QueryRowContext(ctx,
+		"SELECT is_active FROM `groups` WHERE jid = ?", jid).Scan(&active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("is group active: %w", err)
+	}
+	return active, nil
+}
+
+// ActiveGroupCount returns the number of groups with is_active = TRUE.
+func (s *MySQLStore) ActiveGroupCount(ctx context.Context) (int64, error) {
+	var count int64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM `groups` WHERE is_active = TRUE").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("active group count: %w", err)
+	}
+	return count, nil
+}
+
+// ActiveGroupJIDs returns the JIDs of all groups with is_active = TRUE.
+func (s *MySQLStore) ActiveGroupJIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT jid FROM `groups` WHERE is_active = TRUE")
+	if err != nil {
+		return nil, fmt.Errorf("active group jids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var jids []string
+	for rows.Next() {
+		var jid string
+		if err := rows.Scan(&jid); err != nil {
+			return nil, fmt.Errorf("scan active jid: %w", err)
+		}
+		jids = append(jids, jid)
+	}
+	return jids, rows.Err()
+}
+
 // Ensure MySQLStore implements Store at compile time.
 var _ Store = (*MySQLStore)(nil)
 
