@@ -73,18 +73,22 @@ func main() {
 		log.Error("failed to initialise MySQL store", "error", err)
 		os.Exit(1)
 	}
-	defer func() { _ = mysqlStore.Close() }()
+	defer func() {
+		if err := mysqlStore.Close(); err != nil {
+			log.Warn("mysql store close", "error", err)
+		}
+	}()
 	log.Info("connected to MySQL, migrations complete")
 
 	// Connect NATS
-	nc, err := connectNATS(cfg.NATS)
+	nc, err := connectNATS(cfg.NATS, log)
 	if err != nil {
 		log.Error("failed to connect to NATS", "error", err)
 		os.Exit(1)
 	}
 	defer func() {
 		if err := nc.Drain(); err != nil {
-			log.Warn("nats drain", "error", err)
+			log.Error("nats drain", "error", err)
 		}
 	}()
 	log.Info("connected to NATS")
@@ -94,14 +98,22 @@ func main() {
 		log.Error("failed to create IPC broker", "error", err)
 		os.Exit(1)
 	}
-	defer func() { _ = ipcBroker.Close() }()
+	defer func() {
+		if err := ipcBroker.Close(); err != nil {
+			log.Warn("ipc broker close", "error", err)
+		}
+	}()
 
 	natsQueue, err := queue.NewNATSQueue(nc, mysqlStore, log)
 	if err != nil {
 		log.Error("failed to create NATS queue", "error", err)
 		os.Exit(1)
 	}
-	defer func() { _ = natsQueue.Close() }()
+	defer func() {
+		if err := natsQueue.Close(); err != nil {
+			log.Warn("nats queue close", "error", err)
+		}
+	}()
 
 	var (
 		kubeConfig  *rest.Config
@@ -299,8 +311,18 @@ func setupLogger(cfg config.LoggingConfig) *slog.Logger {
 	return slog.New(handler)
 }
 
-func connectNATS(cfg config.NATSConfig) (*natsgo.Conn, error) {
-	nc, err := natsgo.Connect(cfg.URL)
+func connectNATS(cfg config.NATSConfig, log *slog.Logger) (*natsgo.Conn, error) {
+	nc, err := natsgo.Connect(cfg.URL,
+		natsgo.DisconnectErrHandler(func(_ *natsgo.Conn, err error) {
+			log.Error("nats disconnected", "error", err)
+		}),
+		natsgo.ReconnectHandler(func(nc *natsgo.Conn) {
+			log.Warn("nats reconnected", "url", nc.ConnectedUrl())
+		}),
+		natsgo.ClosedHandler(func(_ *natsgo.Conn) {
+			log.Error("nats connection permanently closed")
+		}),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}

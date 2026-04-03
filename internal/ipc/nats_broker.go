@@ -150,7 +150,7 @@ func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan 
 	if err != nil {
 		return nil, fmt.Errorf("create output consumer: %w", err)
 	}
-	return b.consume(ctx, cons), nil
+	return b.consume(ctx, cons, group), nil
 }
 
 // ReadInput returns a channel that receives input messages for a specific agent.
@@ -168,7 +168,7 @@ func (b *NATSBroker) ReadInput(ctx context.Context, group, agentID string) (<-ch
 	if err != nil {
 		return nil, fmt.Errorf("create input consumer: %w", err)
 	}
-	return b.consume(ctx, cons), nil
+	return b.consume(ctx, cons, group), nil
 }
 
 // DeleteStreams removes the JetStream stream for a group (covers all agents).
@@ -208,7 +208,7 @@ func (b *NATSBroker) Close() error {
 }
 
 // consume creates a goroutine that drains a JetStream consumer into a channel.
-func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer) <-chan *IPCMessage {
+func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group string) <-chan *IPCMessage {
 	ch := make(chan *IPCMessage, 64)
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -216,7 +216,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer) <-cha
 	iter, err := cons.Messages()
 	if err != nil {
 		cancel()
-		b.logger.Error("create message iterator", "error", err)
+		b.logger.Error("create message iterator", "group", group, "error", err)
 		close(ch)
 		return ch
 	}
@@ -257,15 +257,15 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer) <-cha
 				if ctx.Err() != nil {
 					return
 				}
-				b.logger.Error("ipc message iterator error", "error", err)
+				b.logger.Error("ipc message iterator error", "group", group, "error", err)
 				return
 			}
 
 			var msg IPCMessage
 			if err := json.Unmarshal(jmsg.Data(), &msg); err != nil {
-				b.logger.Warn("unmarshal ipc message", "error", err)
+				b.logger.Warn("unmarshal ipc message", "group", group, "error", err)
 				if err := jmsg.Ack(); err != nil {
-					b.logger.Error("ack malformed message", "error", err)
+					b.logger.Error("ack malformed message", "group", group, "error", err)
 				}
 				continue
 			}
@@ -274,7 +274,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer) <-cha
 			select {
 			case ch <- &msg:
 				if err := jmsg.Ack(); err != nil {
-					b.logger.Error("ack ipc message", "error", err)
+					b.logger.Error("ack ipc message", "group", group, "error", err)
 				}
 			case <-ctx.Done():
 				return

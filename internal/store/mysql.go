@@ -766,7 +766,10 @@ func (s *MySQLStore) ActiveGroupJIDs(ctx context.Context) ([]string, error) {
 		}
 		jids = append(jids, jid)
 	}
-	return jids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("active group jids rows: %w", err)
+	}
+	return jids, nil
 }
 
 // Ensure MySQLStore implements Store at compile time.

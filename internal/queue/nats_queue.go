@@ -266,8 +266,8 @@ func (q *NATSQueue) Subscribe(ctx context.Context) (<-chan QueueEvent, error) {
 		}
 		select {
 		case ch <- evt:
-		case <-ctx.Done():
-		case <-q.closedCh:
+		default:
+			q.logger.Error("queue event channel full, dropping event", "type", evt.Type, "group_jid", evt.GroupJID)
 		}
 	})
 	if err != nil {
@@ -282,7 +282,7 @@ func (q *NATSQueue) Subscribe(ctx context.Context) (<-chan QueueEvent, error) {
 
 	go func() {
 		defer close(ch)
-		defer func() { _ = sub.Unsubscribe() }()
+		defer func() { _ = sub.Drain() }()
 		defer cancel()
 		select {
 		case <-ctx.Done():

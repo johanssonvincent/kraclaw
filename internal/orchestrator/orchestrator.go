@@ -717,6 +717,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 			Payload: payload,
 		}); err != nil {
 			o.log.Error("failed to send initial input", "group", group.Name, "error", err)
+			return fmt.Errorf("send initial input: %w", err)
 		}
 	}
 

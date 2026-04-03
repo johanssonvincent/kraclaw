@@ -148,6 +148,7 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 
 	go func() {
 		defer close(ch)
+		defer close(errCh)
 
 		iter, err := cons.Messages()
 		if err != nil {
@@ -155,6 +156,11 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 			return
 		}
 		defer iter.Stop()
+
+		go func() {
+			<-ctx.Done()
+			iter.Stop()
+		}()
 
 		for {
 			select {
