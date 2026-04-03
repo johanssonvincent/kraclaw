@@ -78,7 +78,7 @@ These Secrets must exist before running `helm install`:
 
 ## Secret Management
 
-Sensitive values (MYSQL_DSN, ANTHROPIC_API_KEY, ANTHROPIC_OAUTH_TOKEN) are NOT stored in values.yaml.
+Sensitive values (MYSQL_DSN, ANTHROPIC_API_KEY) are NOT stored in values.yaml.
 They must be pre-created as Kubernetes Secrets. For dev/test only, set `secrets.create=true`
 and provide `secrets.mysqlDsn` and `secrets.anthropicApiKey` via `--set` flags.
 
