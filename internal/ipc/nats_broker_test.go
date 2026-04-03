@@ -226,3 +226,28 @@ func TestNATSCloseStopsSubscription(t *testing.T) {
 		t.Fatal("timed out waiting for channel close")
 	}
 }
+
+// TestNATSClose_StopsReadInput verifies that broker.Close() closes the channel
+// returned by ReadInput, mirroring TestNATSCloseStopsSubscription for input.
+func TestNATSClose_StopsReadInput(t *testing.T) {
+	broker, _ := setupNATS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	group := "close-input-test@g.us"
+	ch, err := broker.ReadInput(ctx, group, DefaultAgentID)
+	if err != nil {
+		t.Fatalf("ReadInput: %v", err)
+	}
+
+	_ = broker.Close()
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Error("expected channel to be closed after broker.Close()")
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for channel close after broker.Close()")
+	}
+}

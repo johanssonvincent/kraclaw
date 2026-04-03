@@ -2,12 +2,16 @@ package queue
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
 	natserver "github.com/nats-io/nats-server/v2/server"
+
+	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
 // startQueueNATS starts an in-process NATS server with JetStream for queue tests.
@@ -274,5 +278,184 @@ func TestNATSQueueActiveJIDs(t *testing.T) {
 	}
 	if len(jids) != 3 {
 		t.Errorf("len(ActiveJIDs) = %d, want 3", len(jids))
+	}
+}
+
+// errActiveStore is a groupActiveStore that always returns store.ErrGroupNotFound
+// for MarkGroupActive and MarkGroupInactive, simulating a missing JID.
+type errActiveStore struct {
+	mockActiveStore
+}
+
+func (e *errActiveStore) MarkGroupActive(_ context.Context, _ string) error {
+	return fmt.Errorf("mark group active: %w", store.ErrGroupNotFound)
+}
+
+func (e *errActiveStore) MarkGroupInactive(_ context.Context, _ string) error {
+	return fmt.Errorf("mark group inactive: %w", store.ErrGroupNotFound)
+}
+
+// TestNATSQueueClose_StopsSubscribe verifies that q.Close() closes the channel
+// returned by Subscribe.
+func TestNATSQueueClose_StopsSubscribe(t *testing.T) {
+	nc := startQueueNATS(t)
+	gas := newMockActiveStore()
+	q, err := NewNATSQueue(nc, gas, nil)
+	if err != nil {
+		t.Fatalf("NewNATSQueue: %v", err)
+	}
+	// Do NOT register q.Close with t.Cleanup — we close it explicitly below.
+
+	ctx := context.Background()
+	ch, err := q.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Error("expected channel to be closed after q.Close()")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Subscribe channel to close after q.Close()")
+	}
+}
+
+// TestNATSQueueMarkActive_UnknownJID verifies that MarkActive and MarkInactive
+// propagate store.ErrGroupNotFound when the backing store returns it.
+func TestNATSQueueMarkActive_UnknownJID(t *testing.T) {
+	nc := startQueueNATS(t)
+	gas := &errActiveStore{}
+	gas.active = make(map[string]bool)
+	q, err := NewNATSQueue(nc, gas, nil)
+	if err != nil {
+		t.Fatalf("NewNATSQueue: %v", err)
+	}
+	t.Cleanup(func() { _ = q.Close() })
+
+	ctx := context.Background()
+
+	if err := q.MarkActive(ctx, "unknown@g.us"); !errors.Is(err, store.ErrGroupNotFound) {
+		t.Errorf("MarkActive unknown JID: got %v, want errors.Is(err, store.ErrGroupNotFound)", err)
+	}
+	if err := q.MarkInactive(ctx, "unknown@g.us"); !errors.Is(err, store.ErrGroupNotFound) {
+		t.Errorf("MarkInactive unknown JID: got %v, want errors.Is(err, store.ErrGroupNotFound)", err)
+	}
+}
+
+// TestNATSQueueSubscribe_ActiveEvents verifies that EventActive and EventInactive
+// are published to the Subscribe channel when MarkActive/MarkInactive are called.
+func TestNATSQueueSubscribe_ActiveEvents(t *testing.T) {
+	q, _ := setupNATSQueue(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	group := "active-event-group@g.us"
+	ch, err := q.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	if err := q.MarkActive(ctx, group); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	select {
+	case evt := <-ch:
+		if evt.Type != EventActive {
+			t.Errorf("expected EventActive, got %q", evt.Type)
+		}
+		if evt.GroupJID != group {
+			t.Errorf("expected group %q, got %q", group, evt.GroupJID)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for EventActive")
+	}
+
+	if err := q.MarkInactive(ctx, group); err != nil {
+		t.Fatalf("MarkInactive: %v", err)
+	}
+	select {
+	case evt := <-ch:
+		if evt.Type != EventInactive {
+			t.Errorf("expected EventInactive, got %q", evt.Type)
+		}
+		if evt.GroupJID != group {
+			t.Errorf("expected group %q, got %q", group, evt.GroupJID)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for EventInactive")
+	}
+}
+
+// TestNATSQueuePeekThenDequeue is the regression test for the durable-consumer
+// Peek bug: after the fix, Peek must not lock the message from Dequeue.
+func TestNATSQueuePeekThenDequeue(t *testing.T) {
+	q, _ := setupNATSQueue(t)
+	ctx := context.Background()
+	group := "peek-dequeue-group@g.us"
+
+	msg := &QueueMessage{
+		GroupJID:  group,
+		Content:   "regression message",
+		Sender:    "u1",
+		Timestamp: time.Now().Truncate(time.Millisecond),
+	}
+
+	if err := q.Enqueue(ctx, group, msg); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Peek must not remove the message.
+	peeked, err := q.Peek(ctx, group)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if peeked == nil {
+		t.Fatal("Peek returned nil after Enqueue")
+	}
+	if peeked.Content != msg.Content {
+		t.Errorf("Peek content = %q, want %q", peeked.Content, msg.Content)
+	}
+
+	n, err := q.Len(ctx, group)
+	if err != nil {
+		t.Fatalf("Len after Peek: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("Len after Peek = %d, want 1", n)
+	}
+
+	// Dequeue must still be able to consume the message (not locked by Peek).
+	got, err := q.Dequeue(ctx, group)
+	if err != nil {
+		t.Fatalf("Dequeue: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Dequeue returned nil — message was locked by Peek (regression)")
+	}
+	if got.Content != msg.Content {
+		t.Errorf("Dequeue content = %q, want %q", got.Content, msg.Content)
+	}
+
+	n, err = q.Len(ctx, group)
+	if err != nil {
+		t.Fatalf("Len after Dequeue: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Len after Dequeue = %d, want 0", n)
+	}
+
+	// Second Dequeue on empty queue must return nil.
+	empty, err := q.Dequeue(ctx, group)
+	if err != nil {
+		t.Fatalf("second Dequeue: %v", err)
+	}
+	if empty != nil {
+		t.Errorf("second Dequeue = %+v, want nil (empty queue)", empty)
 	}
 }
