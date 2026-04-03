@@ -303,6 +303,23 @@ func TestNATSContextCancelClosesOutputChannel(t *testing.T) {
 	})
 }
 
+// TestNATSBrokerClose_Idempotent verifies that calling Close() twice does not
+// return an error on the second call.
+func TestNATSBrokerClose_Idempotent(t *testing.T) {
+	nc := startEmbeddedNATS(t)
+	broker, err := NewNATSBroker(nc, nil)
+	if err != nil {
+		t.Fatalf("NewNATSBroker: %v", err)
+	}
+	// Do NOT register Close in t.Cleanup — we call it manually below.
+	if err := broker.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := broker.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
 // TestNATSBrokerMalformedMessageSkipped verifies that publishing non-JSON bytes
 // to the output subject does not crash the broker and that the next valid
 // message is still delivered.

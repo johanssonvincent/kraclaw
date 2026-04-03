@@ -9,6 +9,7 @@ import (
 	"time"
 
 	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	natserver "github.com/nats-io/nats-server/v2/server"
 
 	"github.com/johanssonvincent/kraclaw/internal/store"
@@ -457,5 +458,66 @@ func TestNATSQueuePeekThenDequeue(t *testing.T) {
 	}
 	if empty != nil {
 		t.Errorf("second Dequeue = %+v, want nil (empty queue)", empty)
+	}
+}
+
+// TestNATSQueueDequeue_MalformedMessage verifies that Dequeue returns a non-nil
+// error when the queued payload is not valid JSON, and that a subsequent valid
+// message can still be dequeued successfully (gap 9).
+func TestNATSQueueDequeue_MalformedMessage(t *testing.T) {
+	q, _ := setupNATSQueue(t)
+	ctx := context.Background()
+	groupJID := "malformed-dequeue@g.us"
+
+	// Ensure the JetStream stream exists.
+	sanitized, err := q.ensureStream(ctx, groupJID)
+	if err != nil {
+		t.Fatalf("ensureStream: %v", err)
+	}
+
+	// Inject raw non-JSON bytes directly via JetStream, bypassing Enqueue.
+	js, err := jetstream.New(q.nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	subj := queueSubject(sanitized)
+	if _, err := js.Publish(ctx, subj, []byte("not-json{{{bad")); err != nil {
+		t.Fatalf("publish malformed: %v", err)
+	}
+
+	// Dequeue must return a non-nil error for the malformed message.
+	msg, err := q.Dequeue(ctx, groupJID)
+	if err == nil {
+		t.Errorf("expected error for malformed message, got msg=%v", msg)
+	}
+
+	// Publish a valid message; Dequeue must now succeed.
+	if err := q.Enqueue(ctx, groupJID, &QueueMessage{GroupJID: groupJID, Content: "hello"}); err != nil {
+		t.Fatalf("Enqueue valid: %v", err)
+	}
+	got, err := q.Dequeue(ctx, groupJID)
+	if err != nil {
+		t.Fatalf("Dequeue valid after malformed: %v", err)
+	}
+	if got == nil || got.Content != "hello" {
+		t.Errorf("expected valid message with Content=hello, got %v", got)
+	}
+}
+
+// TestNATSQueueClose_Idempotent verifies that calling Close() twice does not
+// return an error on the second call (gap 12).
+func TestNATSQueueClose_Idempotent(t *testing.T) {
+	nc := startQueueNATS(t)
+	gas := newMockActiveStore()
+	q, err := NewNATSQueue(nc, gas, nil)
+	if err != nil {
+		t.Fatalf("NewNATSQueue: %v", err)
+	}
+	// Do NOT register Close in t.Cleanup — we call it manually below.
+	if err := q.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := q.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 }

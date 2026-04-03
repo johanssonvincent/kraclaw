@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -1084,4 +1085,51 @@ func TestGroupActiveStore(t *testing.T) {
 	if active {
 		t.Error("expected not active after MarkGroupInactive")
 	}
+}
+
+// TestMySQLStore_MarkGroupActive_UnknownJID verifies that MarkGroupActive and
+// MarkGroupInactive return errors.Is(err, ErrGroupNotFound) when called with a
+// JID that does not exist in the database (gap 10).
+// Uses sqlmock so it runs without Docker.
+func TestMySQLStore_MarkGroupActive_UnknownJID(t *testing.T) {
+	ctx := context.Background()
+	const jid = "nonexistent@g.us"
+
+	t.Run("MarkGroupActive", func(t *testing.T) {
+		s, mock := newTestStore(t)
+		// UPDATE returns 0 rows affected (JID missing).
+		mock.ExpectExec("UPDATE `groups` SET is_active = TRUE").
+			WithArgs(jid).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		// Existence check returns false.
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs(jid).
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+		if err := s.MarkGroupActive(ctx, jid); !errors.Is(err, ErrGroupNotFound) {
+			t.Errorf("MarkGroupActive unknown JID: got %v, want errors.Is ErrGroupNotFound", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet expectations: %v", err)
+		}
+	})
+
+	t.Run("MarkGroupInactive", func(t *testing.T) {
+		s, mock := newTestStore(t)
+		// UPDATE returns 0 rows affected (JID missing).
+		mock.ExpectExec("UPDATE `groups` SET is_active = FALSE").
+			WithArgs(jid).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		// Existence check returns false.
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs(jid).
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+		if err := s.MarkGroupInactive(ctx, jid); !errors.Is(err, ErrGroupNotFound) {
+			t.Errorf("MarkGroupInactive unknown JID: got %v, want errors.Is ErrGroupNotFound", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet expectations: %v", err)
+		}
+	})
 }

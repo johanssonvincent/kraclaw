@@ -118,3 +118,42 @@ func TestIPCClient_ReadInput(t *testing.T) {
 		t.Fatal("timed out waiting for input message")
 	}
 }
+
+// TestIPCClient_ReadInput_ContextCancel verifies that cancelling the context
+// passed to ReadInput causes both the message channel and the error channel to
+// close (gap 11).
+func TestIPCClient_ReadInput_ContextCancel(t *testing.T) {
+	nc := startTestNATS(t)
+	groupJID := "ctx-cancel-readinput@g.us"
+	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ch, errCh, err := client.ReadInput(ctx)
+	if err != nil {
+		t.Fatalf("ReadInput: %v", err)
+	}
+
+	cancel()
+
+	timeout := time.After(5 * time.Second)
+	chClosed, errChClosed := false, false
+	for !chClosed || !errChClosed {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				chClosed = true
+			}
+		case _, ok := <-errCh:
+			if !ok {
+				errChClosed = true
+			}
+		case <-timeout:
+			t.Errorf("timed out: ch closed=%v, errCh closed=%v", chClosed, errChClosed)
+			return
+		}
+	}
+}
