@@ -232,6 +232,18 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer) <-cha
 	b.iters = append(b.iters, iter)
 	b.mu.Unlock()
 
+	// Stop the iterator when ctx is cancelled externally. Without this, a
+	// blocking iter.Next() call would keep the consume goroutine alive even
+	// after the caller cancels ctx — a goroutine leak.
+	go func() {
+		select {
+		case <-ctx.Done():
+			iter.Stop()
+		case <-b.closedCh:
+			// iter.Stop() already called by Close().
+		}
+	}()
+
 	go func() {
 		defer close(ch)
 		defer cancel()

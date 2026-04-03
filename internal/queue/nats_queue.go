@@ -18,7 +18,6 @@ import (
 
 const (
 	queueStreamMaxAge = 24 * time.Hour
-	queueAckWait      = 24 * time.Hour
 	queueFetchTimeout = 200 * time.Millisecond
 	queueEventSubject = "kraclaw.queue.events"
 )
@@ -132,6 +131,15 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 	for msg := range msgs.Messages() {
 		var qm QueueMessage
 		if err := json.Unmarshal(msg.Data(), &qm); err != nil {
+			meta, _ := msg.Metadata()
+			var seq uint64
+			if meta != nil {
+				seq = meta.Sequence.Stream
+			}
+			q.logger.Warn("dequeue: malformed message payload — acking to discard",
+				"subject", msg.Subject(),
+				"sequence", seq,
+				"raw", string(msg.Data()))
 			_ = msg.Ack()
 			return nil, fmt.Errorf("unmarshal queue message: %w", err)
 		}
@@ -141,9 +149,8 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 		return &qm, nil
 	}
 	if err := msgs.Error(); err != nil && !errors.Is(err, jetstream.ErrMsgIteratorClosed) {
-		// Timeout is expected for empty queue — don't error.
-		errStr := err.Error()
-		if !strings.Contains(errStr, "timeout") && !strings.Contains(errStr, "no messages") {
+		// Timeout and no-messages are expected for empty queue — don't error.
+		if !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, jetstream.ErrNoMessages) {
 			return nil, fmt.Errorf("fetch error: %w", err)
 		}
 	}
@@ -151,40 +158,47 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 }
 
 // Peek returns the oldest message without removing it.
+// It uses a direct stream get (not a durable consumer) so the message is never
+// locked from the Dequeue durable consumer on WorkQueuePolicy streams.
 func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, error) {
 	sanitized, err := q.ensureStream(ctx, groupJID)
 	if err != nil {
 		return nil, err
 	}
 	streamName := queueStreamName(sanitized)
-	cons, err := q.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
-		Durable:   "peek-" + sanitized,
-		AckPolicy: jetstream.AckExplicitPolicy,
-		AckWait:   queueAckWait,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create peek consumer: %w", err)
+
+	// Self-heal: remove any legacy "peek-{sanitized}" durable consumer left by
+	// older deployments that used the consumer-based Peek implementation.
+	if derr := q.js.DeleteConsumer(ctx, streamName, "peek-"+sanitized); derr != nil &&
+		!errors.Is(derr, jetstream.ErrConsumerNotFound) {
+		q.logger.Warn("peek: failed to delete legacy peek consumer", "error", derr)
 	}
 
-	msgs, err := cons.Fetch(1, jetstream.FetchMaxWait(queueFetchTimeout))
+	stream, err := q.js.Stream(ctx, streamName)
 	if err != nil {
-		return nil, fmt.Errorf("peek fetch: %w", err)
+		return nil, fmt.Errorf("peek: get stream: %w", err)
 	}
-	for msg := range msgs.Messages() {
-		var qm QueueMessage
-		if err := json.Unmarshal(msg.Data(), &qm); err != nil {
-			return nil, fmt.Errorf("unmarshal peek message: %w", err)
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("peek: stream info: %w", err)
+	}
+	if info.State.Msgs == 0 {
+		return nil, nil // empty queue
+	}
+
+	raw, err := stream.GetMsg(ctx, info.State.FirstSeq)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrMsgNotFound) {
+			return nil, nil // empty queue (race between Info and GetMsg)
 		}
-		// Do NOT ack — leave message in queue for Dequeue to consume.
-		return &qm, nil
+		return nil, fmt.Errorf("peek: get msg: %w", err)
 	}
-	if err := msgs.Error(); err != nil && !errors.Is(err, jetstream.ErrMsgIteratorClosed) {
-		errStr := err.Error()
-		if !strings.Contains(errStr, "timeout") && !strings.Contains(errStr, "no messages") {
-			return nil, fmt.Errorf("peek error: %w", err)
-		}
+
+	var qm QueueMessage
+	if err := json.Unmarshal(raw.Data, &qm); err != nil {
+		return nil, fmt.Errorf("peek: unmarshal message: %w", err)
 	}
-	return nil, nil // empty queue
+	return &qm, nil
 }
 
 // Len returns the number of pending messages in the group's queue.
@@ -244,11 +258,8 @@ func (q *NATSQueue) ActiveJIDs(ctx context.Context) ([]string, error) {
 func (q *NATSQueue) Subscribe(ctx context.Context) (<-chan QueueEvent, error) {
 	ch := make(chan QueueEvent, 64)
 
-	ctx, cancel := context.WithCancel(ctx)
-	q.mu.Lock()
-	q.cancels = append(q.cancels, cancel)
-	q.mu.Unlock()
-
+	// nc.Subscribe is called first so that cancel is only registered if the
+	// subscription succeeds; otherwise the cancel would leak in q.cancels.
 	sub, err := q.nc.Subscribe(queueEventSubject, func(msg *nats.Msg) {
 		var evt QueueEvent
 		if err := json.Unmarshal(msg.Data, &evt); err != nil {
@@ -262,10 +273,14 @@ func (q *NATSQueue) Subscribe(ctx context.Context) (<-chan QueueEvent, error) {
 		}
 	})
 	if err != nil {
-		cancel()
 		close(ch)
 		return nil, fmt.Errorf("subscribe queue events: %w", err)
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	q.mu.Lock()
+	q.cancels = append(q.cancels, cancel)
+	q.mu.Unlock()
 
 	go func() {
 		defer close(ch)
