@@ -216,7 +216,7 @@ func (o *Orchestrator) sendModelUpdateToActive(ctx context.Context, chatJID stri
 		return err
 	}
 
-	return o.ipc.SendInput(ctx, group.Folder, "main", &ipc.IPCMessage{
+	return o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
 		Group:   group.Folder,
 		Type:    ipc.IPCSetModel,
 		Payload: payload,

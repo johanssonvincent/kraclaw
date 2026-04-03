@@ -17,6 +17,7 @@ import (
 	agentsandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
@@ -316,7 +317,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 	envVars := []corev1.EnvVar{
 		groupFolderEnv,
 		{Name: "NATS_URL", Value: c.natsURL},
-		{Name: "KRACLAW_AGENT_ID", Value: "main"},
+		{Name: "KRACLAW_AGENT_ID", Value: ipc.DefaultAgentID},
 		{Name: "KRACLAW_PROXY_URL", Value: c.proxyURL},
 		{Name: "KRACLAW_PROVIDER", Value: providerID},
 		{Name: "KRACLAW_GROUP", Value: cfg.GroupJID},

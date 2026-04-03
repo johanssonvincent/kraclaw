@@ -82,7 +82,11 @@ func main() {
 		log.Error("failed to connect to NATS", "error", err)
 		os.Exit(1)
 	}
-	defer func() { nc.Close() }()
+	defer func() {
+		if err := nc.Drain(); err != nil {
+			log.Warn("nats drain", "error", err)
+		}
+	}()
 	log.Info("connected to NATS")
 
 	ipcBroker, err := ipc.NewNATSBroker(nc, log)

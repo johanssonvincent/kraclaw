@@ -3,11 +3,16 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/robfig/cron/v3"
 )
+
+// ErrGroupNotFound is returned when an operation targets a group JID that does
+// not exist in the database.
+var ErrGroupNotFound = errors.New("group not found")
 
 // ContainerConfig holds per-group container settings.
 type ContainerConfig struct {

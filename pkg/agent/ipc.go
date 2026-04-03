@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +10,10 @@ import (
 
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	// ipc is imported for SanitizeGroupID to avoid duplicating the hash logic.
+	// No cycle: internal/ipc does not import pkg/agent.
+	"github.com/johanssonvincent/kraclaw/internal/ipc"
 )
 
 const ipcStreamMaxAge = time.Hour // must match server-side NATSBroker
@@ -26,13 +28,6 @@ type InboundMessage struct {
 type OutboundMessage struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
-}
-
-// sanitizeGroupID returns the first 16 bytes of SHA-256 as hex (32 chars).
-// Must match the server-side implementation in internal/ipc/nats_broker.go.
-func sanitizeGroupID(groupJID string) string {
-	h := sha256.Sum256([]byte(groupJID))
-	return hex.EncodeToString(h[:16])
 }
 
 // IPCClient handles NATS JetStream communication for a Go agent.
@@ -70,6 +65,10 @@ func NewIPCClient(nc *nats.Conn, groupJID, agentID string, logger *slog.Logger) 
 		logger:   logger,
 	}, nil
 }
+
+// sanitizeGroupID delegates to ipc.SanitizeGroupID so tests in this package
+// and internal callers can use the unexported name without duplicating logic.
+func sanitizeGroupID(groupJID string) string { return ipc.SanitizeGroupID(groupJID) }
 
 func (c *IPCClient) sanitized() string { return sanitizeGroupID(c.groupJID) }
 

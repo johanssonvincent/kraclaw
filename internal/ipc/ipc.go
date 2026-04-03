@@ -2,6 +2,8 @@ package ipc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 )
 
@@ -16,7 +18,20 @@ const (
 	IPCTaskDelete    IPCMessageType = "task_delete"
 	IPCSetModel      IPCMessageType = "set_model"
 	IPCShutdown      IPCMessageType = "shutdown"
+
+	// DefaultAgentID is the well-known agent identifier used for the primary
+	// agent in each group. All call sites must reference this constant instead
+	// of the bare string "main".
+	DefaultAgentID = "main"
 )
+
+// SanitizeGroupID returns the first 16 bytes of the SHA-256 hex digest of the
+// group JID (32 hex characters). Exported so pkg/agent can reuse it without
+// duplication.
+func SanitizeGroupID(groupJID string) string {
+	h := sha256.Sum256([]byte(groupJID))
+	return hex.EncodeToString(h[:16])
+}
 
 // IPCMessage represents a message exchanged between agent and server.
 type IPCMessage struct {

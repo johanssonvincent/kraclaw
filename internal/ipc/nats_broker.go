@@ -2,8 +2,6 @@ package ipc
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,13 +19,9 @@ const (
 	ipcServerConsumer = "kraclaw-server"
 )
 
-// sanitizeGroupID returns the first 16 bytes of the SHA-256 hex digest of the
-// group JID (32 hex characters). NATS uses '.' as a subject separator, so raw
-// JIDs (e.g. "123@g.us") cannot be used directly in stream names or subjects.
-func sanitizeGroupID(groupJID string) string {
-	h := sha256.Sum256([]byte(groupJID))
-	return hex.EncodeToString(h[:16])
-}
+// sanitizeGroupID is an unexported wrapper around SanitizeGroupID so internal
+// callers remain unchanged.
+func sanitizeGroupID(groupJID string) string { return SanitizeGroupID(groupJID) }
 
 func ipcStreamName(sanitized string) string {
 	return "KRACLAW_IPC_" + strings.ToUpper(sanitized)

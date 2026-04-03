@@ -96,5 +96,5 @@ func TestIntegrationMySQLStoreRoundTrip(t *testing.T) {
 }
 
 func TestIntegrationRedisQueueAndIPCBroker(t *testing.T) {
-	t.Skip("replaced by NATS integration tests — see TestIntegrationNATSBroker")
+	t.Skip("replaced by unit tests with embedded NATS server in internal/ipc and internal/queue packages")
 }
