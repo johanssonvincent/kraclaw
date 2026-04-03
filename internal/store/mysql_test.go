@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,26 +13,34 @@ import (
 
 func TestRetryWithBackoff(t *testing.T) {
 	tests := []struct {
-		name        string
-		attempts    int
-		returnErrs  []error
-		wantErr     bool
-		wantCalls   int
-		errContains string
+		name            string
+		attempts        int
+		returnErrs      []error
+		wantErr         bool
+		wantCalls       int
+		errContains     string
+		wantUnwrappable bool // if true, asserts dirtyMigrationError is reachable via errors.As through a wrapping layer
 	}{
 		{
-			name:      "succeeds on first attempt",
-			attempts:  3,
+			name:       "succeeds on first attempt",
+			attempts:   3,
 			returnErrs: []error{nil},
-			wantErr:   false,
-			wantCalls: 1,
+			wantErr:    false,
+			wantCalls:  1,
 		},
 		{
-			name:      "succeeds on second attempt",
-			attempts:  3,
+			name:       "succeeds on second attempt",
+			attempts:   3,
 			returnErrs: []error{errors.New("transient"), nil},
-			wantErr:   false,
-			wantCalls: 2,
+			wantErr:    false,
+			wantCalls:  2,
+		},
+		{
+			name:        "attempts=1 succeeds on first and only attempt",
+			attempts:    1,
+			returnErrs:  []error{nil},
+			wantErr:     false,
+			wantCalls:   1,
 		},
 		{
 			name:        "exhausts all attempts",
@@ -42,28 +51,21 @@ func TestRetryWithBackoff(t *testing.T) {
 			errContains: "failed after 3 attempts",
 		},
 		{
-			name:        "non-retryable error exits immediately",
-			attempts:    5,
-			returnErrs:  []error{&dirtyMigrationError{msg: "dirty"}},
-			wantErr:     true,
-			wantCalls:   1,
-			errContains: "dirty",
-		},
-		{
-			name:       "non-retryable error is unwrappable as dirtyMigrationError",
-			attempts:   3,
-			returnErrs: []error{&dirtyMigrationError{msg: "dirty"}},
-			wantErr:    true,
-			wantCalls:  1,
-			// errContains left empty; assertion is done via errors.As below
-		},
-		{
 			name:        "attempts=1 calls fn once and returns error",
 			attempts:    1,
 			returnErrs:  []error{errors.New("single-attempt fail")},
 			wantErr:     true,
 			wantCalls:   1,
 			errContains: "failed after 1 attempts",
+		},
+		{
+			name:            "non-retryable error exits immediately and is unwrappable through a wrapping layer",
+			attempts:        5,
+			returnErrs:      []error{&dirtyMigrationError{msg: "dirty", migErr: errors.New("original")}},
+			wantErr:         true,
+			wantCalls:       1,
+			errContains:     "dirty",
+			wantUnwrappable: true,
 		},
 	}
 
@@ -90,10 +92,13 @@ func TestRetryWithBackoff(t *testing.T) {
 			if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
 				t.Fatalf("expected error containing %q, got %q", tt.errContains, err.Error())
 			}
-			if tt.name == "non-retryable error is unwrappable as dirtyMigrationError" {
+			if tt.wantUnwrappable {
+				// Simulate the fmt.Errorf("%w") wrapping that runMigrations applies,
+				// to verify the chain survives an additional wrapping layer.
+				wrapped := fmt.Errorf("migrate up: %w", err)
 				var dme *dirtyMigrationError
-				if !errors.As(err, &dme) {
-					t.Fatalf("expected dirtyMigrationError to be unwrappable via errors.As, got %T: %v", err, err)
+				if !errors.As(wrapped, &dme) {
+					t.Fatalf("expected dirtyMigrationError to be reachable via errors.As after wrapping, got %T: %v", wrapped, wrapped)
 				}
 			}
 		})

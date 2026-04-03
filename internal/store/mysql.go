@@ -24,16 +24,28 @@ type MySQLStore struct {
 }
 
 // dirtyMigrationError signals a dirty migration state that must not be retried.
+// It holds the original errors so callers can inspect them via errors.As/errors.Is.
 type dirtyMigrationError struct {
-	msg string
+	msg        string
+	migErr     error
+	versionErr error // non-nil when the version check after migration failure also failed
 }
 
 func (e *dirtyMigrationError) Error() string { return e.msg }
 
+// Unwrap returns the wrapped errors for use with errors.As and errors.Is.
+func (e *dirtyMigrationError) Unwrap() []error {
+	if e.versionErr != nil {
+		return []error{e.migErr, e.versionErr}
+	}
+	return []error{e.migErr}
+}
+
 // retryWithBackoff retries fn up to attempts times using exponential backoff
 // starting at baseDelay (capped at 30 seconds). The operation name is used for
 // structured log output on each retry. Returns the last error wrapped with the
-// attempt count if all attempts are exhausted.
+// attempt count if all attempts are exhausted. Non-retryable errors
+// (dirtyMigrationError) are returned as-is without attempt-count wrapping.
 func retryWithBackoff(attempts int, baseDelay time.Duration, operation string, fn func() error) error {
 	var err error
 	for i := range attempts {
@@ -111,7 +123,11 @@ func runMigrations(dsn string) error {
 	if err != nil {
 		return fmt.Errorf("open migration db: %w", err)
 	}
-	defer func() { _ = db.Close() }()
+	defer func() {
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close migration db", "error", cerr)
+		}
+	}()
 
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
@@ -135,11 +151,18 @@ func runMigrations(dsn string) error {
 		}
 		_, dirty, verr := m.Version()
 		if verr != nil {
-			return &dirtyMigrationError{msg: fmt.Sprintf("migration failed and version check also failed — manual intervention required: migration error: %v, version error: %v", err, verr)}
+			return &dirtyMigrationError{
+				msg:        fmt.Sprintf("migration failed and version check also failed — manual intervention required: migration error: %v, version error: %v", err, verr),
+				migErr:     err,
+				versionErr: verr,
+			}
 		}
 		if dirty {
 			// Dirty migration state requires manual intervention — do not retry.
-			return &dirtyMigrationError{msg: fmt.Sprintf("dirty migration state detected at startup — manual intervention required: inspect schema and run 'migrate force <version>': migration error: %v", err)}
+			return &dirtyMigrationError{
+				msg:    fmt.Sprintf("dirty migration state detected at startup — manual intervention required: inspect schema and run 'migrate force <version>': migration error: %v", err),
+				migErr: err,
+			}
 		}
 		return err
 	}); err != nil {
