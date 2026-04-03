@@ -105,6 +105,31 @@ func TestRetryWithBackoff(t *testing.T) {
 	}
 }
 
+func TestPingRetryOnTransientError(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatalf("create sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectPing().WillReturnError(errors.New("connection refused"))
+	mock.ExpectPing()
+
+	callCount := 0
+	if err := retryWithBackoff(5, time.Millisecond, "ping mysql", func() error {
+		callCount++
+		return db.Ping()
+	}); err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 ping attempts, got %d", callCount)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func newTestStore(t *testing.T) (*MySQLStore, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
