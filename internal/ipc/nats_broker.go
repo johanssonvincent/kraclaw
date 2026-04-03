@@ -163,6 +163,7 @@ func (b *NATSBroker) ReadInput(ctx context.Context, group, agentID string) (<-ch
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
 		Durable:       "agent-" + agentID,
 		FilterSubject: ipcInputSubject(sanitized, agentID),
+		DeliverPolicy: jetstream.DeliverNewPolicy,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
@@ -226,19 +227,25 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 	b.iters = append(b.iters, iter)
 	b.mu.Unlock()
 
-	// Stop the iterator when ctx is cancelled externally. Without this, a
-	// blocking iter.Next() call would keep the consume goroutine alive even
-	// after the caller cancels ctx — a goroutine leak.
+	done := make(chan struct{}) // closed when the consumer goroutine exits
+
+	// Stop the iterator when ctx is cancelled externally or when the consumer
+	// goroutine exits from an iter.Next() error. Without the done case, the
+	// watcher would block forever if the consumer exits before ctx is done —
+	// a goroutine leak per failed consumer.
 	go func() {
 		select {
 		case <-ctx.Done():
 			iter.Stop()
 		case <-b.closedCh:
 			// iter.Stop() already called by Close().
+		case <-done:
+			// Consumer exited normally (iter error); nothing to do.
 		}
 	}()
 
 	go func() {
+		defer close(done)
 		defer close(ch)
 		defer cancel()
 		defer iter.Stop()
@@ -277,8 +284,10 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 					b.logger.Error("ack ipc message", "group", group, "error", err)
 				}
 			case <-ctx.Done():
+				_ = jmsg.Nak() // prevent silent redelivery on cancel race
 				return
 			case <-b.closedCh:
+				_ = jmsg.Nak() // prevent silent redelivery on close race
 				return
 			}
 		}

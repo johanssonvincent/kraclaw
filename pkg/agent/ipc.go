@@ -137,6 +137,7 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 	cons, err := c.js.CreateOrUpdateConsumer(ctx, c.streamName(), jetstream.ConsumerConfig{
 		Durable:       "agent-" + c.agentID,
 		FilterSubject: c.inputSubject(),
+		DeliverPolicy: jetstream.DeliverNewPolicy,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
@@ -157,10 +158,16 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 		}
 		defer iter.Stop()
 
+		done := make(chan struct{}) // closed when this goroutine exits
 		go func() {
-			<-ctx.Done()
-			iter.Stop()
+			select {
+			case <-ctx.Done():
+				iter.Stop()
+			case <-done:
+				// Consumer exited (iter error); watcher can exit too.
+			}
 		}()
+		defer close(done)
 
 		for {
 			select {
@@ -198,6 +205,7 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 					c.logger.Error("ack ipc message", "error", err)
 				}
 			case <-ctx.Done():
+				_ = jmsg.Nak() // prevent silent redelivery on cancel race
 				return
 			}
 		}
