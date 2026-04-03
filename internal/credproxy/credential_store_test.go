@@ -44,7 +44,7 @@ func TestCredentialStore_UpsertAndGet(t *testing.T) {
 	}
 
 	mock.ExpectExec("REPLACE INTO credentials").
-		WithArgs("discord:123", "openai", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs("discord:123", "openai", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := store.UpsertCredential(context.Background(), cred); err != nil {
@@ -98,7 +98,6 @@ func TestCredential_Validate(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid with API key", Credential{GroupJID: "discord:123", Provider: "openai", APIKey: "sk-test"}, false},
-		{"valid with OAuth token", Credential{GroupJID: "discord:123", Provider: "anthropic", OAuthToken: "oauth-test"}, false},
 		{"empty group JID", Credential{GroupJID: "", Provider: "openai", APIKey: "sk-test"}, true},
 		{"empty provider", Credential{GroupJID: "discord:123", Provider: "", APIKey: "sk-test"}, true},
 		{"no credentials", Credential{GroupJID: "discord:123", Provider: "openai"}, true},
@@ -131,7 +130,7 @@ func TestUpsertCredential_RejectsEmptyAPIKey(t *testing.T) {
 		Provider: "openai",
 	})
 	if err == nil {
-		t.Fatal("expected error for credential with no API key or OAuth token")
+		t.Fatal("expected error for credential with no API key")
 	}
 }
 
@@ -149,10 +148,9 @@ func TestGetCredential_Found(t *testing.T) {
 	}
 
 	encKey, _ := enc.Encrypt("sk-test-key")
-	encToken, _ := enc.Encrypt("oauth-test")
-	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted", "oauth_token_encrypted"}).
-		AddRow("openai", encKey, encToken)
-	mock.ExpectQuery("SELECT provider, api_key_encrypted, oauth_token_encrypted FROM credentials WHERE group_jid").
+	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted"}).
+		AddRow("openai", encKey)
+	mock.ExpectQuery("SELECT provider, api_key_encrypted FROM credentials WHERE group_jid").
 		WithArgs("discord:123").
 		WillReturnRows(rows)
 
@@ -169,9 +167,6 @@ func TestGetCredential_Found(t *testing.T) {
 	if cred.APIKey != "sk-test-key" {
 		t.Fatalf("expected API key sk-test-key, got %q", cred.APIKey)
 	}
-	if cred.OAuthToken != "oauth-test" {
-		t.Fatalf("expected OAuth token oauth-test, got %q", cred.OAuthToken)
-	}
 }
 
 func TestGetCredential_NotFound(t *testing.T) {
@@ -187,7 +182,7 @@ func TestGetCredential_NotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mock.ExpectQuery("SELECT provider, api_key_encrypted, oauth_token_encrypted FROM credentials WHERE group_jid").
+	mock.ExpectQuery("SELECT provider, api_key_encrypted FROM credentials WHERE group_jid").
 		WithArgs("unknown:123").
 		WillReturnError(sql.ErrNoRows)
 
@@ -200,7 +195,7 @@ func TestGetCredential_NotFound(t *testing.T) {
 	}
 }
 
-func TestGetCredential_NullOAuthToken(t *testing.T) {
+func TestGetCredential_Anthropic(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -213,10 +208,10 @@ func TestGetCredential_NullOAuthToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	encKey, _ := enc.Encrypt("sk-test-key")
-	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted", "oauth_token_encrypted"}).
-		AddRow("openai", encKey, nil)
-	mock.ExpectQuery("SELECT provider, api_key_encrypted, oauth_token_encrypted FROM credentials WHERE group_jid").
+	encKey, _ := enc.Encrypt("sk-ant-test-key")
+	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted"}).
+		AddRow("anthropic", encKey)
+	mock.ExpectQuery("SELECT provider, api_key_encrypted FROM credentials WHERE group_jid").
 		WithArgs("discord:456").
 		WillReturnRows(rows)
 
@@ -227,7 +222,10 @@ func TestGetCredential_NullOAuthToken(t *testing.T) {
 	if cred == nil {
 		t.Fatal("expected non-nil credential")
 	}
-	if cred.OAuthToken != "" {
-		t.Fatalf("expected empty OAuth token for NULL column, got %q", cred.OAuthToken)
+	if cred.Provider != "anthropic" {
+		t.Fatalf("expected anthropic provider, got %q", cred.Provider)
+	}
+	if cred.APIKey != "sk-ant-test-key" {
+		t.Fatalf("expected API key sk-ant-test-key, got %q", cred.APIKey)
 	}
 }

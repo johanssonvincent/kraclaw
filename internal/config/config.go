@@ -63,7 +63,6 @@ type ProxyConfig struct {
 	// Anthropic (platform-level fallback)
 	AnthropicUpstreamURL string `envconfig:"ANTHROPIC_UPSTREAM_URL" default:"https://api.anthropic.com"`
 	AnthropicAPIKey      string `envconfig:"ANTHROPIC_API_KEY"`
-	AnthropicOAuthToken  string `envconfig:"ANTHROPIC_OAUTH_TOKEN"`
 	AnthropicAPIVersion  string `envconfig:"ANTHROPIC_VERSION" default:"2023-06-01"`
 
 	// OpenAI (platform-level fallback)
@@ -124,12 +123,12 @@ func Load() (*Config, error) {
 
 // Validate checks that the configuration is valid.
 func (c *Config) Validate() error {
-	if c.Proxy.AnthropicAPIKey == "" && c.Proxy.AnthropicOAuthToken == "" && c.Proxy.OpenAIAPIKey == "" {
-		return fmt.Errorf("at least one provider credential must be set (ANTHROPIC_API_KEY, ANTHROPIC_OAUTH_TOKEN, or OPENAI_API_KEY)")
+	if c.Proxy.AnthropicAPIKey == "" && c.Proxy.OpenAIAPIKey == "" {
+		return fmt.Errorf("at least one provider credential must be set (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
 	}
 	// OpenAI-only setups require the multi-provider proxy path (with encryption key)
 	// because the legacy proxy only supports Anthropic.
-	hasAnthropic := c.Proxy.AnthropicAPIKey != "" || c.Proxy.AnthropicOAuthToken != ""
+	hasAnthropic := c.Proxy.AnthropicAPIKey != ""
 	if !hasAnthropic && c.Proxy.OpenAIAPIKey != "" && c.Proxy.CredentialEncryptionKey == "" {
 		return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY is required when only OpenAI credentials are configured (legacy proxy only supports Anthropic)")
 	}

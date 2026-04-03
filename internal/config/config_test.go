@@ -85,7 +85,6 @@ func TestValidate_ValidEncryptionKey(t *testing.T) {
 func TestValidate_OpenAIOnlyRequiresEncryptionKey(t *testing.T) {
 	cfg := validConfig()
 	cfg.Proxy.AnthropicAPIKey = ""
-	cfg.Proxy.AnthropicOAuthToken = ""
 	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
 	cfg.Proxy.CredentialEncryptionKey = ""
 	if err := cfg.Validate(); err == nil {
@@ -96,7 +95,6 @@ func TestValidate_OpenAIOnlyRequiresEncryptionKey(t *testing.T) {
 func TestValidate_OpenAIOnlyWithEncryptionKeyPasses(t *testing.T) {
 	cfg := validConfig()
 	cfg.Proxy.AnthropicAPIKey = ""
-	cfg.Proxy.AnthropicOAuthToken = ""
 	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
 	cfg.Proxy.CredentialEncryptionKey = strings.Repeat("ab", 32)
 	if err := cfg.Validate(); err != nil {
@@ -200,7 +198,7 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
-			name: "missing API key and OAuth token",
+			name: "missing API key",
 			env: map[string]string{
 				"MYSQL_DSN":   "user:pass@tcp(localhost:3306)/kraclaw",
 				"AGENT_IMAGE": "registry.local/agent:latest",
@@ -237,19 +235,6 @@ func TestLoad(t *testing.T) {
 			},
 			wantErr: true,
 		},
-		{
-			name: "OAuth token instead of API key",
-			env: map[string]string{
-				"MYSQL_DSN":             "user:pass@tcp(localhost:3306)/kraclaw",
-				"AGENT_IMAGE":           "registry.local/agent:latest",
-				"ANTHROPIC_OAUTH_TOKEN": "oauth-test",
-			},
-			check: func(t *testing.T, cfg *Config) {
-				if cfg.Proxy.AnthropicOAuthToken != "oauth-test" {
-					t.Errorf("unexpected OAuth token: %s", cfg.Proxy.AnthropicOAuthToken)
-				}
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -268,7 +253,7 @@ func TestLoad(t *testing.T) {
 				"METRICS_ENABLED", "METRICS_PATH",
 				"MYSQL_MAX_OPEN_CONNS", "MYSQL_MAX_IDLE_CONNS", "MYSQL_CONN_MAX_LIFETIME",
 				"TASK_CLOSE_DELAY", "MAX_RETRIES", "RETRY_BASE_DELAY",
-				"SCHEDULER_POLL_INTERVAL", "ANTHROPIC_OAUTH_TOKEN",
+				"SCHEDULER_POLL_INTERVAL",
 			}
 			for _, k := range envKeys {
 				_ = os.Unsetenv(k)

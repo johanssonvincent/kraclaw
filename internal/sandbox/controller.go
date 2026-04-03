@@ -347,7 +347,6 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 			// Legacy Node.js agent.
 			envVars = append(envVars,
 				corev1.EnvVar{Name: "ANTHROPIC_BASE_URL", Value: c.proxyURL},
-				corev1.EnvVar{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: "placeholder"},
 				corev1.EnvVar{Name: "HOME", Value: "/home/node"},
 			)
 		}
@@ -365,7 +364,6 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		} else {
 			envVars = append(envVars,
 				corev1.EnvVar{Name: "ANTHROPIC_BASE_URL", Value: c.proxyURL},
-				corev1.EnvVar{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: "placeholder"},
 				corev1.EnvVar{Name: "HOME", Value: "/home/node"},
 			)
 		}

@@ -8,10 +8,9 @@ import (
 
 // Credential represents per-group API credentials.
 type Credential struct {
-	GroupJID   string
-	Provider   string
-	APIKey     string
-	OAuthToken string
+	GroupJID string
+	Provider string
+	APIKey   string
 }
 
 // Validate checks that required Credential fields are set.
@@ -22,8 +21,8 @@ func (c *Credential) Validate() error {
 	if c.Provider == "" {
 		return fmt.Errorf("credential: provider is required")
 	}
-	if c.APIKey == "" && c.OAuthToken == "" {
-		return fmt.Errorf("credential: either API key or OAuth token is required")
+	if c.APIKey == "" {
+		return fmt.Errorf("credential: API key is required")
 	}
 	return nil
 }
@@ -47,12 +46,11 @@ func NewCredentialStore(db *sql.DB, enc *Encryptor) (*CredentialStore, error) {
 // GetCredential retrieves and decrypts a credential for a group.
 func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*Credential, error) {
 	var provider, apiKeyEnc string
-	var oauthTokenEnc sql.NullString
 
 	err := s.db.QueryRowContext(ctx,
-		"SELECT provider, api_key_encrypted, oauth_token_encrypted FROM credentials WHERE group_jid = ?",
+		"SELECT provider, api_key_encrypted FROM credentials WHERE group_jid = ?",
 		groupJID,
-	).Scan(&provider, &apiKeyEnc, &oauthTokenEnc)
+	).Scan(&provider, &apiKeyEnc)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -65,21 +63,11 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 		return nil, fmt.Errorf("decrypt api key: %w", err)
 	}
 
-	cred := &Credential{
+	return &Credential{
 		GroupJID: groupJID,
 		Provider: provider,
 		APIKey:   apiKey,
-	}
-
-	if oauthTokenEnc.Valid && oauthTokenEnc.String != "" {
-		token, err := s.enc.Decrypt(oauthTokenEnc.String)
-		if err != nil {
-			return nil, fmt.Errorf("decrypt oauth token: %w", err)
-		}
-		cred.OAuthToken = token
-	}
-
-	return cred, nil
+	}, nil
 }
 
 // UpsertCredential encrypts and stores a credential for a group.
@@ -93,18 +81,9 @@ func (s *CredentialStore) UpsertCredential(ctx context.Context, cred *Credential
 		return fmt.Errorf("encrypt api key: %w", err)
 	}
 
-	var oauthTokenEnc sql.NullString
-	if cred.OAuthToken != "" {
-		enc, err := s.enc.Encrypt(cred.OAuthToken)
-		if err != nil {
-			return fmt.Errorf("encrypt oauth token: %w", err)
-		}
-		oauthTokenEnc = sql.NullString{String: enc, Valid: true}
-	}
-
 	_, err = s.db.ExecContext(ctx,
-		"REPLACE INTO credentials (group_jid, provider, api_key_encrypted, oauth_token_encrypted) VALUES (?, ?, ?, ?)",
-		cred.GroupJID, cred.Provider, apiKeyEnc, oauthTokenEnc,
+		"REPLACE INTO credentials (group_jid, provider, api_key_encrypted) VALUES (?, ?, ?)",
+		cred.GroupJID, cred.Provider, apiKeyEnc,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert credential: %w", err)

@@ -11,8 +11,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/johanssonvincent/kraclaw/internal/config"
@@ -24,7 +22,6 @@ import (
 type resolvedCredential struct {
 	Provider    string
 	APIKey      string
-	OAuthToken  string
 	UpstreamURL string
 }
 
@@ -62,9 +59,8 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 				)
 			} else {
 				rc := &resolvedCredential{
-					Provider:   cred.Provider,
-					APIKey:     cred.APIKey,
-					OAuthToken: cred.OAuthToken,
+					Provider: cred.Provider,
+					APIKey:   cred.APIKey,
 				}
 				switch cred.Provider {
 				case provider.ProviderOpenAI:
@@ -88,21 +84,19 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 			}, nil
 		}
 	case provider.ProviderAnthropic:
-		if r.cfg.AnthropicAPIKey != "" || r.cfg.AnthropicOAuthToken != "" {
+		if r.cfg.AnthropicAPIKey != "" {
 			return &resolvedCredential{
 				Provider:    provider.ProviderAnthropic,
 				APIKey:      r.cfg.AnthropicAPIKey,
-				OAuthToken:  r.cfg.AnthropicOAuthToken,
 				UpstreamURL: r.cfg.AnthropicUpstreamURL,
 			}, nil
 		}
 	default:
 		// No explicit provider requested — try Anthropic first, then OpenAI.
-		if r.cfg.AnthropicAPIKey != "" || r.cfg.AnthropicOAuthToken != "" {
+		if r.cfg.AnthropicAPIKey != "" {
 			return &resolvedCredential{
 				Provider:    provider.ProviderAnthropic,
 				APIKey:      r.cfg.AnthropicAPIKey,
-				OAuthToken:  r.cfg.AnthropicOAuthToken,
 				UpstreamURL: r.cfg.AnthropicUpstreamURL,
 			}, nil
 		}
@@ -138,16 +132,10 @@ type Proxy struct {
 	allowedHost          string          // upstream host for credential injection validation
 	allowedUpstreamHosts map[string]bool // defense-in-depth for multi-provider mode
 	apiKey               string
-	oauthToken           string
 	server               *http.Server
 	addr                 string
 	log                  *slog.Logger
 	resolver             CredentialResolver // nil = legacy single-provider mode
-
-	mu              sync.RWMutex
-	cachedAPIKey    string
-	cachedAPIKeyAt  time.Time
-	cachedAPIKeyTTL time.Duration
 }
 
 // New creates a new credential proxy from the given config.
@@ -159,20 +147,15 @@ func New(cfg config.ProxyConfig) (*Proxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("credproxy: invalid upstream URL: %w", err)
 	}
-	if cfg.AnthropicAPIKey == "" && cfg.AnthropicOAuthToken == "" {
-		return nil, fmt.Errorf("credproxy: either AnthropicAPIKey or AnthropicOAuthToken must be set (use NewMultiProviderProxy for per-group credentials)")
-	}
-	if cfg.AnthropicAPIKey != "" && cfg.AnthropicOAuthToken != "" {
-		slog.Warn("both ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN set, API key takes precedence")
+	if cfg.AnthropicAPIKey == "" {
+		return nil, fmt.Errorf("credproxy: AnthropicAPIKey must be set (use NewMultiProviderProxy for per-group credentials)")
 	}
 	return &Proxy{
-		upstream:        upstream,
-		allowedHost:     upstream.Host,
-		apiKey:          cfg.AnthropicAPIKey,
-		oauthToken:      cfg.AnthropicOAuthToken,
-		addr:            cfg.Addr,
-		log:             slog.Default().With("component", "credproxy"),
-		cachedAPIKeyTTL: 15 * time.Minute,
+		upstream:    upstream,
+		allowedHost: upstream.Host,
+		apiKey:      cfg.AnthropicAPIKey,
+		addr:        cfg.Addr,
+		log:         slog.Default().With("component", "credproxy"),
 	}, nil
 }
 
@@ -204,10 +187,8 @@ func NewMultiProviderProxy(cfg config.ProxyConfig, resolver CredentialResolver) 
 		allowedHost:          upstream.Host,
 		allowedUpstreamHosts: allowedHosts,
 		apiKey:               cfg.AnthropicAPIKey,
-		oauthToken:           cfg.AnthropicOAuthToken,
 		addr:                 cfg.Addr,
 		log:                  slog.Default().With("component", "credproxy"),
-		cachedAPIKeyTTL:      15 * time.Minute,
 		resolver:             resolver,
 	}, nil
 }
@@ -261,10 +242,7 @@ func (p *Proxy) Stop(ctx context.Context) error {
 }
 
 func (p *Proxy) authMode() string {
-	if p.apiKey != "" {
-		return "api-key"
-	}
-	return "oauth"
+	return "api-key"
 }
 
 func (p *Proxy) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -316,13 +294,8 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 					req.Header.Del("X-Api-Key")
 					req.Header.Set("Authorization", "Bearer "+rd.cred.APIKey)
 				default: // anthropic
-					if rd.cred.APIKey != "" {
-						req.Header.Del("Authorization")
-						req.Header.Set("X-Api-Key", rd.cred.APIKey)
-					} else if rd.cred.OAuthToken != "" {
-						req.Header.Del("X-Api-Key")
-						req.Header.Set("Authorization", "Bearer "+rd.cred.OAuthToken)
-					}
+					req.Header.Del("Authorization")
+					req.Header.Set("X-Api-Key", rd.cred.APIKey)
 				}
 				return
 			}
@@ -354,32 +327,10 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 			req.Header.Del("Keep-Alive")
 			req.Header.Del("Transfer-Encoding")
 
-			existingKey := req.Header.Get("X-Api-Key")
-			if existingKey != "" && existingKey != "placeholder" {
-				p.cacheAPIKey(existingKey)
-			}
-
-			if p.apiKey != "" {
-				// API key mode: strip incoming auth, inject real key
-				req.Header.Del("X-Api-Key")
-				req.Header.Del("Authorization")
-				req.Header.Set("X-Api-Key", p.apiKey)
-			} else {
-				// OAuth mode: only inject when no real X-Api-Key present (pre-exchange).
-				// After token exchange, Claude Code sends a real X-Api-Key that should
-				// pass through unmodified.
-				if existingKey == "" || existingKey == "placeholder" {
-					if p.shouldUseCachedAPIKey(req) {
-						if cachedKey, ok := p.getCachedAPIKey(); ok {
-							req.Header.Del("Authorization")
-							req.Header.Set("X-Api-Key", cachedKey)
-							return
-						}
-					}
-					req.Header.Del("X-Api-Key")
-					req.Header.Set("Authorization", "Bearer "+p.oauthToken)
-				}
-			}
+			// API key mode: strip incoming auth, inject real key.
+			req.Header.Del("X-Api-Key")
+			req.Header.Del("Authorization")
+			req.Header.Set("X-Api-Key", p.apiKey)
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			p.log.Debug("upstream response",
@@ -495,36 +446,6 @@ func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-func (p *Proxy) cacheAPIKey(key string) {
-	if key == "" || key == "placeholder" {
-		return
-	}
-	p.mu.Lock()
-	p.cachedAPIKey = key
-	p.cachedAPIKeyAt = time.Now()
-	p.mu.Unlock()
-}
-
-func (p *Proxy) getCachedAPIKey() (string, bool) {
-	p.mu.RLock()
-	key := p.cachedAPIKey
-	storedAt := p.cachedAPIKeyAt
-	ttl := p.cachedAPIKeyTTL
-	p.mu.RUnlock()
-
-	if key == "" {
-		return "", false
-	}
-	if ttl > 0 && time.Since(storedAt) > ttl {
-		return "", false
-	}
-	return key, true
-}
-
-func (p *Proxy) shouldUseCachedAPIKey(req *http.Request) bool {
-	return strings.HasPrefix(req.URL.Path, "/v1/models")
 }
 
 type responseWriter struct {
