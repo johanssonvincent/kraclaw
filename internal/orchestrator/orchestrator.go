@@ -603,7 +603,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 				o.log.Error("failed to marshal message payload", "group", group.Name, "error", err)
 				continue
 			}
-			if err := o.ipc.SendInput(ctx, group.Folder, &ipc.IPCMessage{
+			if err := o.ipc.SendInput(ctx, group.Folder, "main", &ipc.IPCMessage{
 				Group:   group.Folder,
 				Type:    ipc.IPCMessageText,
 				Payload: payload,
@@ -711,7 +711,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	if err != nil {
 		o.log.Error("failed to marshal initial input", "group", group.Name, "error", err)
 	} else {
-		if err := o.ipc.SendInput(ctx, group.Folder, &ipc.IPCMessage{
+		if err := o.ipc.SendInput(ctx, group.Folder, "main", &ipc.IPCMessage{
 			Group:   group.Folder,
 			Type:    ipc.IPCMessageText,
 			Payload: payload,

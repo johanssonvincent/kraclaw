@@ -38,7 +38,7 @@ func TestPublishAndSubscribeOutput(t *testing.T) {
 		Type:    IPCMessageText,
 		Payload: json.RawMessage(`{"text":"hello"}`),
 	}
-	if err := broker.PublishOutput(ctx, group, msg); err != nil {
+	if err := broker.PublishOutput(ctx, group, "main", msg); err != nil {
 		t.Fatalf("PublishOutput: %v", err)
 	}
 
@@ -67,7 +67,7 @@ func TestSendAndReadInput(t *testing.T) {
 	defer cancel()
 
 	group := "input-group"
-	ch, err := broker.ReadInput(ctx, group)
+	ch, err := broker.ReadInput(ctx, group, "main")
 	if err != nil {
 		t.Fatalf("ReadInput: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestSendAndReadInput(t *testing.T) {
 		Type:    IPCTaskCreate,
 		Payload: json.RawMessage(`{"taskId":"abc"}`),
 	}
-	if err := broker.SendInput(ctx, group, msg); err != nil {
+	if err := broker.SendInput(ctx, group, "main", msg); err != nil {
 		t.Fatalf("SendInput: %v", err)
 	}
 
@@ -88,34 +88,6 @@ func TestSendAndReadInput(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for input message")
-	}
-}
-
-func TestCloseSignal(t *testing.T) {
-	_, broker := setup(t)
-	ctx := context.Background()
-	group := "close-group"
-
-	// Initially not set.
-	closed, err := broker.CheckCloseSignal(ctx, group)
-	if err != nil {
-		t.Fatalf("CheckCloseSignal: %v", err)
-	}
-	if closed {
-		t.Error("expected close signal to be false initially")
-	}
-
-	// Set it.
-	if err := broker.SetCloseSignal(ctx, group); err != nil {
-		t.Fatalf("SetCloseSignal: %v", err)
-	}
-
-	closed, err = broker.CheckCloseSignal(ctx, group)
-	if err != nil {
-		t.Fatalf("CheckCloseSignal: %v", err)
-	}
-	if !closed {
-		t.Error("expected close signal to be true after setting")
 	}
 }
 
@@ -136,7 +108,7 @@ func TestMultipleMessages(t *testing.T) {
 			Type:    IPCMessageText,
 			Payload: json.RawMessage(`{"i":` + string(rune('0'+i)) + `}`),
 		}
-		if err := broker.PublishOutput(ctx, group, msg); err != nil {
+		if err := broker.PublishOutput(ctx, group, "main", msg); err != nil {
 			t.Fatalf("PublishOutput[%d]: %v", i, err)
 		}
 	}
@@ -188,11 +160,11 @@ func TestDeleteStreams(t *testing.T) {
 		Type:    IPCMessageText,
 		Payload: json.RawMessage(`{"text":"hello"}`),
 	}
-	if err := broker.PublishOutput(ctx, group, msg); err != nil {
+	if err := broker.PublishOutput(ctx, group, "main", msg); err != nil {
 		t.Fatalf("PublishOutput: %v", err)
 	}
 	// Send an input message so the input stream exists.
-	if err := broker.SendInput(ctx, group, msg); err != nil {
+	if err := broker.SendInput(ctx, group, "main", msg); err != nil {
 		t.Fatalf("SendInput: %v", err)
 	}
 
@@ -306,7 +278,6 @@ func TestKeySchemas(t *testing.T) {
 	}{
 		{outputKey, "grp1", "kraclaw:ipc:grp1:output"},
 		{inputKey, "grp1", "kraclaw:ipc:grp1:input"},
-		{closeKey, "grp1", "kraclaw:ipc:grp1:close"},
 	}
 	for _, tt := range tests {
 		got := tt.fn(tt.arg)

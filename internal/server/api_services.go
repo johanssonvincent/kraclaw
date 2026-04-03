@@ -489,7 +489,7 @@ func (s *sandboxService) CreateSandbox(ctx context.Context, req *kraclawv1.Creat
 			Type:    ipc.IPCMessageText,
 			Payload: payload,
 		}
-		if err := s.ipc.SendInput(ctx, req.GroupFolder, msg); err != nil {
+		if err := s.ipc.SendInput(ctx, req.GroupFolder, "main", msg); err != nil {
 			s.log.Warn("failed to send initial prompt via IPC", "group", req.GroupFolder, "error", err)
 		}
 	}
@@ -525,7 +525,7 @@ func (s *sandboxService) PipeSandboxInput(ctx context.Context, req *kraclawv1.Pi
 		Type:    ipc.IPCMessageText,
 		Payload: payload,
 	}
-	if err := s.ipc.SendInput(ctx, req.GroupFolder, msg); err != nil {
+	if err := s.ipc.SendInput(ctx, req.GroupFolder, "main", msg); err != nil {
 		return nil, status.Errorf(codes.Internal, "send input: %v", err)
 	}
 

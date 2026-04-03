@@ -368,7 +368,7 @@ type mockIPCBroker struct {
 	outputCh   chan *ipc.IPCMessage
 }
 
-func (m *mockIPCBroker) PublishOutput(ctx context.Context, group string, msg *ipc.IPCMessage) error {
+func (m *mockIPCBroker) PublishOutput(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {
 	return nil
 }
 
@@ -381,7 +381,7 @@ func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-ch
 	return ch, nil
 }
 
-func (m *mockIPCBroker) SendInput(ctx context.Context, group string, msg *ipc.IPCMessage) error {
+func (m *mockIPCBroker) SendInput(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {
 	if m.sendErr != nil {
 		return m.sendErr
 	}
@@ -389,16 +389,12 @@ func (m *mockIPCBroker) SendInput(ctx context.Context, group string, msg *ipc.IP
 	return nil
 }
 
-func (m *mockIPCBroker) ReadInput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, error) {
+func (m *mockIPCBroker) ReadInput(ctx context.Context, group, agentID string) (<-chan *ipc.IPCMessage, error) {
 	ch := make(chan *ipc.IPCMessage)
 	close(ch)
 	return ch, nil
 }
 
-func (m *mockIPCBroker) SetCloseSignal(ctx context.Context, group string) error { return nil }
-func (m *mockIPCBroker) CheckCloseSignal(ctx context.Context, group string) (bool, error) {
-	return false, nil
-}
 func (m *mockIPCBroker) DeleteStreams(ctx context.Context, group string) error { return nil }
 func (m *mockIPCBroker) Close() error                                          { return nil }
 
