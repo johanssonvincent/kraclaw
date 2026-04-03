@@ -37,6 +37,17 @@ type QueueEvent struct {
 	GroupJID string         `json:"groupJid"`
 }
 
+// groupActiveStore is the subset of the store package needed by NATSQueue for
+// active group tracking. Using a local interface avoids an import cycle and
+// makes NATSQueue easy to test with a mock.
+type groupActiveStore interface {
+	MarkGroupActive(ctx context.Context, jid string) error
+	MarkGroupInactive(ctx context.Context, jid string) error
+	IsGroupActive(ctx context.Context, jid string) (bool, error)
+	ActiveGroupCount(ctx context.Context) (int64, error)
+	ActiveGroupJIDs(ctx context.Context) ([]string, error)
+}
+
 // Queue defines the interface for the message processing queue.
 type Queue interface {
 	Enqueue(ctx context.Context, groupJID string, msg *QueueMessage) error
