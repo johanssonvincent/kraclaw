@@ -512,6 +512,12 @@ func (m *mockGroupStore) UpsertAllowlistEntry(context.Context, *store.SenderAllo
 func (m *mockGroupStore) DeleteAllowlistEntry(context.Context, int64) error { return nil }
 func (m *mockGroupStore) Close() error                                      { return nil }
 
+func (m *mockGroupStore) MarkGroupActive(context.Context, string) error              { return nil }
+func (m *mockGroupStore) MarkGroupInactive(context.Context, string) error            { return nil }
+func (m *mockGroupStore) IsGroupActive(context.Context, string) (bool, error)        { return false, nil }
+func (m *mockGroupStore) ActiveGroupCount(context.Context) (int64, error)            { return 0, nil }
+func (m *mockGroupStore) ActiveGroupJIDs(context.Context) ([]string, error)          { return nil, nil }
+
 // --- RegisterGroup tests ---
 
 func TestRegisterGroup_NilStore(t *testing.T) {

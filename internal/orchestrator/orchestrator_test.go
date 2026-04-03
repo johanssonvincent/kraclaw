@@ -199,6 +199,12 @@ func (m *mockStore) DeleteAllowlistEntry(_ context.Context, _ int64) error { ret
 
 func (m *mockStore) Close() error { return nil }
 
+func (m *mockStore) MarkGroupActive(_ context.Context, _ string) error              { return nil }
+func (m *mockStore) MarkGroupInactive(_ context.Context, _ string) error            { return nil }
+func (m *mockStore) IsGroupActive(_ context.Context, _ string) (bool, error)        { return false, nil }
+func (m *mockStore) ActiveGroupCount(_ context.Context) (int64, error)              { return 0, nil }
+func (m *mockStore) ActiveGroupJIDs(_ context.Context) ([]string, error)            { return nil, nil }
+
 // --- Mock Queue ---
 
 type mockQueue struct {
