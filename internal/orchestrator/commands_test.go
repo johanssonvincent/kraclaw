@@ -2,15 +2,9 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
@@ -18,13 +12,6 @@ import (
 )
 
 func TestHandleSlashCommand(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
-			{ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude 3.5 Sonnet"},
-		}})
-	}))
-	defer srv.Close()
-
 	tests := []struct {
 		name       string
 		content    string
@@ -66,7 +53,7 @@ func TestHandleSlashCommand(t *testing.T) {
 			},
 			wantReturn: true,
 			wantSent: func(msgs []sentMessage) bool {
-				return len(msgs) > 0 && strings.Contains(msgs[0].text, "Models:")
+				return len(msgs) > 0 && strings.Contains(msgs[0].text, "Models (Anthropic):")
 			},
 		},
 		{
@@ -75,11 +62,11 @@ func TestHandleSlashCommand(t *testing.T) {
 			sender:  "alice",
 			groups: []store.Group{
 				{JID: "group1@g.us", Folder: "group1", Name: "Test",
-					ContainerConfig: &store.ContainerConfig{Model: "claude-3-5-sonnet-20241022"}},
+					ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"}},
 			},
 			wantReturn: true,
 			wantSent: func(msgs []sentMessage) bool {
-				return len(msgs) > 0 && strings.Contains(msgs[0].text, "Current model: claude-3-5-sonnet-20241022")
+				return len(msgs) > 0 && strings.Contains(msgs[0].text, "Current model: claude-sonnet-4-6")
 			},
 		},
 		{
@@ -135,7 +122,6 @@ func TestHandleSlashCommand(t *testing.T) {
 			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 			b := &mockIPCBroker{}
 			o := newTestOrchestratorWithRouter(s, newMockQueue(), b, []channel.Channel{ch})
-			o.models = newModelCache(srv.URL, "2023-06-01", time.Hour, false, slog.Default())
 
 			got := o.handleSlashCommand(context.Background(), "group1@g.us", tt.content, tt.sender)
 			if got != tt.wantReturn {
@@ -153,13 +139,6 @@ func TestHandleSlashCommand(t *testing.T) {
 }
 
 func TestHandleModelCommand_SetModel(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
-			{ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude 3.5 Sonnet"},
-		}})
-	}))
-	defer srv.Close()
-
 	tests := []struct {
 		name      string
 		requested string
@@ -170,11 +149,11 @@ func TestHandleModelCommand_SetModel(t *testing.T) {
 	}{
 		{
 			name:      "set valid model",
-			requested: "claude-3-5-sonnet-20241022",
+			requested: "claude-sonnet-4-6",
 			groups: []store.Group{
 				{JID: "group1@g.us", Folder: "group1", Name: "Test"},
 			},
-			wantText: "Model set to claude-3-5-sonnet-20241022",
+			wantText: "Model set to claude-sonnet-4-6",
 		},
 		{
 			name:      "set unknown model",
@@ -186,26 +165,26 @@ func TestHandleModelCommand_SetModel(t *testing.T) {
 		},
 		{
 			name:      "set already-current model",
-			requested: "claude-3-5-sonnet-20241022",
+			requested: "claude-sonnet-4-6",
 			groups: []store.Group{
 				{JID: "group1@g.us", Folder: "group1", Name: "Test",
-					ContainerConfig: &store.ContainerConfig{Model: "claude-3-5-sonnet-20241022"}},
+					ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"}},
 			},
 			wantText: "already set",
 		},
 		{
 			name:      "set model with active sandbox",
-			requested: "claude-3-5-sonnet-20241022",
+			requested: "claude-sonnet-4-6",
 			groups: []store.Group{
 				{JID: "group1@g.us", Folder: "group1", Name: "Test"},
 			},
 			active:   map[string]bool{"group1@g.us": true},
-			wantText: "Model set to claude-3-5-sonnet-20241022",
+			wantText: "Model set to claude-sonnet-4-6",
 			wantIPC:  true,
 		},
 		{
 			name:      "group not found",
-			requested: "claude-3-5-sonnet-20241022",
+			requested: "claude-sonnet-4-6",
 			groups:    nil,
 			wantText:  "Unable to fetch current model",
 		},
@@ -222,7 +201,6 @@ func TestHandleModelCommand_SetModel(t *testing.T) {
 			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 			b := &mockIPCBroker{}
 			o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
-			o.models = newModelCache(srv.URL, "2023-06-01", time.Hour, false, slog.Default())
 
 			// Populate registeredGroups for sendModelUpdateToActive
 			for _, g := range tt.groups {
@@ -250,21 +228,13 @@ func TestHandleModelCommand_SetModel(t *testing.T) {
 
 func TestHandleModelsCommand_Scenarios(t *testing.T) {
 	t.Run("models with current marker", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
-				{ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude 3.5 Sonnet"},
-			}})
-		}))
-		defer srv.Close()
-
 		s := newMockStore()
 		s.groups = []store.Group{
 			{JID: "group1@g.us", Folder: "group1", Name: "Test",
-				ContainerConfig: &store.ContainerConfig{Model: "claude-3-5-sonnet-20241022"}},
+				ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"}},
 		}
 		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
-		o.models = newModelCache(srv.URL, "2023-06-01", time.Hour, false, slog.Default())
 
 		o.handleModelsCommand(context.Background(), "group1@g.us")
 
@@ -276,82 +246,70 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("models with no current (default)", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
-				{ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude 3.5 Sonnet"},
-			}})
-		}))
-		defer srv.Close()
-
+	t.Run("models with no current shows default", func(t *testing.T) {
 		s := newMockStore()
 		s.groups = []store.Group{
 			{JID: "group1@g.us", Folder: "group1", Name: "Test"},
 		}
 		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
-		o.models = newModelCache(srv.URL, "2023-06-01", time.Hour, false, slog.Default())
 
 		o.handleModelsCommand(context.Background(), "group1@g.us")
 
 		if len(ch.sent) == 0 {
 			t.Fatal("expected sent message")
+		}
+		if !strings.Contains(ch.sent[0].text, "(default)") {
+			t.Errorf("sent text = %q, want substring %q for default indicator", ch.sent[0].text, "(default)")
 		}
 		if strings.Contains(ch.sent[0].text, "(current)") {
 			t.Errorf("sent text = %q, should NOT contain %q when no model set", ch.sent[0].text, "(current)")
 		}
 	})
 
-	t.Run("models upstream error with stale cache", func(t *testing.T) {
-		var mu sync.Mutex
-		returnError := false
-
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			mu.Lock()
-			shouldError := returnError
-			mu.Unlock()
-			if shouldError {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{
-				{ID: "claude-3-5-sonnet-20241022", DisplayName: "Claude 3.5 Sonnet"},
-			}})
-		}))
-		defer srv.Close()
-
+	t.Run("unknown provider returns error message", func(t *testing.T) {
 		s := newMockStore()
 		s.groups = []store.Group{
-			{JID: "group1@g.us", Folder: "group1", Name: "Test"},
+			{JID: "group1@g.us", Folder: "group1", Name: "Test",
+				ContainerConfig: &store.ContainerConfig{Provider: "opanai"}},
 		}
 		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
-		o.models = newModelCache(srv.URL, "2023-06-01", 1*time.Millisecond, false, slog.Default())
-
-		// Populate cache
-		_, _, err := o.models.List(context.Background())
-		if err != nil {
-			t.Fatalf("initial List() error = %v", err)
-		}
-
-		// Expire TTL and switch to error
-		time.Sleep(2 * time.Millisecond)
-		mu.Lock()
-		returnError = true
-		mu.Unlock()
 
 		o.handleModelsCommand(context.Background(), "group1@g.us")
 
 		if len(ch.sent) == 0 {
 			t.Fatal("expected sent message")
 		}
-		if !strings.Contains(ch.sent[0].text, "cached") {
-			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "cached")
+		if !strings.Contains(ch.sent[0].text, "Unknown provider") {
+			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "Unknown provider")
+		}
+	})
+
+	t.Run("models for openai provider", func(t *testing.T) {
+		s := newMockStore()
+		s.groups = []store.Group{
+			{JID: "group1@g.us", Folder: "group1", Name: "Test",
+				ContainerConfig: &store.ContainerConfig{Provider: "openai", Model: "gpt-5.4"}},
+		}
+		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
+
+		o.handleModelsCommand(context.Background(), "group1@g.us")
+
+		if len(ch.sent) == 0 {
+			t.Fatal("expected sent message")
+		}
+		if !strings.Contains(ch.sent[0].text, "Models (OpenAI):") {
+			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "Models (OpenAI):")
+		}
+		if !strings.Contains(ch.sent[0].text, "gpt-5.4") {
+			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "gpt-5.4")
 		}
 	})
 }
 
-func TestHandleModelCommand_OAuthHardcodedList(t *testing.T) {
+func TestHandleModelCommand_ProviderRegistryValidation(t *testing.T) {
 	s := newMockStore()
 	s.groups = []store.Group{{JID: "group1@g.us", Folder: "group1", Name: "Test"}}
 
@@ -360,10 +318,8 @@ func TestHandleModelCommand_OAuthHardcodedList(t *testing.T) {
 	b := &mockIPCBroker{}
 	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
 
-	// OAuth hardcoded mode should validate against the local allowlist without
-	// calling upstream /v1/models.
-	o.models = newModelCache("127.0.0.1:1", "2023-06-01", time.Hour, true, slog.Default())
-
+	// Provider registry validates against the local model list without
+	// calling any upstream API.
 	o.handleModelCommand(context.Background(), "group1@g.us", "claude-opus-4-6")
 
 	if len(ch.sent) == 0 {
@@ -375,18 +331,13 @@ func TestHandleModelCommand_OAuthHardcodedList(t *testing.T) {
 }
 
 func TestHandleModelCommand_SetModelClearsSessionState(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{{ID: "claude-opus-4-1"}}})
-	}))
-	defer srv.Close()
-
 	s := newMockStore()
 	s.groups = []store.Group{{
 		JID:    "group1@g.us",
 		Folder: "group1",
 		Name:   "Test",
 		ContainerConfig: &store.ContainerConfig{
-			Model: "claude-3-5-sonnet-20241022",
+			Model: "claude-sonnet-4-6",
 		},
 	}}
 	s.sessions["group1"] = &store.Session{GroupFolder: "group1", SessionID: "sess-old"}
@@ -394,7 +345,6 @@ func TestHandleModelCommand_SetModelClearsSessionState(t *testing.T) {
 	q := newMockQueue()
 	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 	o := newTestOrchestratorWithRouter(s, q, &mockIPCBroker{}, []channel.Channel{ch})
-	o.models = newModelCache(srv.URL, "2023-06-01", time.Hour, false, slog.Default())
 	o.registeredGroups["group1@g.us"] = s.groups[0]
 	o.sessions["group1"] = "sess-old"
 
@@ -415,11 +365,6 @@ func TestHandleModelCommand_SetModelClearsSessionState(t *testing.T) {
 }
 
 func TestHandleModelCommand_SetModelDeleteSessionError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(modelsResponse{Data: []modelInfo{{ID: "claude-opus-4-1"}}})
-	}))
-	defer srv.Close()
-
 	s := newMockStore()
 	s.groups = []store.Group{{
 		JID:    "group1@g.us",
@@ -431,7 +376,6 @@ func TestHandleModelCommand_SetModelDeleteSessionError(t *testing.T) {
 
 	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 	o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
-	o.models = newModelCache(srv.URL, "2023-06-01", time.Hour, false, slog.Default())
 	o.registeredGroups["group1@g.us"] = s.groups[0]
 	o.sessions["group1"] = "sess-old"
 

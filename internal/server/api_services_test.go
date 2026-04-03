@@ -20,6 +20,7 @@ import (
 
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
@@ -44,7 +45,7 @@ func createTestSandboxController() *sandbox.Controller {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
-	ctrl, _ := sandbox.New(fake.NewClientset(), ctrlClient, nil, "default", "agent:latest", "redis://localhost:6379", "http://localhost:3001")
+	ctrl, _ := sandbox.New(fake.NewClientset(), ctrlClient, nil, "default", "agent:latest", nil, "redis://localhost:6379", "http://localhost:3001")
 	return ctrl
 }
 
@@ -518,7 +519,7 @@ func (m *mockGroupStore) Close() error                                      { re
 // --- RegisterGroup tests ---
 
 func TestRegisterGroup_NilStore(t *testing.T) {
-	svc := &groupService{log: testLogger()}
+	svc := &groupService{providers: provider.NewRegistry(), log: testLogger()}
 	_, err := svc.RegisterGroup(context.Background(), &kraclawv1.RegisterGroupRequest{
 		Jid:    "test@jid",
 		Folder: "test",
@@ -532,7 +533,7 @@ func TestRegisterGroup_NilStore(t *testing.T) {
 }
 
 func TestRegisterGroup_MissingJid(t *testing.T) {
-	svc := &groupService{store: &mockGroupStore{}, log: testLogger()}
+	svc := &groupService{store: &mockGroupStore{}, providers: provider.NewRegistry(), log: testLogger()}
 	_, err := svc.RegisterGroup(context.Background(), &kraclawv1.RegisterGroupRequest{
 		Jid:    "",
 		Folder: "test",
@@ -546,7 +547,7 @@ func TestRegisterGroup_MissingJid(t *testing.T) {
 }
 
 func TestRegisterGroup_MissingFolder(t *testing.T) {
-	svc := &groupService{store: &mockGroupStore{}, log: testLogger()}
+	svc := &groupService{store: &mockGroupStore{}, providers: provider.NewRegistry(), log: testLogger()}
 	_, err := svc.RegisterGroup(context.Background(), &kraclawv1.RegisterGroupRequest{
 		Jid:    "test@jid",
 		Folder: "",
@@ -561,7 +562,7 @@ func TestRegisterGroup_MissingFolder(t *testing.T) {
 
 func TestRegisterGroup_Valid(t *testing.T) {
 	ms := &mockGroupStore{}
-	svc := &groupService{store: ms, log: testLogger()}
+	svc := &groupService{store: ms, providers: provider.NewRegistry(), log: testLogger()}
 	resp, err := svc.RegisterGroup(context.Background(), &kraclawv1.RegisterGroupRequest{
 		Jid:             "mygroup@jid",
 		Name:            "My Group",
@@ -598,7 +599,7 @@ func TestRegisterGroup_Valid(t *testing.T) {
 
 func TestRegisterGroup_StoreError(t *testing.T) {
 	ms := &mockGroupStore{upsertErr: fmt.Errorf("db connection lost")}
-	svc := &groupService{store: ms, log: testLogger()}
+	svc := &groupService{store: ms, providers: provider.NewRegistry(), log: testLogger()}
 	_, err := svc.RegisterGroup(context.Background(), &kraclawv1.RegisterGroupRequest{
 		Jid:    "test@jid",
 		Folder: "test",
@@ -612,7 +613,7 @@ func TestRegisterGroup_StoreError(t *testing.T) {
 }
 
 func TestRegisterGroup_InvalidContainerConfigJSON(t *testing.T) {
-	svc := &groupService{store: &mockGroupStore{}, log: testLogger()}
+	svc := &groupService{store: &mockGroupStore{}, providers: provider.NewRegistry(), log: testLogger()}
 	_, err := svc.RegisterGroup(context.Background(), &kraclawv1.RegisterGroupRequest{
 		Jid:                 "tui:test",
 		Folder:              "test",
@@ -628,7 +629,7 @@ func TestRegisterGroup_InvalidContainerConfigJSON(t *testing.T) {
 
 func TestRegisterGroup_ValidContainerConfigJSON(t *testing.T) {
 	ms := &mockGroupStore{}
-	svc := &groupService{store: ms, log: testLogger()}
+	svc := &groupService{store: ms, providers: provider.NewRegistry(), log: testLogger()}
 	_, err := svc.RegisterGroup(context.Background(), &kraclawv1.RegisterGroupRequest{
 		Jid:                 "tui:test",
 		Folder:              "test",
@@ -643,7 +644,7 @@ func TestRegisterGroup_ValidContainerConfigJSON(t *testing.T) {
 }
 
 func TestRegisterGroup_RequiresTriggerNoPattern(t *testing.T) {
-	svc := &groupService{store: &mockGroupStore{}, log: testLogger()}
+	svc := &groupService{store: &mockGroupStore{}, providers: provider.NewRegistry(), log: testLogger()}
 	_, err := svc.RegisterGroup(context.Background(), &kraclawv1.RegisterGroupRequest{
 		Jid:             "test@jid",
 		Folder:          "test",
@@ -660,7 +661,7 @@ func TestRegisterGroup_RequiresTriggerNoPattern(t *testing.T) {
 
 func TestRegisterGroup_RequiresTriggerWithPattern(t *testing.T) {
 	ms := &mockGroupStore{}
-	svc := &groupService{store: ms, log: testLogger()}
+	svc := &groupService{store: ms, providers: provider.NewRegistry(), log: testLogger()}
 	resp, err := svc.RegisterGroup(context.Background(), &kraclawv1.RegisterGroupRequest{
 		Jid:             "test@jid",
 		Folder:          "test",

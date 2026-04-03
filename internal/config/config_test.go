@@ -2,9 +2,105 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
+
+func validConfig() Config {
+	return Config{
+		Server: ServerConfig{
+			GRPCInsecure:     true,
+			GRPCAllowedCIDRs: "10.0.0.0/8",
+		},
+		Proxy: ProxyConfig{
+			AnthropicAPIKey: "sk-test",
+		},
+		K8s: K8sConfig{
+			AgentImage: "ghcr.io/test/agent:latest",
+		},
+		Queue: QueueConfig{
+			MaxConcurrent: 5,
+		},
+		Channels: ChannelsConfig{
+			Timezone: "UTC",
+		},
+	}
+}
+
+func TestValidate_RequiresAtLeastOneAgentImage(t *testing.T) {
+	cfg := validConfig()
+	cfg.K8s.AgentImage = ""
+	cfg.K8s.AgentImageAnthropic = ""
+	cfg.K8s.AgentImageOpenAI = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when no agent image configured")
+	}
+}
+
+func TestValidate_AcceptsLegacyAgentImage(t *testing.T) {
+	cfg := validConfig()
+	cfg.K8s.AgentImage = "ghcr.io/test/agent:latest"
+	cfg.K8s.AgentImageAnthropic = ""
+	cfg.K8s.AgentImageOpenAI = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_AcceptsProviderSpecificImage(t *testing.T) {
+	cfg := validConfig()
+	cfg.K8s.AgentImage = ""
+	cfg.K8s.AgentImageAnthropic = "ghcr.io/test/anthropic:latest"
+	cfg.K8s.AgentImageOpenAI = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_InvalidEncryptionKeyLength(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.CredentialEncryptionKey = "tooshort"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for short encryption key")
+	}
+}
+
+func TestValidate_InvalidEncryptionKeyHex(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.CredentialEncryptionKey = strings.Repeat("zz", 32)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid hex")
+	}
+}
+
+func TestValidate_ValidEncryptionKey(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.CredentialEncryptionKey = strings.Repeat("ab", 32)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_OpenAIOnlyRequiresEncryptionKey(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.AnthropicAPIKey = ""
+	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
+	cfg.Proxy.CredentialEncryptionKey = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when only OpenAI credentials set without encryption key")
+	}
+}
+
+func TestValidate_OpenAIOnlyWithEncryptionKeyPasses(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.AnthropicAPIKey = ""
+	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
+	cfg.Proxy.CredentialEncryptionKey = strings.Repeat("ab", 32)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
 func TestLoad(t *testing.T) {
 	tests := []struct {
@@ -102,7 +198,7 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
-			name: "missing API key and OAuth token",
+			name: "missing API key",
 			env: map[string]string{
 				"MYSQL_DSN":   "user:pass@tcp(localhost:3306)/kraclaw",
 				"AGENT_IMAGE": "registry.local/agent:latest",
@@ -139,19 +235,6 @@ func TestLoad(t *testing.T) {
 			},
 			wantErr: true,
 		},
-		{
-			name: "OAuth token instead of API key",
-			env: map[string]string{
-				"MYSQL_DSN":             "user:pass@tcp(localhost:3306)/kraclaw",
-				"AGENT_IMAGE":           "registry.local/agent:latest",
-				"ANTHROPIC_OAUTH_TOKEN": "oauth-test",
-			},
-			check: func(t *testing.T, cfg *Config) {
-				if cfg.Proxy.OAuthToken != "oauth-test" {
-					t.Errorf("unexpected OAuth token: %s", cfg.Proxy.OAuthToken)
-				}
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -162,13 +245,15 @@ func TestLoad(t *testing.T) {
 				"GRPC_TLS_CERT_FILE", "GRPC_TLS_KEY_FILE", "GRPC_TLS_CLIENT_CA_FILE",
 				"GRPC_ALLOWED_CIDRS", "GRPC_REFLECTION_ENABLED",
 				"REDIS_URL", "K8S_NAMESPACE", "K8S_IN_CLUSTER",
-				"PROXY_ADDR", "PROXY_UPSTREAM_URL", "ANTHROPIC_API_KEY",
+				"PROXY_ADDR", "ANTHROPIC_UPSTREAM_URL", "ANTHROPIC_API_KEY",
+				"OPENAI_UPSTREAM_URL", "OPENAI_API_KEY", "CREDENTIAL_ENCRYPTION_KEY",
+				"AGENT_IMAGE_ANTHROPIC", "AGENT_IMAGE_OPENAI",
 				"MAX_CONCURRENT", "IDLE_TIMEOUT", "LOG_LEVEL", "LOG_FORMAT",
 				"ASSISTANT_NAME", "TZ", "DISCORD_TOKEN", "TELEGRAM_TOKEN",
 				"METRICS_ENABLED", "METRICS_PATH",
 				"MYSQL_MAX_OPEN_CONNS", "MYSQL_MAX_IDLE_CONNS", "MYSQL_CONN_MAX_LIFETIME",
 				"TASK_CLOSE_DELAY", "MAX_RETRIES", "RETRY_BASE_DELAY",
-				"SCHEDULER_POLL_INTERVAL", "ANTHROPIC_OAUTH_TOKEN",
+				"SCHEDULER_POLL_INTERVAL",
 			}
 			for _, k := range envKeys {
 				_ = os.Unsetenv(k)

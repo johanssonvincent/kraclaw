@@ -2,6 +2,7 @@ package credproxy
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,11 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/johanssonvincent/kraclaw/internal/config"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 )
 
 func TestProxyWriteTimeoutIsSet(t *testing.T) {
-	p := newTestProxy(t, "https://api.anthropic.com", "sk-test", "")
+	p := newTestProxy(t, "https://api.anthropic.com", "sk-test")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -33,31 +36,33 @@ func TestProxyWriteTimeoutIsSet(t *testing.T) {
 	}
 }
 
-func TestNew_RequiresAuth(t *testing.T) {
+func TestNew_NoAuth_ReturnsError(t *testing.T) {
 	_, err := New(config.ProxyConfig{
-		UpstreamURL: "https://api.anthropic.com",
+		AnthropicUpstreamURL: "https://api.anthropic.com",
 	})
 	if err == nil {
-		t.Fatal("expected error when no auth configured")
+		t.Fatal("expected error when no Anthropic credentials configured in legacy mode")
+	}
+	if !strings.Contains(err.Error(), "AnthropicAPIKey") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
 }
 
 func TestNew_InvalidURL(t *testing.T) {
 	_, err := New(config.ProxyConfig{
-		UpstreamURL: "://bad",
-		APIKey:      "sk-test",
+		AnthropicUpstreamURL: "://bad",
+		AnthropicAPIKey:      "sk-test",
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid upstream URL")
 	}
 }
 
-func newTestProxy(t *testing.T, upstream string, apiKey, oauthToken string) *Proxy {
+func newTestProxy(t *testing.T, upstream string, apiKey string) *Proxy {
 	t.Helper()
 	p, err := New(config.ProxyConfig{
-		UpstreamURL: upstream,
-		APIKey:      apiKey,
-		OAuthToken:  oauthToken,
+		AnthropicUpstreamURL: upstream,
+		AnthropicAPIKey:      apiKey,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +71,7 @@ func newTestProxy(t *testing.T, upstream string, apiKey, oauthToken string) *Pro
 }
 
 func TestHealthz(t *testing.T) {
-	p := newTestProxy(t, "https://api.anthropic.com", "sk-test", "")
+	p := newTestProxy(t, "https://api.anthropic.com", "sk-test")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", p.handleHealthz)
 
@@ -83,7 +88,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestReadyz(t *testing.T) {
-	p := newTestProxy(t, "https://api.anthropic.com", "sk-test", "")
+	p := newTestProxy(t, "https://api.anthropic.com", "sk-test")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/readyz", p.handleReadyz)
 
@@ -108,7 +113,7 @@ func TestAPIKeyMode_InjectsKey(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	p := newTestProxy(t, upstream.URL, "sk-real-key", "")
+	p := newTestProxy(t, upstream.URL, "sk-real-key")
 	rp := p.newReverseProxy()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
@@ -125,137 +130,6 @@ func TestAPIKeyMode_InjectsKey(t *testing.T) {
 	}
 }
 
-func TestOAuthMode_ReplacesBearer(t *testing.T) {
-	var receivedHeaders http.Header
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeaders = r.Header
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer upstream.Close()
-
-	p := newTestProxy(t, upstream.URL, "", "real-oauth-token")
-	rp := p.newReverseProxy()
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
-	req.Header.Set("Authorization", "Bearer placeholder")
-	w := httptest.NewRecorder()
-	rp.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	if got := receivedHeaders.Get("Authorization"); got != "Bearer real-oauth-token" {
-		t.Fatalf("expected real OAuth token, got %q", got)
-	}
-}
-
-func TestOAuthMode_PlaceholderApiKey_InjectsToken(t *testing.T) {
-	var receivedHeaders http.Header
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeaders = r.Header
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	p := newTestProxy(t, upstream.URL, "", "real-oauth-token")
-	rp := p.newReverseProxy()
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
-	req.Header.Set("X-Api-Key", "placeholder")
-	w := httptest.NewRecorder()
-	rp.ServeHTTP(w, req)
-
-	if got := receivedHeaders.Get("Authorization"); got != "Bearer real-oauth-token" {
-		t.Fatalf("expected OAuth token injected for placeholder key, got %q", got)
-	}
-	if got := receivedHeaders.Get("X-Api-Key"); got != "" {
-		t.Fatalf("expected placeholder X-Api-Key stripped, got %q", got)
-	}
-}
-
-func TestOAuthMode_RealApiKey_PassesThrough(t *testing.T) {
-	var receivedHeaders http.Header
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeaders = r.Header
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	p := newTestProxy(t, upstream.URL, "", "real-oauth-token")
-	rp := p.newReverseProxy()
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
-	req.Header.Set("X-Api-Key", "sk-ant-real-temp-key-from-exchange")
-	w := httptest.NewRecorder()
-	rp.ServeHTTP(w, req)
-
-	// Should NOT inject OAuth token when a real API key is present.
-	if got := receivedHeaders.Get("Authorization"); got != "" {
-		t.Fatalf("expected no Authorization header for real API key, got %q", got)
-	}
-	if got := receivedHeaders.Get("X-Api-Key"); got != "sk-ant-real-temp-key-from-exchange" {
-		t.Fatalf("expected real API key to pass through, got %q", got)
-	}
-}
-
-func TestOAuthMode_NoAuthHeader_InjectsToken(t *testing.T) {
-	var receivedHeaders http.Header
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeaders = r.Header
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	p := newTestProxy(t, upstream.URL, "", "real-oauth-token")
-	rp := p.newReverseProxy()
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	w := httptest.NewRecorder()
-	rp.ServeHTTP(w, req)
-
-	if got := receivedHeaders.Get("Authorization"); got != "Bearer real-oauth-token" {
-		t.Fatalf("expected OAuth token injected, got %q", got)
-	}
-}
-
-func TestOAuthMode_UsesCachedApiKeyForModels(t *testing.T) {
-	var mu sync.Mutex
-	headersByPath := make(map[string]http.Header)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		headersByPath[r.URL.Path] = r.Header.Clone()
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
-	p := newTestProxy(t, upstream.URL, "", "real-oauth-token")
-	rp := p.newReverseProxy()
-
-	first := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
-	first.Header.Set("X-Api-Key", "sk-ant-real-temp-key-from-exchange")
-	w := httptest.NewRecorder()
-	rp.ServeHTTP(w, first)
-
-	second := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	w = httptest.NewRecorder()
-	rp.ServeHTTP(w, second)
-
-	mu.Lock()
-	modelsHeaders := headersByPath["/v1/models"]
-	mu.Unlock()
-
-	if modelsHeaders == nil {
-		t.Fatal("expected /v1/models request")
-	}
-	if got := modelsHeaders.Get("X-Api-Key"); got != "sk-ant-real-temp-key-from-exchange" {
-		t.Fatalf("expected cached API key, got %q", got)
-	}
-	if got := modelsHeaders.Get("Authorization"); got != "" {
-		t.Fatalf("expected no Authorization header, got %q", got)
-	}
-}
 
 func TestMetricsMiddleware_RecordsStatus(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +137,7 @@ func TestMetricsMiddleware_RecordsStatus(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	p := newTestProxy(t, upstream.URL, "sk-test", "")
+	p := newTestProxy(t, upstream.URL, "sk-test")
 	handler := p.metricsMiddleware(p.newReverseProxy())
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -277,7 +151,7 @@ func TestMetricsMiddleware_RecordsStatus(t *testing.T) {
 
 func TestUpstreamError_Returns502(t *testing.T) {
 	// Point to a non-existent upstream
-	p := newTestProxy(t, "http://127.0.0.1:1", "sk-test", "")
+	p := newTestProxy(t, "http://127.0.0.1:1", "sk-test")
 	rp := p.newReverseProxy()
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -301,7 +175,7 @@ func TestHopByHopHeaders_Stripped(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	p := newTestProxy(t, upstream.URL, "sk-test", "")
+	p := newTestProxy(t, upstream.URL, "sk-test")
 	rp := p.newReverseProxy()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
@@ -316,23 +190,9 @@ func TestHopByHopHeaders_Stripped(t *testing.T) {
 }
 
 func TestAuthMode(t *testing.T) {
-	tests := []struct {
-		name     string
-		apiKey   string
-		oauth    string
-		expected string
-	}{
-		{"api-key mode", "sk-test", "", "api-key"},
-		{"oauth mode", "", "token", "oauth"},
-		{"api-key takes precedence", "sk-test", "token", "api-key"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := newTestProxy(t, "https://api.anthropic.com", tt.apiKey, tt.oauth)
-			if got := p.authMode(); got != tt.expected {
-				t.Fatalf("expected %q, got %q", tt.expected, got)
-			}
-		})
+	p := newTestProxy(t, "https://api.anthropic.com", "sk-test")
+	if got := p.authMode(); got != "api-key" {
+		t.Fatalf("expected %q, got %q", "api-key", got)
 	}
 }
 
@@ -355,7 +215,7 @@ func TestSSEStreaming_FlushesImmediately(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	p := newTestProxy(t, upstream.URL, "sk-test", "")
+	p := newTestProxy(t, upstream.URL, "sk-test")
 	handler := p.metricsMiddleware(p.newReverseProxy())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
@@ -415,7 +275,7 @@ func TestContextCanceled_NoErrorResponse(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	p := newTestProxy(t, upstream.URL, "sk-test", "")
+	p := newTestProxy(t, upstream.URL, "sk-test")
 	rp := p.newReverseProxy()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -459,4 +319,505 @@ func (sr *streamRecorder) WriteHeader(code int)        { sr.statusCode = code }
 func (sr *streamRecorder) Write(b []byte) (int, error) { return sr.body.Write(b) }
 func (sr *streamRecorder) Flush() {
 	// no-op for test; data is written directly to pipe
+}
+
+// staticCredentialResolver returns a fixed credential for testing.
+type staticCredentialResolver struct {
+	cred *resolvedCredential
+	err  error
+}
+
+func (r *staticCredentialResolver) Resolve(_ context.Context, _ string, _ string) (*resolvedCredential, error) {
+	return r.cred, r.err
+}
+
+func TestProxy_InjectsOpenAIBearerToken(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer sk-openai-test" {
+			t.Errorf("expected Bearer sk-openai-test, got %q", auth)
+		}
+		if r.Header.Get("X-Api-Key") != "" {
+			t.Error("X-Api-Key should not be set for OpenAI requests")
+		}
+		if r.Header.Get("X-Kraclaw-Group") != "" {
+			t.Error("X-Kraclaw-Group should be stripped")
+		}
+		if r.Header.Get("X-Kraclaw-Provider") != "" {
+			t.Error("X-Kraclaw-Provider should be stripped")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	resolver := &staticCredentialResolver{
+		cred: &resolvedCredential{
+			Provider:    "openai",
+			APIKey:      "sk-openai-test",
+			UpstreamURL: upstream.URL,
+		},
+	}
+
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr:              ":0",
+		OpenAIUpstreamURL: upstream.URL,
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("X-Kraclaw-Group", "discord:123")
+	w := httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestProxy_InjectsAnthropicKeyViaResolver(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiKey := r.Header.Get("X-Api-Key")
+		if apiKey != "sk-ant-test" {
+			t.Errorf("expected X-Api-Key sk-ant-test, got %q", apiKey)
+		}
+		if r.Header.Get("X-Kraclaw-Group") != "" {
+			t.Error("X-Kraclaw-Group should be stripped")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	resolver := &staticCredentialResolver{
+		cred: &resolvedCredential{
+			Provider:    "anthropic",
+			APIKey:      "sk-ant-test",
+			UpstreamURL: upstream.URL,
+		},
+	}
+
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr:                 ":0",
+		AnthropicUpstreamURL: upstream.URL,
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("X-Kraclaw-Group", "telegram:456")
+	w := httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+
+func TestProxy_NoGroupHeader_FallsBackToLegacy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiKey := r.Header.Get("X-Api-Key")
+		if apiKey != "sk-legacy-key" {
+			t.Errorf("expected legacy API key, got %q", apiKey)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	resolver := &staticCredentialResolver{
+		cred: &resolvedCredential{
+			Provider:    "openai",
+			APIKey:      "sk-should-not-be-used",
+			UpstreamURL: "http://should-not-be-used",
+		},
+	}
+
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr:                 ":0",
+		AnthropicUpstreamURL: upstream.URL,
+		AnthropicAPIKey:      "sk-legacy-key",
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No X-Kraclaw-Group header -- should use legacy Anthropic path.
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	w := httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestProxy_ResolverError_ClearsHeaders(t *testing.T) {
+	resolver := &staticCredentialResolver{
+		err: fmt.Errorf("database connection failed"),
+	}
+
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr:                 ":0",
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("X-Kraclaw-Group", "discord:123")
+	req.Header.Set("X-Api-Key", "should-be-cleared")
+	req.Header.Set("Authorization", "Bearer should-be-cleared")
+	w := httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	// The credential middleware returns 502 before the request reaches the Director.
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+}
+
+func TestProxy_ResolverError_Returns502WithMessage(t *testing.T) {
+	resolver := &staticCredentialResolver{
+		err: fmt.Errorf("database connection failed"),
+	}
+
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr: ":0",
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("X-Kraclaw-Group", "discord:123")
+	w := httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "credential resolution failed") {
+		t.Fatalf("expected error message in body, got %q", body)
+	}
+}
+
+func TestNewMultiProviderProxy_DefaultUpstream(t *testing.T) {
+	resolver := &staticCredentialResolver{}
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{Addr: ":0"}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxy.upstream.Host != "api.anthropic.com" {
+		t.Fatalf("expected default upstream host api.anthropic.com, got %q", proxy.upstream.Host)
+	}
+	if proxy.resolver == nil {
+		t.Fatal("expected resolver to be set")
+	}
+}
+
+func TestDefaultCredentialResolver_PlatformFallbackAnthropic(t *testing.T) {
+	r := NewDefaultResolver(nil, config.ProxyConfig{
+		AnthropicAPIKey:      "sk-platform",
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+	})
+
+	cred, err := r.Resolve(context.Background(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Provider != "anthropic" {
+		t.Fatalf("expected anthropic, got %q", cred.Provider)
+	}
+	if cred.APIKey != "sk-platform" {
+		t.Fatalf("expected sk-platform, got %q", cred.APIKey)
+	}
+}
+
+func TestDefaultCredentialResolver_PlatformFallbackOpenAI(t *testing.T) {
+	r := NewDefaultResolver(nil, config.ProxyConfig{
+		OpenAIAPIKey:      "sk-openai-platform",
+		OpenAIUpstreamURL: "https://api.openai.com",
+	})
+
+	cred, err := r.Resolve(context.Background(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Provider != "openai" {
+		t.Fatalf("expected openai, got %q", cred.Provider)
+	}
+	if cred.APIKey != "sk-openai-platform" {
+		t.Fatalf("expected sk-openai-platform, got %q", cred.APIKey)
+	}
+}
+
+func TestDefaultCredentialResolver_NoCredentials_ReturnsError(t *testing.T) {
+	r := NewDefaultResolver(nil, config.ProxyConfig{})
+
+	_, err := r.Resolve(context.Background(), "discord:123", "")
+	if err == nil {
+		t.Fatal("expected error when no credentials configured")
+	}
+}
+
+func TestDefaultCredentialResolver_PerGroupOpenAI(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	enc := newTestEncryptor(t)
+	credStore, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	encKey, _ := enc.Encrypt("sk-group-openai-key")
+	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted"}).
+		AddRow("openai", encKey)
+	mock.ExpectQuery("SELECT").WithArgs("discord:123").WillReturnRows(rows)
+
+	r := NewDefaultResolver(credStore, config.ProxyConfig{
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+		OpenAIUpstreamURL:    "https://api.openai.com",
+		AnthropicAPIKey:      "sk-platform-anthropic",
+	})
+
+	cred, err := r.Resolve(context.Background(), "discord:123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Provider != "openai" {
+		t.Fatalf("expected openai provider, got %q", cred.Provider)
+	}
+	if cred.APIKey != "sk-group-openai-key" {
+		t.Fatalf("expected group API key, got %q", cred.APIKey)
+	}
+	if cred.UpstreamURL != "https://api.openai.com" {
+		t.Fatalf("expected OpenAI upstream, got %q", cred.UpstreamURL)
+	}
+}
+
+func TestDefaultCredentialResolver_PerGroupNotFound_FallsThroughToPlatform(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	enc := newTestEncryptor(t)
+	credStore, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT").WithArgs("discord:456").WillReturnError(sql.ErrNoRows)
+
+	r := NewDefaultResolver(credStore, config.ProxyConfig{
+		AnthropicAPIKey:      "sk-platform-anthropic",
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+	})
+
+	cred, err := r.Resolve(context.Background(), "discord:456", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Provider != "anthropic" {
+		t.Fatalf("expected anthropic fallback, got %q", cred.Provider)
+	}
+	if cred.APIKey != "sk-platform-anthropic" {
+		t.Fatalf("expected platform API key, got %q", cred.APIKey)
+	}
+}
+
+func TestDefaultCredentialResolver_PerGroupStoreError_PropagatesError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	enc := newTestEncryptor(t)
+	credStore, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT").WithArgs("discord:789").WillReturnError(fmt.Errorf("connection refused"))
+
+	r := NewDefaultResolver(credStore, config.ProxyConfig{
+		AnthropicAPIKey: "sk-platform",
+	})
+
+	_, err = r.Resolve(context.Background(), "discord:789", "")
+	if err == nil {
+		t.Fatal("expected error from store failure")
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestDefaultResolver_PlatformFallback_RespectsRequestedProvider(t *testing.T) {
+	cfg := config.ProxyConfig{
+		AnthropicAPIKey:      "sk-anthropic",
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+		OpenAIAPIKey:         "sk-openai",
+		OpenAIUpstreamURL:    "https://api.openai.com",
+	}
+	resolver := NewDefaultResolver(nil, cfg)
+
+	tests := []struct {
+		name              string
+		requestedProvider string
+		wantProvider      string
+		wantAPIKey        string
+		wantUpstream      string
+	}{
+		{
+			name:              "explicit openai request gets openai creds",
+			requestedProvider: provider.ProviderOpenAI,
+			wantProvider:      provider.ProviderOpenAI,
+			wantAPIKey:        "sk-openai",
+			wantUpstream:      "https://api.openai.com",
+		},
+		{
+			name:              "explicit anthropic request gets anthropic creds",
+			requestedProvider: provider.ProviderAnthropic,
+			wantProvider:      provider.ProviderAnthropic,
+			wantAPIKey:        "sk-anthropic",
+			wantUpstream:      "https://api.anthropic.com",
+		},
+		{
+			name:              "empty provider defaults to anthropic",
+			requestedProvider: "",
+			wantProvider:      provider.ProviderAnthropic,
+			wantAPIKey:        "sk-anthropic",
+			wantUpstream:      "https://api.anthropic.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cred, err := resolver.Resolve(context.Background(), "group-1", tt.requestedProvider)
+			if err != nil {
+				t.Fatalf("Resolve() error = %v", err)
+			}
+			if cred.Provider != tt.wantProvider {
+				t.Errorf("Provider = %q, want %q", cred.Provider, tt.wantProvider)
+			}
+			if cred.APIKey != tt.wantAPIKey {
+				t.Errorf("APIKey = %q, want %q", cred.APIKey, tt.wantAPIKey)
+			}
+			if cred.UpstreamURL != tt.wantUpstream {
+				t.Errorf("UpstreamURL = %q, want %q", cred.UpstreamURL, tt.wantUpstream)
+			}
+		})
+	}
+}
+
+func TestDefaultCredentialResolver_PerGroupProviderMismatch_FallsThroughToPlatform(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	enc := newTestEncryptor(t)
+	credStore, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Group has Anthropic credentials stored.
+	encKey, _ := enc.Encrypt("sk-group-anthropic")
+	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted"}).
+		AddRow("anthropic", encKey)
+	mock.ExpectQuery("SELECT").WithArgs("discord:mismatch").WillReturnRows(rows)
+
+	r := NewDefaultResolver(credStore, config.ProxyConfig{
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+		OpenAIUpstreamURL:    "https://api.openai.com",
+		OpenAIAPIKey:         "sk-openai-platform",
+	})
+
+	// Agent requests OpenAI, but group has Anthropic creds — should fall through to platform OpenAI.
+	cred, err := r.Resolve(context.Background(), "discord:mismatch", provider.ProviderOpenAI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.Provider != provider.ProviderOpenAI {
+		t.Fatalf("expected openai provider (platform fallback), got %q", cred.Provider)
+	}
+	if cred.APIKey != "sk-openai-platform" {
+		t.Fatalf("expected platform OpenAI key, got %q", cred.APIKey)
+	}
+}
+
+func TestProxy_MultiProvider_RejectsUnknownUpstreamHost(t *testing.T) {
+	resolver := &staticCredentialResolver{
+		cred: &resolvedCredential{
+			Provider:    "anthropic",
+			APIKey:      "sk-test",
+			UpstreamURL: "https://evil.example.com",
+		},
+	}
+
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr:                 ":0",
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+		OpenAIUpstreamURL:    "https://api.openai.com",
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("X-Kraclaw-Group", "discord:123")
+	w := httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for unknown upstream host, got %d", w.Code)
+	}
+}
+
+func TestDefaultResolver_RequestedProviderNotConfigured_ReturnsError(t *testing.T) {
+	tests := []struct {
+		name              string
+		cfg               config.ProxyConfig
+		requestedProvider string
+	}{
+		{
+			name: "request openai but only anthropic configured",
+			cfg: config.ProxyConfig{
+				AnthropicAPIKey:      "sk-anthropic",
+				AnthropicUpstreamURL: "https://api.anthropic.com",
+			},
+			requestedProvider: provider.ProviderOpenAI,
+		},
+		{
+			name: "request anthropic but only openai configured",
+			cfg: config.ProxyConfig{
+				OpenAIAPIKey:      "sk-openai",
+				OpenAIUpstreamURL: "https://api.openai.com",
+			},
+			requestedProvider: provider.ProviderAnthropic,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := NewDefaultResolver(nil, tt.cfg)
+			_, err := resolver.Resolve(context.Background(), "group-1", tt.requestedProvider)
+			if err == nil {
+				t.Fatalf("expected error when requesting %q with no matching credentials configured", tt.requestedProvider)
+			}
+		})
+	}
 }

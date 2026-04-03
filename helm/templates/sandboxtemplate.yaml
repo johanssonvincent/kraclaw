@@ -58,8 +58,6 @@ spec:
               value: {{ .Values.sandbox.redisUrl | quote }}
             - name: ANTHROPIC_BASE_URL
               value: {{ .Values.sandbox.proxyUrl | quote }}
-            - name: CLAUDE_CODE_OAUTH_TOKEN
-              value: "placeholder"
             - name: HOME
               value: "/home/node"
           volumeMounts:

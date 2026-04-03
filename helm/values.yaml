@@ -53,7 +53,9 @@ redis:
 #
 # Kubernetes / sandbox configuration
 k8s:
-  agentImage: ""                        # AGENT_IMAGE — REQUIRED: set before helm install
+  agentImage: ""                        # AGENT_IMAGE — legacy fallback; set at least one image before helm install
+  agentImageAnthropic: ""              # AGENT_IMAGE_ANTHROPIC — Go-based Anthropic agent
+  agentImageOpenAI: ""                 # AGENT_IMAGE_OPENAI — Go-based OpenAI agent
   inCluster: true                       # K8S_IN_CLUSTER
   sessionsPvc: ""                        # K8S_SESSIONS_PVC — auto-computed from fullname if empty
   groupsPvc: ""                          # K8S_GROUPS_PVC — auto-computed from fullname if empty
@@ -64,7 +66,7 @@ k8s:
 credproxy:
   upstreamUrl: "https://api.anthropic.com"   # PROXY_UPSTREAM_URL
   anthropicVersion: "2023-06-01"             # ANTHROPIC_VERSION
-  # secretName: name of pre-existing Secret containing keys "ANTHROPIC_API_KEY" and/or "ANTHROPIC_OAUTH_TOKEN"
+  # secretName: name of pre-existing Secret containing key "ANTHROPIC_API_KEY"
   secretName: "kraclaw-api-keys"
 
 # Queue and rate limiting
@@ -131,7 +133,6 @@ secrets:
   create: false
   mysqlDsn: ""            # Only used if secrets.create=true
   anthropicApiKey: ""     # Only used if secrets.create=true
-  anthropicOauthToken: "" # Only used if secrets.create=true
 
 # Agent sandbox — SandboxTemplate CRD instance for agent pods
 # Set sandbox.enabled=false to skip SandboxTemplate creation (e.g., when managing externally)

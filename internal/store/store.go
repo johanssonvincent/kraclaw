@@ -14,6 +14,7 @@ type ContainerConfig struct {
 	AdditionalMounts []AdditionalMount `json:"additionalMounts,omitempty"`
 	Timeout          int               `json:"timeout,omitempty"` // milliseconds, default 300000
 	Model            string            `json:"model,omitempty"`
+	Provider         string            `json:"provider,omitempty"` // "openai", "anthropic" — empty defaults to "anthropic"
 }
 
 type AdditionalMount struct {

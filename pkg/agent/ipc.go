@@ -1,0 +1,190 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
+
+const maxConsecutiveReadErrors = 30
+
+// InboundMessage is a message received from the server.
+type InboundMessage struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// OutboundMessage is a message sent from the agent to the server.
+type OutboundMessage struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+// IPCClient handles Redis Streams communication for a Go agent.
+type IPCClient struct {
+	rdb   redis.Cmdable
+	group string
+}
+
+// NewIPCClient creates an IPC client for a specific group.
+func NewIPCClient(rdb redis.Cmdable, group string) (*IPCClient, error) {
+	if rdb == nil {
+		return nil, fmt.Errorf("ipc client: redis connection is required")
+	}
+	if group == "" {
+		return nil, fmt.Errorf("ipc client: group is required")
+	}
+	return &IPCClient{rdb: rdb, group: group}, nil
+}
+
+func (c *IPCClient) outputKey() string { return fmt.Sprintf("kraclaw:ipc:%s:output", c.group) }
+func (c *IPCClient) inputKey() string  { return fmt.Sprintf("kraclaw:ipc:%s:input", c.group) }
+func (c *IPCClient) closeKey() string  { return fmt.Sprintf("kraclaw:ipc:%s:close", c.group) }
+
+// SendOutput publishes a message to the output stream (agent -> server).
+func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error {
+	ipcMsg := map[string]interface{}{
+		"group": c.group,
+		"type":  msg.Type,
+	}
+
+	if msg.Text != "" {
+		payload, err := json.Marshal(map[string]string{"text": msg.Text})
+		if err != nil {
+			return fmt.Errorf("marshal payload: %w", err)
+		}
+		ipcMsg["payload"] = json.RawMessage(payload)
+	}
+
+	data, err := json.Marshal(ipcMsg)
+	if err != nil {
+		return fmt.Errorf("marshal ipc message: %w", err)
+	}
+
+	if err := c.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: c.outputKey(),
+		Values: map[string]interface{}{"data": string(data)},
+	}).Err(); err != nil {
+		return fmt.Errorf("xadd output: %w", err)
+	}
+
+	if err := c.rdb.Publish(ctx, "kraclaw:ipc:notify", c.group).Err(); err != nil {
+		slog.Warn("failed to publish ipc notification", "group", c.group, "error", err)
+	}
+	return nil
+}
+
+// ReadInput returns a channel that receives messages from the input stream,
+// and an error channel that receives a non-nil error if the reader stops due
+// to consecutive failures.
+func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-chan error, error) {
+	stream := c.inputKey()
+	consumerGroup := "agent"
+	consumer := "agent-0"
+
+	err := c.rdb.XGroupCreateMkStream(ctx, stream, consumerGroup, "0").Err()
+	if err != nil && !isGroupExistsErr(err) {
+		return nil, nil, fmt.Errorf("create consumer group: %w", err)
+	}
+
+	ch := make(chan *InboundMessage, 64)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(ch)
+		var consecutiveErrors int
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			results, err := c.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    consumerGroup,
+				Consumer: consumer,
+				Streams:  []string{stream, ">"},
+				Count:    10,
+				Block:    500 * time.Millisecond,
+			}).Result()
+
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
+				if errors.Is(err, redis.Nil) {
+					consecutiveErrors = 0
+					continue
+				}
+				consecutiveErrors++
+				slog.Error("ipc read error", "stream", stream, "error", err, "consecutive_errors", consecutiveErrors)
+				if consecutiveErrors >= maxConsecutiveReadErrors {
+					slog.Error("ipc read: too many consecutive errors, stopping", "stream", stream)
+					errCh <- fmt.Errorf("ipc read: %d consecutive errors, last: %w", consecutiveErrors, err)
+					return
+				}
+				time.Sleep(time.Second)
+				continue
+			}
+			consecutiveErrors = 0
+
+			for _, s := range results {
+				for _, entry := range s.Messages {
+					raw, ok := entry.Values["data"].(string)
+					if !ok {
+						slog.Warn("ipc message missing data field", "entry_id", entry.ID, "stream", stream)
+						if err := c.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err(); err != nil {
+							slog.Warn("failed to ack malformed ipc message", "entry_id", entry.ID, "stream", stream, "error", err)
+						}
+						continue
+					}
+					var ipcMsg struct {
+						Type    string          `json:"type"`
+						Payload json.RawMessage `json:"payload"`
+					}
+					if err := json.Unmarshal([]byte(raw), &ipcMsg); err != nil {
+						slog.Error("ipc message unmarshal failed", "entry_id", entry.ID, "error", err)
+						if err := c.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err(); err != nil {
+							slog.Warn("failed to ack malformed ipc message", "entry_id", entry.ID, "stream", stream, "error", err)
+						}
+						continue
+					}
+
+					msg := &InboundMessage{
+						Type:    ipcMsg.Type,
+						Payload: ipcMsg.Payload,
+					}
+
+					select {
+					case ch <- msg:
+					case <-ctx.Done():
+						return
+					}
+
+					if err := c.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err(); err != nil {
+						slog.Warn("failed to ack ipc message", "entry_id", entry.ID, "stream", stream, "error", err)
+					}
+				}
+			}
+		}
+	}()
+
+	return ch, errCh, nil
+}
+
+// CheckCloseSignal checks whether the server has set the close signal.
+func (c *IPCClient) CheckCloseSignal(ctx context.Context) (bool, error) {
+	n, err := c.rdb.Exists(ctx, c.closeKey()).Result()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func isGroupExistsErr(err error) bool {
+	return err != nil && err.Error() == "BUSYGROUP Consumer Group name already exists"
+}

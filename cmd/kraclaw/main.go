@@ -24,6 +24,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/orchestrator"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/queue"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 	"github.com/johanssonvincent/kraclaw/internal/server"
@@ -36,8 +37,12 @@ var (
 )
 
 func init() {
-	_ = clientgoscheme.AddToScheme(scheme)
-	_ = agentsandboxv1alpha1.AddToScheme(scheme)
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("failed to add client-go scheme: %v", err))
+	}
+	if err := agentsandboxv1alpha1.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("failed to add agent-sandbox scheme: %v", err))
+	}
 }
 
 func main() {
@@ -97,7 +102,11 @@ func main() {
 		if err != nil {
 			log.Warn("failed to create controller-runtime client; sandbox admin APIs will be degraded", "error", err)
 		} else {
-			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, cfg.K8s.AgentImage, cfg.Redis.URL, cfg.K8s.SandboxProxyURL)
+			agentImages := map[string]string{
+				provider.ProviderAnthropic: cfg.K8s.AgentImageAnthropic,
+				provider.ProviderOpenAI:    cfg.K8s.AgentImageOpenAI,
+			}
+			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, cfg.K8s.AgentImage, agentImages, cfg.Redis.URL, cfg.K8s.SandboxProxyURL)
 			if err != nil {
 				log.Error("failed to create sandbox controller", "error", err)
 				return
@@ -141,10 +150,42 @@ func main() {
 	}
 
 	// Start credential proxy
-	proxy, err := credproxy.New(cfg.Proxy)
-	if err != nil {
-		log.Error("failed to create credential proxy", "error", err)
-		os.Exit(1)
+	var proxy *credproxy.Proxy
+
+	// Multi-provider proxy is needed when:
+	// 1. Per-group credential encryption is configured, OR
+	// 2. OpenAI platform credentials are set (needs provider-aware routing)
+	needsMultiProvider := cfg.Proxy.CredentialEncryptionKey != "" || cfg.Proxy.OpenAIAPIKey != ""
+
+	if needsMultiProvider {
+		var resolver credproxy.CredentialResolver
+		if cfg.Proxy.CredentialEncryptionKey != "" {
+			enc, err := credproxy.NewEncryptor(cfg.Proxy.CredentialEncryptionKey)
+			if err != nil {
+				log.Error("failed to create credential encryptor", "error", err)
+				os.Exit(1)
+			}
+			credStore, err := credproxy.NewCredentialStore(mysqlStore.DB(), enc)
+			if err != nil {
+				log.Error("failed to create credential store", "error", err)
+				os.Exit(1)
+			}
+			resolver = credproxy.NewDefaultResolver(credStore, cfg.Proxy)
+		} else {
+			resolver = credproxy.NewDefaultResolver(nil, cfg.Proxy)
+		}
+		proxy, err = credproxy.NewMultiProviderProxy(cfg.Proxy, resolver)
+		if err != nil {
+			log.Error("failed to create multi-provider credential proxy", "error", err)
+			os.Exit(1)
+		}
+		log.Info("credential proxy configured with multi-provider support")
+	} else {
+		proxy, err = credproxy.New(cfg.Proxy)
+		if err != nil {
+			log.Error("failed to create credential proxy", "error", err)
+			os.Exit(1)
+		}
 	}
 	proxyErr := make(chan error, 1)
 	go func() {

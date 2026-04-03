@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS credentials (
+    group_jid VARCHAR(255) PRIMARY KEY,
+    provider VARCHAR(64) NOT NULL,
+    api_key_encrypted TEXT NOT NULL,
+    oauth_token_encrypted TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);

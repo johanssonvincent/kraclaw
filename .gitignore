@@ -1,6 +1,8 @@
 # Binaries
 /kraclaw
 /kraclaw-tui
+/kraclaw-agent-openai
+/kraclaw-agent-anthropic
 
 # IDE
 .idea/

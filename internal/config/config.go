@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -45,7 +46,9 @@ type RedisConfig struct {
 
 type K8sConfig struct {
 	Namespace              string        `envconfig:"K8S_NAMESPACE" default:"kraclaw"`
-	AgentImage             string        `envconfig:"AGENT_IMAGE" required:"true"`
+	AgentImage             string        `envconfig:"AGENT_IMAGE"`
+	AgentImageAnthropic    string        `envconfig:"AGENT_IMAGE_ANTHROPIC"`
+	AgentImageOpenAI       string        `envconfig:"AGENT_IMAGE_OPENAI"`
 	InCluster              bool          `envconfig:"K8S_IN_CLUSTER" default:"true"`
 	SessionsPVC            string        `envconfig:"K8S_SESSIONS_PVC" default:"kraclaw-sessions"`
 	GroupsPVC              string        `envconfig:"K8S_GROUPS_PVC" default:"kraclaw-groups"`
@@ -55,11 +58,19 @@ type K8sConfig struct {
 }
 
 type ProxyConfig struct {
-	Addr        string `envconfig:"PROXY_ADDR" default:":3001"`
-	UpstreamURL string `envconfig:"PROXY_UPSTREAM_URL" default:"https://api.anthropic.com"`
-	APIKey      string `envconfig:"ANTHROPIC_API_KEY"`
-	OAuthToken  string `envconfig:"ANTHROPIC_OAUTH_TOKEN"`
-	APIVersion  string `envconfig:"ANTHROPIC_VERSION" default:"2023-06-01"`
+	Addr string `envconfig:"PROXY_ADDR" default:":3001"`
+
+	// Anthropic (platform-level fallback)
+	AnthropicUpstreamURL string `envconfig:"ANTHROPIC_UPSTREAM_URL" default:"https://api.anthropic.com"`
+	AnthropicAPIKey      string `envconfig:"ANTHROPIC_API_KEY"`
+	AnthropicAPIVersion  string `envconfig:"ANTHROPIC_VERSION" default:"2023-06-01"`
+
+	// OpenAI (platform-level fallback)
+	OpenAIUpstreamURL string `envconfig:"OPENAI_UPSTREAM_URL" default:"https://api.openai.com"`
+	OpenAIAPIKey      string `envconfig:"OPENAI_API_KEY"`
+
+	// Encryption key for credential store (hex-encoded 32 bytes)
+	CredentialEncryptionKey string `envconfig:"CREDENTIAL_ENCRYPTION_KEY"`
 }
 
 type QueueConfig struct {
@@ -112,8 +123,14 @@ func Load() (*Config, error) {
 
 // Validate checks that the configuration is valid.
 func (c *Config) Validate() error {
-	if c.Proxy.APIKey == "" && c.Proxy.OAuthToken == "" {
-		return fmt.Errorf("either ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN must be set")
+	if c.Proxy.AnthropicAPIKey == "" && c.Proxy.OpenAIAPIKey == "" {
+		return fmt.Errorf("at least one provider credential must be set (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
+	}
+	// OpenAI-only setups require the multi-provider proxy path (with encryption key)
+	// because the legacy proxy only supports Anthropic.
+	hasAnthropic := c.Proxy.AnthropicAPIKey != ""
+	if !hasAnthropic && c.Proxy.OpenAIAPIKey != "" && c.Proxy.CredentialEncryptionKey == "" {
+		return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY is required when only OpenAI credentials are configured (legacy proxy only supports Anthropic)")
 	}
 	if !c.Server.GRPCInsecure && (c.Server.GRPCTLSCertFile == "" || c.Server.GRPCTLSKeyFile == "" || c.Server.GRPCTLSClientCAFile == "") {
 		return fmt.Errorf("GRPC_TLS_CERT_FILE, GRPC_TLS_KEY_FILE, and GRPC_TLS_CLIENT_CA_FILE must all be set (or set GRPC_INSECURE=true)")
@@ -126,6 +143,17 @@ func (c *Config) Validate() error {
 	}
 	if c.Queue.MaxConcurrent <= 0 {
 		return fmt.Errorf("MAX_CONCURRENT must be positive, got %d", c.Queue.MaxConcurrent)
+	}
+	if c.K8s.AgentImage == "" && c.K8s.AgentImageAnthropic == "" && c.K8s.AgentImageOpenAI == "" {
+		return fmt.Errorf("at least one agent image must be set (AGENT_IMAGE, AGENT_IMAGE_ANTHROPIC, or AGENT_IMAGE_OPENAI)")
+	}
+	if c.Proxy.CredentialEncryptionKey != "" {
+		if len(c.Proxy.CredentialEncryptionKey) != 64 {
+			return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY must be 64 hex characters (32 bytes), got %d characters", len(c.Proxy.CredentialEncryptionKey))
+		}
+		if _, err := hex.DecodeString(c.Proxy.CredentialEncryptionKey); err != nil {
+			return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY must be valid hex: %w", err)
+		}
 	}
 	return nil
 }

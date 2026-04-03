@@ -17,6 +17,7 @@ import (
 	agentsandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
@@ -36,14 +37,15 @@ const (
 
 // Controller manages agent sandboxes via Sandbox resources.
 type Controller struct {
-	clientset  kubernetes.Interface
-	ctrlClient client.WithWatch
-	config     *rest.Config
-	namespace  string
-	agentImage string
-	redisURL   string
-	proxyURL   string
-	log        *slog.Logger
+	clientset   kubernetes.Interface
+	ctrlClient  client.WithWatch
+	config      *rest.Config
+	namespace   string
+	agentImage  string            // Legacy fallback
+	agentImages map[string]string // provider -> image
+	redisURL    string
+	proxyURL    string
+	log         *slog.Logger
 }
 
 // SandboxConfig holds the parameters for creating a new sandbox.
@@ -93,20 +95,43 @@ type SandboxStatus struct {
 }
 
 // New creates a new sandbox controller.
-func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *rest.Config, namespace, agentImage, redisURL, proxyURL string) (*Controller, error) {
+func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *rest.Config, namespace, agentImage string, agentImages map[string]string, redisURL, proxyURL string) (*Controller, error) {
 	if clientset == nil {
 		return nil, fmt.Errorf("sandbox: kubernetes clientset is required")
 	}
+	if agentImages == nil {
+		agentImages = map[string]string{}
+	}
 	return &Controller{
-		clientset:  clientset,
-		ctrlClient: ctrlClient,
-		config:     config,
-		namespace:  namespace,
-		agentImage: agentImage,
-		redisURL:   redisURL,
-		proxyURL:   proxyURL,
-		log:        slog.Default().With("component", "sandbox"),
+		clientset:   clientset,
+		ctrlClient:  ctrlClient,
+		config:      config,
+		namespace:   namespace,
+		agentImage:  agentImage,
+		agentImages: agentImages,
+		redisURL:    redisURL,
+		proxyURL:    proxyURL,
+		log:         slog.Default().With("component", "sandbox"),
 	}, nil
+}
+
+// agentImageForProvider returns the container image for the given provider,
+// falling back to the legacy agentImage only for Anthropic. Non-Anthropic providers
+// with no configured image return an error to prevent silent incompatible fallback.
+func (c *Controller) agentImageForProvider(prov string) (string, error) {
+	if prov != "" {
+		if img, ok := c.agentImages[prov]; ok && img != "" {
+			return img, nil
+		}
+		if prov != provider.ProviderAnthropic {
+			return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_%s)", prov, strings.ToUpper(prov))
+		}
+		if c.log != nil {
+			c.log.Warn("no provider-specific image for anthropic, using legacy fallback",
+				"fallback_image", c.agentImage)
+		}
+	}
+	return c.agentImage, nil
 }
 
 // isTransientError reports whether err is likely a transient K8s API failure
@@ -152,7 +177,10 @@ func (c *Controller) CreateSandbox(ctx context.Context, cfg SandboxConfig) (*San
 			backoff *= 2
 		}
 
-		sb := c.buildSandbox(name, cfg)
+		sb, err := c.buildSandbox(name, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: build sandbox: %w", err)
+		}
 		if err := c.ctrlClient.Create(ctx, sb); err != nil {
 			lastErr = err
 			if isTransientError(err) {
@@ -262,7 +290,7 @@ func pvcName(configured, defaultName string) string {
 // buildSandbox constructs a Sandbox resource with the full pod spec and GROUP_FOLDER injected.
 // The pod spec mirrors the kraclaw-agent-template SandboxTemplate but with per-group env vars
 // resolved at creation time, which is required because SandboxClaimSpec has no injection mechanism.
-func (c *Controller) buildSandbox(name string, cfg SandboxConfig) *agentsandboxv1alpha1.Sandbox {
+func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandboxv1alpha1.Sandbox, error) {
 	labels := map[string]string{
 		labelManagedBy: managedByValue,
 		labelRole:      roleAgent,
@@ -275,10 +303,107 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) *agentsandboxv
 
 	groupFolderEnv := corev1.EnvVar{Name: "GROUP_FOLDER", Value: cfg.GroupFolder}
 
+	providerID := ""
+	if cfg.ContainerConfig != nil {
+		providerID = cfg.ContainerConfig.Provider
+	}
+	image, err := c.agentImageForProvider(providerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build env vars based on provider.
+	envVars := []corev1.EnvVar{
+		groupFolderEnv,
+		{Name: "REDIS_URL", Value: c.redisURL},
+		{Name: "KRACLAW_PROXY_URL", Value: c.proxyURL},
+		{Name: "KRACLAW_PROVIDER", Value: providerID},
+		{Name: "KRACLAW_GROUP", Value: cfg.GroupJID},
+	}
+
+	// Determine HOME path for session mount.
+	homePath := "/home/node"
+
+	switch providerID {
+	case provider.ProviderOpenAI:
+		model := ""
+		if cfg.ContainerConfig != nil {
+			model = cfg.ContainerConfig.Model
+		}
+		envVars = append(envVars, corev1.EnvVar{Name: "OPENAI_MODEL", Value: model})
+		envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
+		homePath = "/home/nonroot"
+	case provider.ProviderAnthropic:
+		model := ""
+		if cfg.ContainerConfig != nil {
+			model = cfg.ContainerConfig.Model
+		}
+		// Check if using Go agent (provider-specific image configured) or legacy Node.js.
+		if _, hasGoImage := c.agentImages[provider.ProviderAnthropic]; hasGoImage {
+			envVars = append(envVars, corev1.EnvVar{Name: "ANTHROPIC_MODEL", Value: model})
+			envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
+			homePath = "/home/nonroot"
+		} else {
+			// Legacy Node.js agent.
+			envVars = append(envVars,
+				corev1.EnvVar{Name: "ANTHROPIC_BASE_URL", Value: c.proxyURL},
+				corev1.EnvVar{Name: "HOME", Value: "/home/node"},
+			)
+		}
+	default:
+		// Unknown provider or empty — treat as Anthropic.
+		// Use Go agent path if AGENT_IMAGE_ANTHROPIC is configured, otherwise legacy Node.js.
+		if _, hasGoImage := c.agentImages[provider.ProviderAnthropic]; hasGoImage {
+			model := ""
+			if cfg.ContainerConfig != nil {
+				model = cfg.ContainerConfig.Model
+			}
+			envVars = append(envVars, corev1.EnvVar{Name: "ANTHROPIC_MODEL", Value: model})
+			envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
+			homePath = "/home/nonroot"
+		} else {
+			envVars = append(envVars,
+				corev1.EnvVar{Name: "ANTHROPIC_BASE_URL", Value: c.proxyURL},
+				corev1.EnvVar{Name: "HOME", Value: "/home/node"},
+			)
+		}
+	}
+
 	nonRoot := true
 	allowPrivEsc := false
 	runAs := runAsUser
 	replicas := int32(1)
+
+	// Build the agent container.
+	container := corev1.Container{
+		Name:       "agent",
+		Image:      image,
+		WorkingDir: "/workspace",
+		Env:        envVars,
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:        "sessions",
+				MountPath:   homePath + "/.claude",
+				SubPathExpr: "$(GROUP_FOLDER)/.claude",
+			},
+			{
+				Name:        "groups",
+				MountPath:   "/workspace",
+				SubPathExpr: "$(GROUP_FOLDER)",
+			},
+			{
+				Name:      "data",
+				MountPath: "/config",
+				ReadOnly:  true,
+			},
+		},
+	}
+
+	// Legacy Node.js agent needs explicit command — only when Go Anthropic image is not configured.
+	_, hasGoAnthropicImage := c.agentImages[provider.ProviderAnthropic]
+	if (providerID == "" || providerID == provider.ProviderAnthropic) && image == c.agentImage && !hasGoAnthropicImage {
+		container.Command = []string{"node", "/app/dist/index.js", "--group", "$(GROUP_FOLDER)"}
+	}
 
 	sb := &agentsandboxv1alpha1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{
@@ -324,38 +449,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) *agentsandboxv
 							},
 						},
 					},
-					Containers: []corev1.Container{
-						{
-							Name:       "agent",
-							Image:      c.agentImage,
-							Command:    []string{"node", "/app/dist/index.js", "--group", "$(GROUP_FOLDER)"},
-							WorkingDir: "/workspace",
-							Env: []corev1.EnvVar{
-								groupFolderEnv,
-								{Name: "REDIS_URL", Value: c.redisURL},
-								{Name: "ANTHROPIC_BASE_URL", Value: c.proxyURL},
-								{Name: "CLAUDE_CODE_OAUTH_TOKEN", Value: "placeholder"},
-								{Name: "HOME", Value: "/home/node"},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:        "sessions",
-									MountPath:   "/home/node/.claude",
-									SubPathExpr: "$(GROUP_FOLDER)/.claude",
-								},
-								{
-									Name:        "groups",
-									MountPath:   "/workspace",
-									SubPathExpr: "$(GROUP_FOLDER)",
-								},
-								{
-									Name:      "data",
-									MountPath: "/config",
-									ReadOnly:  true,
-								},
-							},
-						},
-					},
+					Containers: []corev1.Container{container},
 					Volumes: []corev1.Volume{
 						{
 							Name: "sessions",
@@ -415,7 +509,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) *agentsandboxv
 		}
 	}
 
-	return sb
+	return sb, nil
 }
 
 func sandboxToStatus(sandbox *agentsandboxv1alpha1.Sandbox) *SandboxStatus {

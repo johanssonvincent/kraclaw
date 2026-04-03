@@ -20,6 +20,12 @@ data:
   # Kubernetes / sandbox
   K8S_NAMESPACE: {{ .Release.Namespace | quote }}
   AGENT_IMAGE: {{ .Values.k8s.agentImage | quote }}
+  {{- if .Values.k8s.agentImageAnthropic }}
+  AGENT_IMAGE_ANTHROPIC: {{ .Values.k8s.agentImageAnthropic | quote }}
+  {{- end }}
+  {{- if .Values.k8s.agentImageOpenAI }}
+  AGENT_IMAGE_OPENAI: {{ .Values.k8s.agentImageOpenAI | quote }}
+  {{- end }}
   K8S_IN_CLUSTER: {{ .Values.k8s.inCluster | quote }}
   K8S_SESSIONS_PVC: {{ default (printf "%s-sessions" (include "kraclaw.fullname" .)) .Values.k8s.sessionsPvc | quote }}
   K8S_GROUPS_PVC: {{ default (printf "%s-groups" (include "kraclaw.fullname" .)) .Values.k8s.groupsPvc | quote }}
@@ -27,7 +33,10 @@ data:
   SANDBOX_STARTUP_TIMEOUT: {{ .Values.k8s.sandboxStartupTimeout | quote }}
   SANDBOX_PROXY_URL: {{ .Values.sandbox.proxyUrl | quote }}
   # Credential proxy (non-secret)
-  PROXY_UPSTREAM_URL: {{ .Values.credproxy.upstreamUrl | quote }}
+  ANTHROPIC_UPSTREAM_URL: {{ .Values.credproxy.anthropicUpstreamUrl | default .Values.credproxy.upstreamUrl | quote }}
+  {{- if .Values.credproxy.openaiUpstreamUrl }}
+  OPENAI_UPSTREAM_URL: {{ .Values.credproxy.openaiUpstreamUrl | quote }}
+  {{- end }}
   ANTHROPIC_VERSION: {{ .Values.credproxy.anthropicVersion | quote }}
   # MySQL (non-secret connection params)
   MYSQL_MAX_OPEN_CONNS: {{ .Values.mysql.maxOpenConns | quote }}

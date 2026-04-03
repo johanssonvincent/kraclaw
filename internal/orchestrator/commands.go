@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
@@ -58,41 +57,30 @@ func (o *Orchestrator) handleSlashCommand(ctx context.Context, chatJID string, m
 }
 
 func (o *Orchestrator) handleModelsCommand(ctx context.Context, chatJID string) {
-	models, stale, err := o.models.List(ctx)
-	currentModel, currentLabel, errGroup := o.currentModelForChat(ctx, chatJID)
-	if errGroup != nil {
-		o.log.Error("failed to get group for /models", "chat_jid", chatJID, "error", errGroup)
-		o.sendSystemMessage(ctx, chatJID, "Unable to fetch current model for this chat.")
+	group, err := o.store.GetGroup(ctx, chatJID)
+	if err != nil || group == nil {
+		o.sendSystemMessage(ctx, chatJID, "Unable to fetch group for this chat.")
 		return
 	}
 
-	if len(models) == 0 && err != nil {
-		o.sendSystemMessage(ctx, chatJID, fmt.Sprintf("Failed to fetch models: %v", err))
-		return
+	providerID := "anthropic"
+	if group.ContainerConfig != nil && group.ContainerConfig.Provider != "" {
+		providerID = group.ContainerConfig.Provider
 	}
 
-	sort.Slice(models, func(i, j int) bool {
-		return models[i].ID < models[j].ID
-	})
+	models := o.providers.Models(providerID)
+	currentModel := ""
+	if group.ContainerConfig != nil {
+		currentModel = group.ContainerConfig.Model
+	}
 
+	p, ok := o.providers.Get(providerID)
+	if !ok {
+		o.sendSystemMessage(ctx, chatJID, fmt.Sprintf("Unknown provider %q configured for this group. Contact an admin.", providerID))
+		return
+	}
 	var b strings.Builder
-	if err != nil {
-		b.WriteString("Models (cached; upstream error):\n")
-	} else if stale {
-		b.WriteString("Models (cached):\n")
-	} else {
-		b.WriteString("Models:\n")
-	}
-
-	if len(models) == 0 {
-		b.WriteString("(no models returned)")
-		if currentLabel != "" {
-			b.WriteString("\nCurrent: ")
-			b.WriteString(currentLabel)
-		}
-		o.sendSystemMessage(ctx, chatJID, b.String())
-		return
-	}
+	fmt.Fprintf(&b, "Models (%s):\n", p.DisplayName)
 
 	for _, m := range models {
 		name := m.ID
@@ -100,7 +88,7 @@ func (o *Orchestrator) handleModelsCommand(ctx context.Context, chatJID string) 
 			name = fmt.Sprintf("%s (%s)", m.ID, m.DisplayName)
 		}
 		marker := ""
-		if currentModel != "" && m.ID == currentModel {
+		if m.ID == currentModel {
 			marker = " (current)"
 		}
 		b.WriteString("- ")
@@ -108,9 +96,9 @@ func (o *Orchestrator) handleModelsCommand(ctx context.Context, chatJID string) 
 		b.WriteString(marker)
 		b.WriteString("\n")
 	}
-	if currentModel == "" && currentLabel != "" {
-		b.WriteString("Current: ")
-		b.WriteString(currentLabel)
+
+	if currentModel == "" {
+		fmt.Fprintf(&b, "Current: %s (default)", p.DefaultModel)
 	}
 
 	o.sendSystemMessage(ctx, chatJID, strings.TrimRight(b.String(), "\n"))
@@ -119,7 +107,6 @@ func (o *Orchestrator) handleModelsCommand(ctx context.Context, chatJID string) 
 func (o *Orchestrator) handleModelCommand(ctx context.Context, chatJID string, requested string) {
 	currentModel, currentLabel, err := o.currentModelForChat(ctx, chatJID)
 	if err != nil {
-		o.log.Error("failed to get group for /model", "chat_jid", chatJID, "error", err)
 		o.sendSystemMessage(ctx, chatJID, "Unable to fetch current model for this chat.")
 		return
 	}
@@ -132,21 +119,19 @@ func (o *Orchestrator) handleModelCommand(ctx context.Context, chatJID string, r
 		return
 	}
 
-	models, _, err := o.models.List(ctx)
-	if err != nil && len(models) == 0 {
-		o.sendSystemMessage(ctx, chatJID, fmt.Sprintf("Failed to fetch models: %v", err))
+	// Get group's provider.
+	group, err := o.store.GetGroup(ctx, chatJID)
+	if err != nil || group == nil {
+		o.sendSystemMessage(ctx, chatJID, "Unable to fetch group.")
 		return
 	}
-
-	valid := false
-	for _, m := range models {
-		if m.ID == requested {
-			valid = true
-			break
-		}
+	providerID := "anthropic"
+	if group.ContainerConfig != nil && group.ContainerConfig.Provider != "" {
+		providerID = group.ContainerConfig.Provider
 	}
-	if !valid {
-		o.sendSystemMessage(ctx, chatJID, fmt.Sprintf("Unknown model %q. Use /models to list available models.", requested))
+
+	if err := o.providers.ValidateModel(providerID, requested); err != nil {
+		o.sendSystemMessage(ctx, chatJID, fmt.Sprintf("Unknown model %q for provider %s. Use /models to list available models.", requested, providerID))
 		return
 	}
 
@@ -156,13 +141,12 @@ func (o *Orchestrator) handleModelCommand(ctx context.Context, chatJID string, r
 	}
 
 	if err := o.updateGroupModel(ctx, chatJID, requested); err != nil {
-		o.log.Error("failed to update model", "chat_jid", chatJID, "model", requested, "error", err)
 		o.sendSystemMessage(ctx, chatJID, "Failed to update the model.")
 		return
 	}
 
 	if err := o.sendModelUpdateToActive(ctx, chatJID, requested); err != nil {
-		o.log.Error("failed to notify active sandbox of model update", "chat_jid", chatJID, "error", err)
+		o.log.Error("failed to notify active sandbox", "chat_jid", chatJID, "error", err)
 	}
 
 	o.sendSystemMessage(ctx, chatJID, fmt.Sprintf("Model set to %s.", requested))
