@@ -43,7 +43,7 @@ type Controller struct {
 	namespace   string
 	agentImage  string            // Legacy fallback
 	agentImages map[string]string // provider -> image
-	redisURL    string
+	natsURL     string
 	proxyURL    string
 	log         *slog.Logger
 }
@@ -95,7 +95,7 @@ type SandboxStatus struct {
 }
 
 // New creates a new sandbox controller.
-func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *rest.Config, namespace, agentImage string, agentImages map[string]string, redisURL, proxyURL string) (*Controller, error) {
+func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *rest.Config, namespace, agentImage string, agentImages map[string]string, natsURL, proxyURL string) (*Controller, error) {
 	if clientset == nil {
 		return nil, fmt.Errorf("sandbox: kubernetes clientset is required")
 	}
@@ -109,7 +109,7 @@ func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *re
 		namespace:   namespace,
 		agentImage:  agentImage,
 		agentImages: agentImages,
-		redisURL:    redisURL,
+		natsURL:     natsURL,
 		proxyURL:    proxyURL,
 		log:         slog.Default().With("component", "sandbox"),
 	}, nil
@@ -315,7 +315,8 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 	// Build env vars based on provider.
 	envVars := []corev1.EnvVar{
 		groupFolderEnv,
-		{Name: "REDIS_URL", Value: c.redisURL},
+		{Name: "NATS_URL", Value: c.natsURL},
+		{Name: "KRACLAW_AGENT_ID", Value: "main"},
 		{Name: "KRACLAW_PROXY_URL", Value: c.proxyURL},
 		{Name: "KRACLAW_PROVIDER", Value: providerID},
 		{Name: "KRACLAW_GROUP", Value: cfg.GroupJID},
