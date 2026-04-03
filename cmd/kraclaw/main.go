@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	natsgo "github.com/nats-io/nats.go"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -76,17 +76,28 @@ func main() {
 	defer func() { _ = mysqlStore.Close() }()
 	log.Info("connected to MySQL, migrations complete")
 
-	// Connect Redis
-	rdb, err := connectRedis(ctx, cfg.Redis)
+	// Connect NATS
+	nc, err := connectNATS(cfg.NATS)
 	if err != nil {
-		log.Error("failed to connect to Redis", "error", err)
+		log.Error("failed to connect to NATS", "error", err)
 		os.Exit(1)
 	}
-	defer func() { _ = rdb.Close() }()
-	log.Info("connected to Redis")
+	defer func() { nc.Close() }()
+	log.Info("connected to NATS")
 
-	ipcBroker := ipc.NewRedisBroker(rdb, log)
+	ipcBroker, err := ipc.NewNATSBroker(nc, log)
+	if err != nil {
+		log.Error("failed to create IPC broker", "error", err)
+		os.Exit(1)
+	}
 	defer func() { _ = ipcBroker.Close() }()
+
+	natsQueue, err := queue.NewNATSQueue(nc, mysqlStore, log)
+	if err != nil {
+		log.Error("failed to create NATS queue", "error", err)
+		os.Exit(1)
+	}
+	defer func() { _ = natsQueue.Close() }()
 
 	var (
 		kubeConfig  *rest.Config
@@ -106,7 +117,7 @@ func main() {
 				provider.ProviderAnthropic: cfg.K8s.AgentImageAnthropic,
 				provider.ProviderOpenAI:    cfg.K8s.AgentImageOpenAI,
 			}
-			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, cfg.K8s.AgentImage, agentImages, cfg.Redis.URL, cfg.K8s.SandboxProxyURL)
+			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, cfg.K8s.AgentImage, agentImages, cfg.NATS.URL, cfg.K8s.SandboxProxyURL)
 			if err != nil {
 				log.Error("failed to create sandbox controller", "error", err)
 				return
@@ -115,10 +126,7 @@ func main() {
 		}
 	}
 
-	// Create queue, TUI channel, and orchestrator
-	redisQueue := queue.NewRedisQueue(rdb, log)
-	defer func() { _ = redisQueue.Close() }()
-
+	// Create TUI channel and orchestrator
 	tuiChannel := tui.New(log)
 
 	// Register TUI channel factory in the default registry.
@@ -128,7 +136,7 @@ func main() {
 		return tuiChannel, nil
 	})
 
-	orch, err := orchestrator.New(cfg, mysqlStore, redisQueue, ipcBroker, sandboxCtrl, channel.DefaultRegistry, log)
+	orch, err := orchestrator.New(cfg, mysqlStore, natsQueue, ipcBroker, sandboxCtrl, channel.DefaultRegistry, log)
 	if err != nil {
 		log.Error("failed to create orchestrator", "error", err)
 		return
@@ -229,7 +237,6 @@ func main() {
 		Sandbox:               sandboxCtrl,
 		Kubernetes:            k8sClient,
 		DB:                    mysqlStore.DB(),
-		Redis:                 rdb,
 		TUIChannel:            tuiChannel,
 		Channels:              []channel.Channel{tuiChannel},
 		Log:                   log,
@@ -288,19 +295,16 @@ func setupLogger(cfg config.LoggingConfig) *slog.Logger {
 	return slog.New(handler)
 }
 
-func connectRedis(ctx context.Context, cfg config.RedisConfig) (*redis.Client, error) {
-	opts, err := redis.ParseURL(cfg.URL)
+func connectNATS(cfg config.NATSConfig) (*natsgo.Conn, error) {
+	nc, err := natsgo.Connect(cfg.URL)
 	if err != nil {
-		return nil, fmt.Errorf("parse URL: %w", err)
+		return nil, fmt.Errorf("connect: %w", err)
 	}
-
-	rdb := redis.NewClient(opts)
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		_ = rdb.Close()
-		return nil, fmt.Errorf("ping: %w", err)
+	if err := nc.Flush(); err != nil {
+		nc.Close()
+		return nil, fmt.Errorf("flush: %w", err)
 	}
-
-	return rdb, nil
+	return nc, nil
 }
 
 func connectKubernetes(cfg config.K8sConfig) (*rest.Config, kubernetes.Interface, error) {

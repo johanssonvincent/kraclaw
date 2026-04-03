@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -33,7 +32,6 @@ type adminService struct {
 	version   string
 	startedAt time.Time
 	db        *sql.DB
-	rdb       *redis.Client
 	k8s       kubernetes.Interface
 	store     store.Store
 	sandbox   *sandbox.Controller
@@ -71,7 +69,6 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 		version:   cfg.Version,
 		startedAt: cfg.StartedAt,
 		db:        cfg.DB,
-		rdb:       cfg.Redis,
 		k8s:       cfg.Kubernetes,
 		store:     cfg.Store,
 		sandbox:   cfg.Sandbox,
@@ -111,7 +108,6 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 
 func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequest) (*kraclawv1.ServerStatus, error) {
 	mysqlConnected := s.pingMySQL(ctx)
-	redisConnected := s.pingRedis(ctx)
 	k8sConnected := s.pingKubernetes(ctx)
 
 	activeSandboxes := int32(0)
@@ -155,7 +151,7 @@ func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequ
 		ActiveTasks:       activeTasks,
 		UptimeSince:       timestamppb.New(s.startedAt),
 		MysqlConnected:    mysqlConnected,
-		RedisConnected:    redisConnected,
+		RedisConnected:    false,
 		K8SConnected:      k8sConnected,
 	}, nil
 }
@@ -583,15 +579,6 @@ func (s *adminService) pingMySQL(ctx context.Context) bool {
 	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	return s.db.PingContext(pingCtx) == nil
-}
-
-func (s *adminService) pingRedis(ctx context.Context) bool {
-	if s.rdb == nil {
-		return false
-	}
-	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	return s.rdb.Ping(pingCtx).Err() == nil
 }
 
 func (s *adminService) pingKubernetes(ctx context.Context) bool {

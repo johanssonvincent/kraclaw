@@ -13,6 +13,7 @@ type Config struct {
 	Server    ServerConfig
 	MySQL     MySQLConfig
 	Redis     RedisConfig
+	NATS      NATSConfig
 	K8s       K8sConfig
 	Proxy     ProxyConfig
 	Queue     QueueConfig
@@ -42,6 +43,10 @@ type MySQLConfig struct {
 
 type RedisConfig struct {
 	URL string `envconfig:"REDIS_URL" default:"redis://localhost:6379"`
+}
+
+type NATSConfig struct {
+	URL string `envconfig:"NATS_URL" default:"nats://localhost:4222"`
 }
 
 type K8sConfig struct {

@@ -791,7 +791,7 @@ func TestAgentImageForProvider_EmptyProviderUsesLegacy(t *testing.T) {
 func TestBuildSandbox_OpenAIEnvVars(t *testing.T) {
 	c := &Controller{
 		namespace: "test",
-		redisURL:  "redis://localhost:6379",
+		natsURL:   "nats://localhost:4222",
 		proxyURL:  "http://proxy:3001",
 		agentImages: map[string]string{
 			"openai": "ghcr.io/johanssonvincent/kraclaw-agent-openai:latest",
@@ -834,7 +834,7 @@ func TestBuildSandbox_AnthropicLegacyCommand(t *testing.T) {
 		namespace:   "test",
 		agentImage:  "legacy-image:latest",
 		agentImages: map[string]string{},
-		redisURL:    "redis://localhost:6379",
+		natsURL:     "nats://localhost:4222",
 		proxyURL:    "http://proxy:3001",
 	}
 	cfg := SandboxConfig{
@@ -863,7 +863,7 @@ func TestBuildSandbox_OpenAINoCommand(t *testing.T) {
 		agentImages: map[string]string{
 			"openai": "ghcr.io/johanssonvincent/kraclaw-agent-openai:latest",
 		},
-		redisURL: "redis://localhost:6379",
+		natsURL:  "nats://localhost:4222",
 		proxyURL: "http://proxy:3001",
 	}
 	cfg := SandboxConfig{
@@ -892,7 +892,7 @@ func TestBuildSandbox_AnthropicGoAgentEnvVars(t *testing.T) {
 		agentImages: map[string]string{
 			provider.ProviderAnthropic: "ghcr.io/johanssonvincent/kraclaw-agent-anthropic:latest",
 		},
-		redisURL: "redis://redis:6379",
+		natsURL:  "nats://nats:4222",
 		proxyURL: "http://proxy:3001",
 		log:      slog.Default(),
 	}
