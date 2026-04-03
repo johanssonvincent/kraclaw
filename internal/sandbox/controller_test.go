@@ -30,7 +30,7 @@ func newTestController() *Controller {
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", nil, "redis://localhost:6379", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", nil, "nats://localhost:4222", "http://localhost:3001")
 	if err != nil {
 		panic("newTestController: " + err.Error())
 	}
@@ -135,7 +135,7 @@ func newTestControllerWithCreateInterceptor(funcs interceptor.Funcs) *Controller
 		WithInterceptorFuncs(funcs).
 		Build()
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", nil, "redis://localhost:6379", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", nil, "nats://localhost:4222", "http://localhost:3001")
 	if err != nil {
 		panic("newTestControllerWithCreateInterceptor: " + err.Error())
 	}
