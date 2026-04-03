@@ -23,6 +23,53 @@ type MySQLStore struct {
 	db *sql.DB
 }
 
+// dirtyMigrationError signals a dirty migration state that must not be retried.
+// It holds the original errors so callers can inspect them via errors.As/errors.Is.
+type dirtyMigrationError struct {
+	msg        string
+	migErr     error
+	versionErr error // non-nil when the version check after migration failure also failed
+}
+
+func (e *dirtyMigrationError) Error() string { return e.msg }
+
+// Unwrap returns the wrapped errors for use with errors.As and errors.Is.
+func (e *dirtyMigrationError) Unwrap() []error {
+	if e.versionErr != nil {
+		return []error{e.migErr, e.versionErr}
+	}
+	return []error{e.migErr}
+}
+
+// retryWithBackoff retries fn up to attempts times using exponential backoff
+// starting at baseDelay (capped at 30 seconds). The operation name is used for
+// structured log output on each retry. Returns the last error wrapped with the
+// attempt count if all attempts are exhausted. Non-retryable errors
+// (dirtyMigrationError) are returned as-is without attempt-count wrapping.
+func retryWithBackoff(attempts int, baseDelay time.Duration, operation string, fn func() error) error {
+	var err error
+	for i := range attempts {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		var nonRetryable *dirtyMigrationError
+		if errors.As(err, &nonRetryable) {
+			return err
+		}
+		if i == attempts-1 {
+			break
+		}
+		delay := baseDelay * (1 << i)
+		if delay > 30*time.Second {
+			delay = 30 * time.Second
+		}
+		slog.Warn("retrying operation", "operation", operation, "attempt", i+1, "backoff", delay, "error", err)
+		time.Sleep(delay)
+	}
+	return fmt.Errorf("%s failed after %d attempts: %w", operation, attempts, err)
+}
+
 // NewMySQLStore creates a new MySQL-backed store and runs migrations.
 func NewMySQLStore(dsn string, maxOpen, maxIdle int, connMaxLifetime time.Duration) (*MySQLStore, error) {
 	db, err := sql.Open("mysql", dsn)
@@ -34,13 +81,19 @@ func NewMySQLStore(dsn string, maxOpen, maxIdle int, connMaxLifetime time.Durati
 	db.SetMaxIdleConns(maxIdle)
 	db.SetConnMaxLifetime(connMaxLifetime)
 
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping mysql: %w", err)
+	if err := retryWithBackoff(5, 1*time.Second, "ping mysql", func() error {
+		return db.Ping()
+	}); err != nil {
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close db on ping failure", "error", cerr)
+		}
+		return nil, err
 	}
 
 	if err := runMigrations(dsn); err != nil {
-		_ = db.Close()
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close db on migration failure", "error", cerr)
+		}
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
@@ -70,7 +123,11 @@ func runMigrations(dsn string) error {
 	if err != nil {
 		return fmt.Errorf("open migration db: %w", err)
 	}
-	defer func() { _ = db.Close() }()
+	defer func() {
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close migration db", "error", cerr)
+		}
+	}()
 
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
@@ -87,11 +144,28 @@ func runMigrations(dsn string) error {
 		return fmt.Errorf("create migrate instance: %w", err)
 	}
 
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		_, dirty, verr := m.Version()
-		if verr == nil && dirty {
-			return fmt.Errorf("dirty migration state detected at startup — manual intervention required: inspect schema and run 'migrate force <version>'")
+	if err := retryWithBackoff(5, 1*time.Second, "migrate up", func() error {
+		err := m.Up()
+		if err == nil || errors.Is(err, migrate.ErrNoChange) {
+			return nil
 		}
+		_, dirty, verr := m.Version()
+		if verr != nil {
+			return &dirtyMigrationError{
+				msg:        fmt.Sprintf("migration failed and version check also failed — manual intervention required: migration error: %v, version error: %v", err, verr),
+				migErr:     err,
+				versionErr: verr,
+			}
+		}
+		if dirty {
+			// Dirty migration state requires manual intervention — do not retry.
+			return &dirtyMigrationError{
+				msg:    fmt.Sprintf("dirty migration state detected at startup — manual intervention required: inspect schema and run 'migrate force <version>': migration error: %v", err),
+				migErr: err,
+			}
+		}
+		return err
+	}); err != nil {
 		return fmt.Errorf("migrate up: %w", err)
 	}
 
