@@ -91,7 +91,7 @@ func (q *NATSQueue) ensureStream(ctx context.Context, groupJID string) (string, 
 func (q *NATSQueue) Enqueue(ctx context.Context, groupJID string, msg *QueueMessage) error {
 	sanitized, err := q.ensureStream(ctx, groupJID)
 	if err != nil {
-		return err
+		return fmt.Errorf("enqueue ensure stream: %w", err)
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -109,7 +109,7 @@ func (q *NATSQueue) Enqueue(ctx context.Context, groupJID string, msg *QueueMess
 func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage, error) {
 	sanitized, err := q.ensureStream(ctx, groupJID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("dequeue ensure stream: %w", err)
 	}
 	streamName := queueStreamName(sanitized)
 	cons, err := q.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
@@ -161,7 +161,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, error) {
 	sanitized, err := q.ensureStream(ctx, groupJID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("peek ensure stream: %w", err)
 	}
 	streamName := queueStreamName(sanitized)
 
@@ -203,7 +203,7 @@ func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, e
 func (q *NATSQueue) Len(ctx context.Context, groupJID string) (int64, error) {
 	sanitized, err := q.ensureStream(ctx, groupJID)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("len ensure stream: %w", err)
 	}
 	stream, err := q.js.Stream(ctx, queueStreamName(sanitized))
 	if err != nil {
@@ -222,7 +222,7 @@ func (q *NATSQueue) Len(ctx context.Context, groupJID string) (int64, error) {
 // MarkActive delegates to the MySQL-backed GroupActiveStore and publishes an active event.
 func (q *NATSQueue) MarkActive(ctx context.Context, groupJID string) error {
 	if err := q.gas.MarkGroupActive(ctx, groupJID); err != nil {
-		return err
+		return fmt.Errorf("mark active: %w", err)
 	}
 	q.publishEvent(ctx, QueueEvent{Type: EventActive, GroupJID: groupJID})
 	return nil
@@ -231,7 +231,7 @@ func (q *NATSQueue) MarkActive(ctx context.Context, groupJID string) error {
 // MarkInactive delegates to the MySQL-backed GroupActiveStore and publishes an inactive event.
 func (q *NATSQueue) MarkInactive(ctx context.Context, groupJID string) error {
 	if err := q.gas.MarkGroupInactive(ctx, groupJID); err != nil {
-		return err
+		return fmt.Errorf("mark inactive: %w", err)
 	}
 	q.publishEvent(ctx, QueueEvent{Type: EventInactive, GroupJID: groupJID})
 	return nil

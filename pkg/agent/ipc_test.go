@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	nats "github.com/nats-io/nats.go"
 	natserver "github.com/nats-io/nats-server/v2/server"
+	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -154,5 +154,43 @@ func TestIPCClient_ReadInput_ContextCancel(t *testing.T) {
 			t.Errorf("timed out: ch closed=%v, errCh closed=%v", chClosed, errChClosed)
 			return
 		}
+	}
+}
+
+func TestIPCClient_EnsureStreamError_Wrapped(t *testing.T) {
+	nc := startTestNATS(t)
+	client, err := NewIPCClient(nc, "ensure-wrap@g.us", "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = client.ensureStream(ctx)
+	if err == nil {
+		t.Fatal("ensureStream() error = nil, want wrapped context error")
+	}
+	if !strings.Contains(err.Error(), "ensure ipc stream") {
+		t.Fatalf("error = %q, want context %q", err.Error(), "ensure ipc stream")
+	}
+}
+
+func TestIPCClient_SendOutput_EnsureStreamError_Wrapped(t *testing.T) {
+	nc := startTestNATS(t)
+	client, err := NewIPCClient(nc, "send-ensure-wrap@g.us", "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = client.SendOutput(ctx, &OutboundMessage{Type: "message", Text: "hello"})
+	if err == nil {
+		t.Fatal("SendOutput() error = nil, want ensure stream error")
+	}
+	if !strings.Contains(err.Error(), "ensure ipc stream") {
+		t.Fatalf("error = %q, want context %q", err.Error(), "ensure ipc stream")
 	}
 }

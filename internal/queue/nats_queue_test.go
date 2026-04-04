@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	natserver "github.com/nats-io/nats-server/v2/server"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	natserver "github.com/nats-io/nats-server/v2/server"
 
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
@@ -288,6 +289,25 @@ type errActiveStore struct {
 	mockActiveStore
 }
 
+type failingActiveStore struct {
+	markActiveErr   error
+	markInactiveErr error
+}
+
+func (f *failingActiveStore) MarkGroupActive(_ context.Context, _ string) error {
+	return f.markActiveErr
+}
+
+func (f *failingActiveStore) MarkGroupInactive(_ context.Context, _ string) error {
+	return f.markInactiveErr
+}
+
+func (f *failingActiveStore) IsGroupActive(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (f *failingActiveStore) ActiveGroupCount(_ context.Context) (int64, error)   { return 0, nil }
+func (f *failingActiveStore) ActiveGroupJIDs(_ context.Context) ([]string, error) { return nil, nil }
+
 func (e *errActiveStore) MarkGroupActive(_ context.Context, _ string) error {
 	return fmt.Errorf("mark group active: %w", store.ErrGroupNotFound)
 }
@@ -519,5 +539,102 @@ func TestNATSQueueClose_Idempotent(t *testing.T) {
 	}
 	if err := q.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestNATSQueue_EnsureStreamErrorsAreWrapped(t *testing.T) {
+	q, _ := setupNATSQueue(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	msg := &QueueMessage{GroupJID: "wrap-errors@g.us", Content: "payload"}
+
+	tests := []struct {
+		name    string
+		wantCtx string
+		call    func() error
+	}{
+		{
+			name:    "Enqueue",
+			wantCtx: "enqueue ensure stream",
+			call: func() error {
+				return q.Enqueue(ctx, "wrap-errors@g.us", msg)
+			},
+		},
+		{
+			name:    "Dequeue",
+			wantCtx: "dequeue ensure stream",
+			call: func() error {
+				_, err := q.Dequeue(ctx, "wrap-errors@g.us")
+				return err
+			},
+		},
+		{
+			name:    "Peek",
+			wantCtx: "peek ensure stream",
+			call: func() error {
+				_, err := q.Peek(ctx, "wrap-errors@g.us")
+				return err
+			},
+		},
+		{
+			name:    "Len",
+			wantCtx: "len ensure stream",
+			call: func() error {
+				_, err := q.Len(ctx, "wrap-errors@g.us")
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call()
+			if err == nil {
+				t.Fatalf("%s() error = nil, want wrapped ensure stream error", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.wantCtx) {
+				t.Fatalf("%s() error = %q, want context %q", tt.name, err.Error(), tt.wantCtx)
+			}
+		})
+	}
+}
+
+func TestNATSQueue_MarkActiveInactiveErrorsAreWrapped(t *testing.T) {
+	nc := startQueueNATS(t)
+	markActiveErr := fmt.Errorf("db unavailable")
+	markInactiveErr := fmt.Errorf("tx rollback")
+
+	q, err := NewNATSQueue(nc, &failingActiveStore{
+		markActiveErr:   markActiveErr,
+		markInactiveErr: markInactiveErr,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewNATSQueue: %v", err)
+	}
+	t.Cleanup(func() { _ = q.Close() })
+
+	ctx := context.Background()
+
+	err = q.MarkActive(ctx, "wrapped-active@g.us")
+	if err == nil {
+		t.Fatal("MarkActive() error = nil, want wrapped store error")
+	}
+	if !strings.Contains(err.Error(), "mark active") {
+		t.Fatalf("MarkActive() error = %q, want context %q", err.Error(), "mark active")
+	}
+	if !errors.Is(err, markActiveErr) {
+		t.Fatalf("MarkActive() error = %v, want errors.Is(..., %v)", err, markActiveErr)
+	}
+
+	err = q.MarkInactive(ctx, "wrapped-inactive@g.us")
+	if err == nil {
+		t.Fatal("MarkInactive() error = nil, want wrapped store error")
+	}
+	if !strings.Contains(err.Error(), "mark inactive") {
+		t.Fatalf("MarkInactive() error = %q, want context %q", err.Error(), "mark inactive")
+	}
+	if !errors.Is(err, markInactiveErr) {
+		t.Fatalf("MarkInactive() error = %v, want errors.Is(..., %v)", err, markInactiveErr)
 	}
 }

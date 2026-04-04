@@ -99,11 +99,18 @@ func (c *IPCClient) ensureStream(ctx context.Context) error {
 		MaxAge:    ipcStreamMaxAge,
 		Replicas:  1,
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("ensure ipc stream %s: %w", c.streamName(), err)
+	}
+	return nil
 }
 
 // SendOutput publishes a message from this agent to the server.
 func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error {
+	if err := c.ensureStream(ctx); err != nil {
+		return fmt.Errorf("ensure ipc stream: %w", err)
+	}
+
 	ipcMsg := map[string]interface{}{
 		"group":    c.groupJID,
 		"agent_id": c.agentID,
