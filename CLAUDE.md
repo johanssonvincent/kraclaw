@@ -67,14 +67,13 @@ Consumer names:
 
 | Stream Name | Subject | Retention | Purpose |
 |-------------|---------|-----------|---------|
-| `KRACLAW_IPC_{GROUP}_OUTPUT` | `kraclaw.ipc.{group}.output` | WorkQueuePolicy | Agent → server messages |
-| `KRACLAW_IPC_{GROUP}_INPUT` | `kraclaw.ipc.{group}.input` | WorkQueuePolicy | Server → agent messages |
+| `KRACLAW_IPC_{SANITIZED}` | `kraclaw.ipc.{sanitized}.*.input`, `kraclaw.ipc.{sanitized}.*.output` | LimitsPolicy (1h MaxAge) | Bidirectional agent↔server messages |
 
-Where `{GROUP}` = group.Folder value (uppercase for stream name, lowercase for subject).
+Where `{SANITIZED}` = first 16 bytes of SHA-256 hex of groupJID (32 hex chars), uppercase for stream name, lowercase for subjects. The `*` wildcard matches sanitized agentID.
 
 Consumer names:
-- Output subscriber (server): `kraclaw-ipc-server-output-{group}`
-- Input reader (server): `kraclaw-ipc-server-input-{group}`
+- Output subscriber (server): `kraclaw-server` (durable, wildcard `kraclaw.ipc.{sanitized}.*.output`)
+- Input reader (agent): `agent-{sanitized_agent_id}` (durable, filtered to `kraclaw.ipc.{sanitized}.{agent_id}.input`)
 
 ## Architecture
 
