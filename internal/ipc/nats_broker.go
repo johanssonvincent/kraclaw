@@ -14,11 +14,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-const (
-	ipcStreamMaxAge   = time.Hour
-	ipcServerConsumer = "kraclaw-server"
-)
-
 // sanitizeGroupID is an unexported wrapper around SanitizeGroupID so internal
 // callers remain unchanged.
 func sanitizeGroupID(groupJID string) string { return SanitizeGroupID(groupJID) }
@@ -39,6 +34,15 @@ func ipcOutputWildcard(sanitized string) string {
 	return "kraclaw.ipc." + sanitized + ".*.output"
 }
 
+// consumerCleanup pairs a context cancel function with its associated message iterator.
+// This ensures cleanup happens in the correct order: cancel context first (so goroutines
+// see ctx.Err() != nil), then stop iterator. Pairing them in a struct prevents accidental
+// out-of-order cleanup that could cause spurious error logs.
+type consumerCleanup struct {
+	cancel context.CancelFunc
+	iter   jetstream.MessagesContext
+}
+
 // NATSBroker implements IPCBroker using NATS JetStream.
 //
 // Per-group stream topology:
@@ -52,8 +56,7 @@ type NATSBroker struct {
 	logger *slog.Logger
 
 	mu       sync.Mutex
-	cancels  []context.CancelFunc
-	iters    []jetstream.MessagesContext // track iterators for cleanup
+	cleanups []consumerCleanup // paired cancel + iterator for ordered cleanup
 	closed   bool
 	closedCh chan struct{}
 }
@@ -203,15 +206,14 @@ func (b *NATSBroker) Close() error {
 	}
 	b.closed = true
 	// Cancel all contexts first — so goroutines see ctx.Err() != nil when iter.Stop() fires.
-	for _, cancel := range b.cancels {
-		cancel()
+	for _, cleanup := range b.cleanups {
+		cleanup.cancel()
 	}
-	b.cancels = nil
 	// Then stop all iterators — this unblocks iter.Next(), which returns a context error (silent).
-	for _, iter := range b.iters {
-		iter.Stop()
+	for _, cleanup := range b.cleanups {
+		cleanup.iter.Stop()
 	}
-	b.iters = nil
+	b.cleanups = nil
 	close(b.closedCh)
 	return nil
 }
@@ -233,11 +235,9 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 		b.mu.Unlock()
 		iter.Stop()
 		cancel()
-		close(ch)
-		return ch, fmt.Errorf("consume: broker closed")
+		return nil, fmt.Errorf("consume: broker closed")
 	}
-	b.cancels = append(b.cancels, cancel)
-	b.iters = append(b.iters, iter)
+	b.cleanups = append(b.cleanups, consumerCleanup{cancel: cancel, iter: iter})
 	b.mu.Unlock()
 
 	done := make(chan struct{}) // closed when the consumer goroutine exits
@@ -283,9 +283,14 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 
 			var msg IPCMessage
 			if err := json.Unmarshal(jmsg.Data(), &msg); err != nil {
-				b.logger.Warn("unmarshal ipc message", "group", group, "error", err)
+				meta, _ := jmsg.Metadata()
+				var seq uint64
+				if meta != nil {
+					seq = meta.Sequence.Stream
+				}
+				b.logger.Error("unmarshal ipc message", "group", group, "sequence", seq, "error", err)
 				if err := jmsg.Ack(); err != nil {
-					b.logger.Error("ack malformed message", "group", group, "error", err)
+					b.logger.Error("ack malformed message", "group", group, "sequence", seq, "error", err)
 				}
 				continue
 			}
@@ -294,16 +299,31 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 			select {
 			case ch <- &msg:
 				if err := jmsg.Ack(); err != nil {
-					b.logger.Error("ack ipc message", "group", group, "error", err)
+					meta, _ := jmsg.Metadata()
+					var seq uint64
+					if meta != nil {
+						seq = meta.Sequence.Stream
+					}
+					b.logger.Error("ack ipc message", "group", group, "sequence", seq, "error", err)
 				}
 			case <-ctx.Done():
+				meta, _ := jmsg.Metadata()
+				var seq uint64
+				if meta != nil {
+					seq = meta.Sequence.Stream
+				}
 				if err := jmsg.Nak(); err != nil {
-					b.logger.Warn("nak message", "group", group, "error", err)
+					b.logger.Error("nak message on context cancel", "group", group, "sequence", seq, "error", err)
 				}
 				return
 			case <-b.closedCh:
+				meta, _ := jmsg.Metadata()
+				var seq uint64
+				if meta != nil {
+					seq = meta.Sequence.Stream
+				}
 				if err := jmsg.Nak(); err != nil {
-					b.logger.Warn("nak message", "group", group, "error", err)
+					b.logger.Error("nak message on broker close", "group", group, "sequence", seq, "error", err)
 				}
 				return
 			}

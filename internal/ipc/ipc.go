@@ -26,6 +26,13 @@ const (
 	DefaultAgentID = "main"
 )
 
+// StreamMaxAge is the max age for IPC JetStream streams. Exported so pkg/agent
+// and internal/ipc can share it without duplication. Set to 1 hour to limit
+// historical message retention and prevent unbounded stream growth.
+const (
+	StreamMaxAge = time.Hour
+)
+
 // SanitizeGroupID returns the first 16 bytes of the SHA-256 hex digest of the
 // group JID (32 hex characters). Exported so pkg/agent can reuse it without
 // duplication.
