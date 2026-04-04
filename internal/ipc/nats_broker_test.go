@@ -472,6 +472,103 @@ func TestNATSBrokerMalformedMessageSkipped(t *testing.T) {
 	}
 }
 
+// Test 2.3: Multi-Group Isolation
+func TestNATSBrokerMultiGroupIsolation(t *testing.T) {
+	broker1, _ := setupNATS(t)
+	broker2, _ := setupNATS(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	groupFoo := "foo@g.us"
+	groupBar := "bar@g.us"
+
+	// Subscribe both brokers to their respective groups
+	chFoo, err := broker1.SubscribeOutput(ctx, groupFoo)
+	if err != nil {
+		t.Fatalf("SubscribeOutput foo: %v", err)
+	}
+
+	chBar, err := broker2.SubscribeOutput(ctx, groupBar)
+	if err != nil {
+		t.Fatalf("SubscribeOutput bar: %v", err)
+	}
+
+	// Publish to foo
+	msgFoo := &IPCMessage{
+		Group:   groupFoo,
+		AgentID: "agent-foo",
+		Type:    IPCMessageText,
+		Payload: json.RawMessage(`{"group":"foo"}`),
+	}
+	if err := broker1.PublishOutput(ctx, groupFoo, "agent-foo", msgFoo); err != nil {
+		t.Fatalf("PublishOutput foo: %v", err)
+	}
+
+	// Publish to bar
+	msgBar := &IPCMessage{
+		Group:   groupBar,
+		AgentID: "agent-bar",
+		Type:    IPCMessageText,
+		Payload: json.RawMessage(`{"group":"bar"}`),
+	}
+	if err := broker2.PublishOutput(ctx, groupBar, "agent-bar", msgBar); err != nil {
+		t.Fatalf("PublishOutput bar: %v", err)
+	}
+
+	// Verify foo broker receives foo message only
+	select {
+	case gotFoo := <-chFoo:
+		if gotFoo == nil {
+			t.Fatal("foo: received nil message")
+		}
+		if gotFoo.AgentID != "agent-foo" {
+			t.Errorf("foo: expected agent-foo, got %s", gotFoo.AgentID)
+		}
+		if string(gotFoo.Payload) != `{"group":"foo"}` {
+			t.Errorf("foo: wrong payload: %s", gotFoo.Payload)
+		}
+	case <-ctx.Done():
+		t.Fatal("foo: timed out waiting for message")
+	}
+
+	// Verify bar broker receives bar message only
+	select {
+	case gotBar := <-chBar:
+		if gotBar == nil {
+			t.Fatal("bar: received nil message")
+		}
+		if gotBar.AgentID != "agent-bar" {
+			t.Errorf("bar: expected agent-bar, got %s", gotBar.AgentID)
+		}
+		if string(gotBar.Payload) != `{"group":"bar"}` {
+			t.Errorf("bar: wrong payload: %s", gotBar.Payload)
+		}
+	case <-ctx.Done():
+		t.Fatal("bar: timed out waiting for message")
+	}
+
+	// Verify foo doesn't receive bar's message (check with timeout)
+	select {
+	case msg := <-chFoo:
+		if msg != nil && msg.AgentID == "agent-bar" {
+			t.Fatal("foo: received bar's message - CROSSTALK!")
+		}
+	case <-time.After(500 * time.Millisecond):
+		// Good - no crosstalk within timeout
+	}
+
+	// Verify bar doesn't receive foo's message (check with timeout)
+	select {
+	case msg := <-chBar:
+		if msg != nil && msg.AgentID == "agent-foo" {
+			t.Fatal("bar: received foo's message - CROSSTALK!")
+		}
+	case <-time.After(500 * time.Millisecond):
+		// Good - no crosstalk within timeout
+	}
+}
+
 // Test 2.1: Context Cancellation During Consume
 func TestNATSBrokerContextCancellationDuringConsume(t *testing.T) {
 	broker, _ := setupNATS(t)
