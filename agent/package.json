@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",
-    "ioredis": "^5.4.2"
+    "nats": "^2.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
