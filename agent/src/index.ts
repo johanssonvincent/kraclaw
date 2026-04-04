@@ -91,7 +91,8 @@ async function main(): Promise<void> {
 
   await initWorkspace();
 
-  const ipc = new IPCClient(NATS_URL, GROUP_FOLDER);
+  const AGENT_ID = process.env.KRACLAW_AGENT_ID ?? "node";
+  const ipc = new IPCClient(NATS_URL, GROUP_FOLDER, AGENT_ID);
   let sessionId: string | undefined = INITIAL_SESSION_ID;
   let currentModel = INITIAL_MODEL;
   let running = true;

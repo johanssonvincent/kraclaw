@@ -185,34 +185,35 @@ export class IPCClient {
 
       try {
         // Set a 5 second timeout for reading
-        const timeout = new Promise<null>((resolve) => {
-          setTimeout(() => resolve(null), 5000);
-        });
+        const timeoutMs = 5000;
+        const startTime = Date.now();
 
-        const msgPromise = (async () => {
-          for await (const jmsg of sub) {
-            // Parse the message
-            const data = new TextDecoder().decode(jmsg.data);
-            const parsed = JSON.parse(data);
-
-            const msg: IPCMessage = {
-              group: this.groupJID,
-              type: parsed.type,
-              payload: parsed.payload || {},
-            };
-
-            // Explicitly acknowledge the message
-            if (jmsg.ack) {
-              await jmsg.ack();
-            }
-
-            return msg;
+        for await (const jmsg of sub) {
+          // Check if timeout has been exceeded
+          if (Date.now() - startTime > timeoutMs) {
+            return null;
           }
-          return null;
-        })();
 
-        // Race between message arrival and timeout
-        return await Promise.race([msgPromise, timeout]);
+          // Parse the message
+          const data = new TextDecoder().decode(jmsg.data);
+          const parsed = JSON.parse(data);
+
+          const msg: IPCMessage = {
+            group: this.groupJID,
+            type: parsed.type,
+            payload: parsed.payload || {},
+          };
+
+          // Explicitly acknowledge the message
+          if (jmsg.ack) {
+            await jmsg.ack();
+          }
+
+          return msg;
+        }
+
+        // Timeout reached with no message
+        return null;
       } finally {
         await sub.unsubscribe();
       }

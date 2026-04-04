@@ -142,7 +142,7 @@ func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan 
 	}
 	streamName := ipcStreamName(sanitized)
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
-		Durable:       ipcServerConsumer,
+		Durable:       "kraclaw-server-" + sanitized,
 		FilterSubject: ipcOutputWildcard(sanitized),
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		AckPolicy:     jetstream.AckExplicitPolicy,
