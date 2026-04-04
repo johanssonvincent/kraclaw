@@ -185,11 +185,10 @@ export class IPCClient {
 
       try {
         // Set a 5 second timeout for reading
-        const timeout = new Promise<null>(() => {
-          setTimeout(() => null, 5000);
+        const timeout = new Promise<null>((resolve) => {
+          setTimeout(() => resolve(null), 5000);
         });
 
-        let firstMessage = true;
         const msgPromise = (async () => {
           for await (const jmsg of sub) {
             // Parse the message
@@ -212,12 +211,7 @@ export class IPCClient {
           return null;
         })();
 
-        // If first message, wait indefinitely; otherwise timeout
-        if (firstMessage) {
-          firstMessage = false;
-          return await msgPromise;
-        }
-
+        // Race between message arrival and timeout
         return await Promise.race([msgPromise, timeout]);
       } finally {
         await sub.unsubscribe();
