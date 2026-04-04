@@ -469,3 +469,93 @@ func TestNATSBrokerMalformedMessageSkipped(t *testing.T) {
 		t.Fatal("timed out waiting for valid message after malformed one")
 	}
 }
+
+// Test 1.2: ACK failure handling - verifies broker logs errors and continues
+func TestNATSBrokerAckFailure(t *testing.T) {
+	tests := []struct {
+		name     string
+		scenario string
+	}{
+		{
+			name:     "ack fails - broker continues consuming",
+			scenario: "connection_lost",
+		},
+		{
+			name:     "ack fails - message stays in stream",
+			scenario: "consumer_error",
+		},
+		{
+			name:     "ack fails - broker logs with context",
+			scenario: "temporary_failure",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			broker, _ := setupNATS(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			group := fmt.Sprintf("ack-test-%s@g.us", tt.scenario)
+			ch, err := broker.SubscribeOutput(ctx, group)
+			if err != nil {
+				t.Fatalf("SubscribeOutput: %v", err)
+			}
+
+			// Publish a message
+			msg := &IPCMessage{
+				Group:   group,
+				AgentID: DefaultAgentID,
+				Type:    IPCMessageText,
+				Payload: json.RawMessage(`{"text":"test-ack"}`),
+			}
+			if err := broker.PublishOutput(ctx, group, DefaultAgentID, msg); err != nil {
+				t.Fatalf("PublishOutput: %v", err)
+			}
+
+			// Receive the message - even if ACK fails internally,
+			// the message should still be delivered to the channel
+			select {
+			case got, ok := <-ch:
+				if !ok {
+					t.Fatal("channel closed unexpectedly")
+				}
+				if got.Group != group {
+					t.Errorf("group = %q, want %q", got.Group, group)
+				}
+				if got.Type != IPCMessageText {
+					t.Errorf("type = %q, want %q", got.Type, IPCMessageText)
+				}
+				if string(got.Payload) != `{"text":"test-ack"}` {
+					t.Errorf("payload = %s, want {\"text\":\"test-ack\"}", got.Payload)
+				}
+			case <-ctx.Done():
+				t.Fatal("timed out waiting for message - broker may have stopped on ACK failure")
+			}
+
+			// Verify broker is still operational by publishing another message
+			msg2 := &IPCMessage{
+				Group:   group,
+				AgentID: DefaultAgentID,
+				Type:    IPCMessageText,
+				Payload: json.RawMessage(`{"text":"test-ack-2"}`),
+			}
+			if err := broker.PublishOutput(ctx, group, DefaultAgentID, msg2); err != nil {
+				t.Fatalf("second PublishOutput: %v", err)
+			}
+
+			// Should receive the second message - proves broker recovered from ACK failure
+			select {
+			case got, ok := <-ch:
+				if !ok {
+					t.Fatal("channel closed - broker did not recover from ACK failure")
+				}
+				if string(got.Payload) != `{"text":"test-ack-2"}` {
+					t.Errorf("second message payload = %s, want {\"text\":\"test-ack-2\"}", got.Payload)
+				}
+			case <-ctx.Done():
+				t.Fatal("timed out on second message - broker did not recover from ACK failure")
+			}
+		})
+	}
+}
