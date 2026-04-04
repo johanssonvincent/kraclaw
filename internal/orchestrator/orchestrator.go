@@ -199,9 +199,9 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}
 	}
 
-	// 5.55. Reconcile the Redis active set against actual K8s state.
+	// 5.55. Reconcile the active group set against actual K8s state.
 	// Sandboxes that completed or were deleted while the server was down leave
-	// stale entries in kraclaw:active.  If enough accumulate they exceed
+	// stale entries in the active group store.  If enough accumulate they exceed
 	// MaxConcurrent and prevent any new sandbox from starting.
 	o.reconcileActiveSet(ctx)
 
@@ -1041,7 +1041,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string) {
 			o.log.Error("failed to save state after deactivation", "group", group.Name, "error", err)
 		}
 
-		// Check MySQL for pending messages (not just the Redis queue).
+		// Check MySQL for pending messages (not just the NATS queue).
 		o.mu.Lock()
 		agentTs := o.lastAgentTimestamp[chatJID]
 		o.mu.Unlock()
@@ -1049,7 +1049,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string) {
 		if err != nil {
 			o.log.Error("failed to check pending messages", "group", group.Name, "error", err)
 		}
-		// Also drain the Redis queue for scheduled tasks.
+		// Also drain the NATS queue for scheduled tasks.
 		qMsg, err := o.queue.Dequeue(ctx, chatJID)
 		if err != nil {
 			o.log.Error("failed to dequeue message", "group", group.Name, "error", err)
@@ -1248,11 +1248,11 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 	return o.queue.Enqueue(ctx, task.ChatJID, qMsg)
 }
 
-// reconcileActiveSet removes stale entries from the Redis kraclaw:active set.
+// reconcileActiveSet removes stale entries from the active group store.
 // On server restart, sandbox processes that completed while the server was down
-// leave their group JIDs permanently in the set.  If enough accumulate they
+// leave their group JIDs permanently in the store.  If enough accumulate they
 // inflate ActiveCount past MaxConcurrent, silently blocking new sandbox creation.
-// This method enumerates the active set and calls MarkInactive for any JID that
+// This method enumerates the active store and calls MarkInactive for any JID that
 // has no corresponding running or pending K8s sandbox.
 func (o *Orchestrator) reconcileActiveSet(ctx context.Context) {
 	activeJIDs, err := o.queue.ActiveJIDs(ctx)

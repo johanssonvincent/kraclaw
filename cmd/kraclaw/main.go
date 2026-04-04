@@ -136,7 +136,7 @@ func main() {
 			if cfg.K8s.AgentImageOpenAI != "" {
 				agentImages[provider.ProviderOpenAI] = cfg.K8s.AgentImageOpenAI
 			}
-			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, cfg.K8s.AgentImage, agentImages, cfg.NATS.URL, cfg.K8s.SandboxProxyURL)
+			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, agentImages, cfg.NATS.URL, cfg.K8s.SandboxProxyURL)
 			if err != nil {
 				log.Error("failed to create sandbox controller", "error", err)
 				return

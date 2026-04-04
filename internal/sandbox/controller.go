@@ -42,7 +42,6 @@ type Controller struct {
 	ctrlClient  client.WithWatch
 	config      *rest.Config
 	namespace   string
-	agentImage  string
 	agentImages map[string]string // provider -> image
 	natsURL     string
 	proxyURL    string
@@ -56,7 +55,7 @@ type SandboxConfig struct {
 	SessionID       string
 	IsMain          bool
 	Timeout         time.Duration
-	Input           string // JSON-encoded input, written to Redis before Job creation
+	Input           string // JSON-encoded input, sent via NATS IPC after sandbox creation
 	AssistantName   string
 	Model           string
 	SessionsPVC     string // PVC for .claude/ session transcripts (default: kraclaw-sessions)
@@ -96,7 +95,7 @@ type SandboxStatus struct {
 }
 
 // New creates a new sandbox controller.
-func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *rest.Config, namespace, agentImage string, agentImages map[string]string, natsURL, proxyURL string) (*Controller, error) {
+func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *rest.Config, namespace string, agentImages map[string]string, natsURL, proxyURL string) (*Controller, error) {
 	if clientset == nil {
 		return nil, fmt.Errorf("sandbox: kubernetes clientset is required")
 	}
@@ -108,7 +107,6 @@ func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *re
 		ctrlClient:  ctrlClient,
 		config:      config,
 		namespace:   namespace,
-		agentImage:  agentImage,
 		agentImages: agentImages,
 		natsURL:     natsURL,
 		proxyURL:    proxyURL,
@@ -117,24 +115,18 @@ func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *re
 }
 
 // agentImageForProvider returns the container image for the given provider.
-// Provider-specific images are required; legacy AGENT_IMAGE fallback is disabled
-// because the legacy Node agent still depends on Redis IPC.
+// Provider-specific images are required; legacy AGENT_IMAGE fallback is not supported with NATS.
 func (c *Controller) agentImageForProvider(prov string) (string, error) {
 	if prov == "" {
 		prov = provider.ProviderAnthropic
 	}
-
-	if prov != "" {
-		if img, ok := c.agentImages[prov]; ok && img != "" {
-			return img, nil
-		}
-		if prov == provider.ProviderAnthropic {
-			return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_ANTHROPIC); legacy AGENT_IMAGE fallback is not supported with NATS", prov)
-		}
-		return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_%s)", prov, strings.ToUpper(prov))
+	if img, ok := c.agentImages[prov]; ok && img != "" {
+		return img, nil
 	}
-
-	return "", fmt.Errorf("no agent image configured for provider %q", prov)
+	if prov == provider.ProviderAnthropic {
+		return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_ANTHROPIC); legacy AGENT_IMAGE fallback is not supported with NATS", prov)
+	}
+	return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_%s)", prov, strings.ToUpper(prov))
 }
 
 // isTransientError reports whether err is likely a transient K8s API failure

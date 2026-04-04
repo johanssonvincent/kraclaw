@@ -31,7 +31,7 @@ func newTestController() *Controller {
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", agentImages, "nats://localhost:4222", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001")
 	if err != nil {
 		panic("newTestController: " + err.Error())
 	}
@@ -137,7 +137,7 @@ func newTestControllerWithCreateInterceptor(funcs interceptor.Funcs) *Controller
 		Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", agentImages, "nats://localhost:4222", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001")
 	if err != nil {
 		panic("newTestControllerWithCreateInterceptor: " + err.Error())
 	}
@@ -533,7 +533,7 @@ func TestCleanupOrphans_IsNotFoundSkipped(t *testing.T) {
 		failName:  "kraclaw-agent-gone-aaa111",
 	}
 
-	ctrl, err := New(fake.NewClientset(), wrappedClient, nil, "test-ns", "agent:latest", nil, "redis://localhost:6379", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), wrappedClient, nil, "test-ns", nil, "nats://localhost:4222", "http://localhost:3001")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,7 +729,6 @@ func TestBuildSandbox_AdditionalMountFallback(t *testing.T) {
 
 func TestAgentImageForProvider_Anthropic(t *testing.T) {
 	c := &Controller{
-		agentImage: "legacy-image:latest",
 		agentImages: map[string]string{
 			"anthropic": "ghcr.io/johanssonvincent/kraclaw-agent-anthropic:latest",
 			"openai":    "ghcr.io/johanssonvincent/kraclaw-agent-openai:latest",
@@ -761,7 +760,6 @@ func TestAgentImageForProvider_OpenAI(t *testing.T) {
 
 func TestAgentImageForProvider_AnthropicWithoutImageReturnsError(t *testing.T) {
 	c := &Controller{
-		agentImage:  "legacy-image:latest",
 		agentImages: map[string]string{},
 		log:         slog.Default(),
 	}
@@ -773,7 +771,6 @@ func TestAgentImageForProvider_AnthropicWithoutImageReturnsError(t *testing.T) {
 
 func TestAgentImageForProvider_EmptyProviderUsesAnthropicImage(t *testing.T) {
 	c := &Controller{
-		agentImage: "legacy-image:latest",
 		agentImages: map[string]string{
 			"anthropic": "new-image:latest",
 		},
@@ -831,7 +828,6 @@ func TestBuildSandbox_OpenAIEnvVars(t *testing.T) {
 func TestBuildSandbox_AnthropicWithoutImageReturnsError(t *testing.T) {
 	c := &Controller{
 		namespace:   "test",
-		agentImage:  "legacy-image:latest",
 		agentImages: map[string]string{},
 		natsURL:     "nats://localhost:4222",
 		proxyURL:    "http://proxy:3001",
@@ -851,8 +847,7 @@ func TestBuildSandbox_AnthropicWithoutImageReturnsError(t *testing.T) {
 
 func TestBuildSandbox_OpenAINoCommand(t *testing.T) {
 	c := &Controller{
-		namespace:  "test",
-		agentImage: "legacy-image:latest",
+		namespace: "test",
 		agentImages: map[string]string{
 			"openai": "ghcr.io/johanssonvincent/kraclaw-agent-openai:latest",
 		},
@@ -880,8 +875,7 @@ func TestBuildSandbox_OpenAINoCommand(t *testing.T) {
 
 func TestBuildSandbox_AnthropicGoAgentEnvVars(t *testing.T) {
 	ctrl := &Controller{
-		namespace:  "test-ns",
-		agentImage: "legacy-node-agent:latest",
+		namespace: "test-ns",
 		agentImages: map[string]string{
 			provider.ProviderAnthropic: "ghcr.io/johanssonvincent/kraclaw-agent-anthropic:latest",
 		},
@@ -944,7 +938,6 @@ func TestBuildSandbox_AnthropicGoAgentEnvVars(t *testing.T) {
 
 func TestAgentImageForProvider_IncompatibleFallbackReturnsError(t *testing.T) {
 	c := &Controller{
-		agentImage:  "legacy-node:latest",
 		agentImages: map[string]string{},
 		log:         slog.Default(),
 	}
@@ -959,7 +952,6 @@ func TestAgentImageForProvider_IncompatibleFallbackReturnsError(t *testing.T) {
 
 func TestAgentImageForProvider_AnthropicFallbackReturnsError(t *testing.T) {
 	c := &Controller{
-		agentImage:  "legacy-node:latest",
 		agentImages: map[string]string{},
 		log:         slog.Default(),
 	}
