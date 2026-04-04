@@ -17,7 +17,8 @@ func validConfig() Config {
 			AnthropicAPIKey: "sk-test",
 		},
 		K8s: K8sConfig{
-			AgentImage: "ghcr.io/test/agent:latest",
+			AgentImage:          "ghcr.io/test/agent:latest",
+			AgentImageAnthropic: "ghcr.io/test/anthropic:latest",
 		},
 		Queue: QueueConfig{
 			MaxConcurrent: 5,
@@ -38,13 +39,13 @@ func TestValidate_RequiresAtLeastOneAgentImage(t *testing.T) {
 	}
 }
 
-func TestValidate_AcceptsLegacyAgentImage(t *testing.T) {
+func TestValidate_RejectsLegacyAnthropicFallback(t *testing.T) {
 	cfg := validConfig()
 	cfg.K8s.AgentImage = "ghcr.io/test/agent:latest"
 	cfg.K8s.AgentImageAnthropic = ""
 	cfg.K8s.AgentImageOpenAI = ""
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when ANTHROPIC_API_KEY is set without AGENT_IMAGE_ANTHROPIC")
 	}
 }
 
@@ -86,6 +87,8 @@ func TestValidate_OpenAIOnlyRequiresEncryptionKey(t *testing.T) {
 	cfg := validConfig()
 	cfg.Proxy.AnthropicAPIKey = ""
 	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
+	cfg.K8s.AgentImageAnthropic = ""
+	cfg.K8s.AgentImageOpenAI = "ghcr.io/test/openai:latest"
 	cfg.Proxy.CredentialEncryptionKey = ""
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error when only OpenAI credentials set without encryption key")
@@ -96,9 +99,23 @@ func TestValidate_OpenAIOnlyWithEncryptionKeyPasses(t *testing.T) {
 	cfg := validConfig()
 	cfg.Proxy.AnthropicAPIKey = ""
 	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
+	cfg.K8s.AgentImageAnthropic = ""
+	cfg.K8s.AgentImageOpenAI = "ghcr.io/test/openai:latest"
 	cfg.Proxy.CredentialEncryptionKey = strings.Repeat("ab", 32)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_OpenAIProviderRequiresOpenAIImage(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.AnthropicAPIKey = ""
+	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
+	cfg.K8s.AgentImageAnthropic = ""
+	cfg.K8s.AgentImageOpenAI = ""
+	cfg.Proxy.CredentialEncryptionKey = strings.Repeat("ab", 32)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when OPENAI_API_KEY is set without AGENT_IMAGE_OPENAI")
 	}
 }
 
@@ -117,25 +134,27 @@ func TestLoad(t *testing.T) {
 		{
 			name: "minimal valid config",
 			env: map[string]string{
-				"MYSQL_DSN":         "user:pass@tcp(localhost:3306)/kraclaw",
-				"AGENT_IMAGE":       "registry.local/agent:latest",
-				"ANTHROPIC_API_KEY": "sk-test",
+				"MYSQL_DSN":             "user:pass@tcp(localhost:3306)/kraclaw",
+				"AGENT_IMAGE":           "registry.local/agent:latest",
+				"AGENT_IMAGE_ANTHROPIC": "registry.local/anthropic:latest",
+				"ANTHROPIC_API_KEY":     "sk-test",
 			},
 			check: func(t *testing.T, cfg *Config) {
 				if cfg.MySQL.DSN != "user:pass@tcp(localhost:3306)/kraclaw" {
 					t.Errorf("unexpected MySQL DSN: %s", cfg.MySQL.DSN)
 				}
-				if cfg.K8s.AgentImage != "registry.local/agent:latest" {
-					t.Errorf("unexpected agent image: %s", cfg.K8s.AgentImage)
+				if cfg.K8s.AgentImageAnthropic != "registry.local/anthropic:latest" {
+					t.Errorf("unexpected anthropic agent image: %s", cfg.K8s.AgentImageAnthropic)
 				}
 			},
 		},
 		{
 			name: "defaults applied",
 			env: map[string]string{
-				"MYSQL_DSN":         "user:pass@tcp(localhost:3306)/kraclaw",
-				"AGENT_IMAGE":       "registry.local/agent:latest",
-				"ANTHROPIC_API_KEY": "sk-test",
+				"MYSQL_DSN":             "user:pass@tcp(localhost:3306)/kraclaw",
+				"AGENT_IMAGE":           "registry.local/agent:latest",
+				"AGENT_IMAGE_ANTHROPIC": "registry.local/anthropic:latest",
+				"ANTHROPIC_API_KEY":     "sk-test",
 			},
 			check: func(t *testing.T, cfg *Config) {
 				if cfg.Server.GRPCAddr != ":50051" {
@@ -170,14 +189,15 @@ func TestLoad(t *testing.T) {
 		{
 			name: "custom values",
 			env: map[string]string{
-				"MYSQL_DSN":          "user:pass@tcp(localhost:3306)/kraclaw",
-				"AGENT_IMAGE":        "registry.local/agent:latest",
-				"ANTHROPIC_API_KEY":  "sk-test",
-				"GRPC_ADDR":          ":9090",
-				"GRPC_ALLOWED_CIDRS": "10.42.0.0/16,10.43.0.0/16",
-				"MAX_CONCURRENT":     "10",
-				"LOG_LEVEL":          "debug",
-				"ASSISTANT_NAME":     "Andy",
+				"MYSQL_DSN":             "user:pass@tcp(localhost:3306)/kraclaw",
+				"AGENT_IMAGE":           "registry.local/agent:latest",
+				"AGENT_IMAGE_ANTHROPIC": "registry.local/anthropic:latest",
+				"ANTHROPIC_API_KEY":     "sk-test",
+				"GRPC_ADDR":             ":9090",
+				"GRPC_ALLOWED_CIDRS":    "10.42.0.0/16,10.43.0.0/16",
+				"MAX_CONCURRENT":        "10",
+				"LOG_LEVEL":             "debug",
+				"ASSISTANT_NAME":        "Andy",
 			},
 			check: func(t *testing.T, cfg *Config) {
 				if cfg.Server.GRPCAddr != ":9090" {
@@ -200,38 +220,42 @@ func TestLoad(t *testing.T) {
 		{
 			name: "missing API key",
 			env: map[string]string{
-				"MYSQL_DSN":   "user:pass@tcp(localhost:3306)/kraclaw",
-				"AGENT_IMAGE": "registry.local/agent:latest",
+				"MYSQL_DSN":             "user:pass@tcp(localhost:3306)/kraclaw",
+				"AGENT_IMAGE":           "registry.local/agent:latest",
+				"AGENT_IMAGE_ANTHROPIC": "registry.local/anthropic:latest",
 			},
 			wantErr: true,
 		},
 		{
 			name: "invalid timezone",
 			env: map[string]string{
-				"MYSQL_DSN":         "user:pass@tcp(localhost:3306)/kraclaw",
-				"AGENT_IMAGE":       "registry.local/agent:latest",
-				"ANTHROPIC_API_KEY": "sk-test",
-				"TZ":                "Not/A/Timezone",
+				"MYSQL_DSN":             "user:pass@tcp(localhost:3306)/kraclaw",
+				"AGENT_IMAGE":           "registry.local/agent:latest",
+				"AGENT_IMAGE_ANTHROPIC": "registry.local/anthropic:latest",
+				"ANTHROPIC_API_KEY":     "sk-test",
+				"TZ":                    "Not/A/Timezone",
 			},
 			wantErr: true,
 		},
 		{
 			name: "zero max concurrent",
 			env: map[string]string{
-				"MYSQL_DSN":         "user:pass@tcp(localhost:3306)/kraclaw",
-				"AGENT_IMAGE":       "registry.local/agent:latest",
-				"ANTHROPIC_API_KEY": "sk-test",
-				"MAX_CONCURRENT":    "0",
+				"MYSQL_DSN":             "user:pass@tcp(localhost:3306)/kraclaw",
+				"AGENT_IMAGE":           "registry.local/agent:latest",
+				"AGENT_IMAGE_ANTHROPIC": "registry.local/anthropic:latest",
+				"ANTHROPIC_API_KEY":     "sk-test",
+				"MAX_CONCURRENT":        "0",
 			},
 			wantErr: true,
 		},
 		{
 			name: "empty gRPC allowlist",
 			env: map[string]string{
-				"MYSQL_DSN":          "user:pass@tcp(localhost:3306)/kraclaw",
-				"AGENT_IMAGE":        "registry.local/agent:latest",
-				"ANTHROPIC_API_KEY":  "sk-test",
-				"GRPC_ALLOWED_CIDRS": "",
+				"MYSQL_DSN":             "user:pass@tcp(localhost:3306)/kraclaw",
+				"AGENT_IMAGE":           "registry.local/agent:latest",
+				"AGENT_IMAGE_ANTHROPIC": "registry.local/anthropic:latest",
+				"ANTHROPIC_API_KEY":     "sk-test",
+				"GRPC_ALLOWED_CIDRS":    "",
 			},
 			wantErr: true,
 		},

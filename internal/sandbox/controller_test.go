@@ -9,16 +9,16 @@ import (
 	"testing"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	agentsandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/store"
@@ -29,8 +29,9 @@ func newTestController() *Controller {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
+	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", nil, "nats://localhost:4222", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", agentImages, "nats://localhost:4222", "http://localhost:3001")
 	if err != nil {
 		panic("newTestController: " + err.Error())
 	}
@@ -134,8 +135,9 @@ func newTestControllerWithCreateInterceptor(funcs interceptor.Funcs) *Controller
 		WithScheme(scheme).
 		WithInterceptorFuncs(funcs).
 		Build()
+	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", nil, "nats://localhost:4222", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", "agent:latest", agentImages, "nats://localhost:4222", "http://localhost:3001")
 	if err != nil {
 		panic("newTestControllerWithCreateInterceptor: " + err.Error())
 	}
@@ -757,22 +759,19 @@ func TestAgentImageForProvider_OpenAI(t *testing.T) {
 	}
 }
 
-func TestAgentImageForProvider_FallbackToLegacy(t *testing.T) {
+func TestAgentImageForProvider_AnthropicWithoutImageReturnsError(t *testing.T) {
 	c := &Controller{
 		agentImage:  "legacy-image:latest",
 		agentImages: map[string]string{},
 		log:         slog.Default(),
 	}
-	img, err := c.agentImageForProvider("anthropic")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if img != "legacy-image:latest" {
-		t.Fatalf("expected legacy fallback, got %q", img)
+	_, err := c.agentImageForProvider("anthropic")
+	if err == nil {
+		t.Fatal("expected error when anthropic image is not configured")
 	}
 }
 
-func TestAgentImageForProvider_EmptyProviderUsesLegacy(t *testing.T) {
+func TestAgentImageForProvider_EmptyProviderUsesAnthropicImage(t *testing.T) {
 	c := &Controller{
 		agentImage: "legacy-image:latest",
 		agentImages: map[string]string{
@@ -783,8 +782,8 @@ func TestAgentImageForProvider_EmptyProviderUsesLegacy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if img != "legacy-image:latest" {
-		t.Fatalf("expected legacy fallback for empty provider, got %q", img)
+	if img != "new-image:latest" {
+		t.Fatalf("expected anthropic image for empty provider, got %q", img)
 	}
 }
 
@@ -829,7 +828,7 @@ func TestBuildSandbox_OpenAIEnvVars(t *testing.T) {
 	}
 }
 
-func TestBuildSandbox_AnthropicLegacyCommand(t *testing.T) {
+func TestBuildSandbox_AnthropicWithoutImageReturnsError(t *testing.T) {
 	c := &Controller{
 		namespace:   "test",
 		agentImage:  "legacy-image:latest",
@@ -841,18 +840,12 @@ func TestBuildSandbox_AnthropicLegacyCommand(t *testing.T) {
 		GroupFolder: "testgroup",
 		GroupJID:    "discord:123",
 	}
-	sb, err := c.buildSandbox("test-sandbox", cfg)
-	if err != nil {
-		t.Fatalf("buildSandbox: %v", err)
+	_, err := c.buildSandbox("test-sandbox", cfg)
+	if err == nil {
+		t.Fatal("expected buildSandbox to fail without AGENT_IMAGE_ANTHROPIC")
 	}
-	container := sb.Spec.PodTemplate.Spec.Containers[0]
-
-	// Legacy anthropic agent should have explicit node command.
-	if len(container.Command) == 0 {
-		t.Fatal("expected legacy anthropic container to have explicit command")
-	}
-	if container.Command[0] != "node" {
-		t.Fatalf("expected command[0]='node', got %q", container.Command[0])
+	if !strings.Contains(err.Error(), "AGENT_IMAGE_ANTHROPIC") {
+		t.Fatalf("expected AGENT_IMAGE_ANTHROPIC guidance, got %v", err)
 	}
 }
 
@@ -887,8 +880,8 @@ func TestBuildSandbox_OpenAINoCommand(t *testing.T) {
 
 func TestBuildSandbox_AnthropicGoAgentEnvVars(t *testing.T) {
 	ctrl := &Controller{
-		namespace:   "test-ns",
-		agentImage:  "legacy-node-agent:latest",
+		namespace:  "test-ns",
+		agentImage: "legacy-node-agent:latest",
 		agentImages: map[string]string{
 			provider.ProviderAnthropic: "ghcr.io/johanssonvincent/kraclaw-agent-anthropic:latest",
 		},
@@ -964,17 +957,14 @@ func TestAgentImageForProvider_IncompatibleFallbackReturnsError(t *testing.T) {
 	}
 }
 
-func TestAgentImageForProvider_AnthropicFallbackOK(t *testing.T) {
+func TestAgentImageForProvider_AnthropicFallbackReturnsError(t *testing.T) {
 	c := &Controller{
 		agentImage:  "legacy-node:latest",
 		agentImages: map[string]string{},
 		log:         slog.Default(),
 	}
-	img, err := c.agentImageForProvider("anthropic")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if img != "legacy-node:latest" {
-		t.Fatalf("expected legacy fallback, got %q", img)
+	_, err := c.agentImageForProvider("anthropic")
+	if err == nil {
+		t.Fatal("expected error when falling back to legacy anthropic image")
 	}
 }

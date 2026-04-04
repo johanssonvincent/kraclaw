@@ -42,7 +42,7 @@ type Controller struct {
 	ctrlClient  client.WithWatch
 	config      *rest.Config
 	namespace   string
-	agentImage  string            // Legacy fallback
+	agentImage  string
 	agentImages map[string]string // provider -> image
 	natsURL     string
 	proxyURL    string
@@ -51,14 +51,14 @@ type Controller struct {
 
 // SandboxConfig holds the parameters for creating a new sandbox.
 type SandboxConfig struct {
-	GroupFolder   string
-	GroupJID      string
-	SessionID     string
-	IsMain        bool
-	Timeout       time.Duration
-	Input         string // JSON-encoded input, written to Redis before Job creation
-	AssistantName string
-	Model         string
+	GroupFolder     string
+	GroupJID        string
+	SessionID       string
+	IsMain          bool
+	Timeout         time.Duration
+	Input           string // JSON-encoded input, written to Redis before Job creation
+	AssistantName   string
+	Model           string
 	SessionsPVC     string // PVC for .claude/ session transcripts (default: kraclaw-sessions)
 	GroupsPVC       string // PVC for per-group workspace (default: kraclaw-groups)
 	DataPVC         string // PVC for read-only global config (default: kraclaw-data)
@@ -116,23 +116,25 @@ func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *re
 	}, nil
 }
 
-// agentImageForProvider returns the container image for the given provider,
-// falling back to the legacy agentImage only for Anthropic. Non-Anthropic providers
-// with no configured image return an error to prevent silent incompatible fallback.
+// agentImageForProvider returns the container image for the given provider.
+// Provider-specific images are required; legacy AGENT_IMAGE fallback is disabled
+// because the legacy Node agent still depends on Redis IPC.
 func (c *Controller) agentImageForProvider(prov string) (string, error) {
+	if prov == "" {
+		prov = provider.ProviderAnthropic
+	}
+
 	if prov != "" {
 		if img, ok := c.agentImages[prov]; ok && img != "" {
 			return img, nil
 		}
-		if prov != provider.ProviderAnthropic {
-			return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_%s)", prov, strings.ToUpper(prov))
+		if prov == provider.ProviderAnthropic {
+			return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_ANTHROPIC); legacy AGENT_IMAGE fallback is not supported with NATS", prov)
 		}
-		if c.log != nil {
-			c.log.Warn("no provider-specific image for anthropic, using legacy fallback",
-				"fallback_image", c.agentImage)
-		}
+		return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_%s)", prov, strings.ToUpper(prov))
 	}
-	return c.agentImage, nil
+
+	return "", fmt.Errorf("no agent image configured for provider %q", prov)
 }
 
 // isTransientError reports whether err is likely a transient K8s API failure
@@ -335,40 +337,16 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		envVars = append(envVars, corev1.EnvVar{Name: "OPENAI_MODEL", Value: model})
 		envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
 		homePath = "/home/nonroot"
-	case provider.ProviderAnthropic:
+	case provider.ProviderAnthropic, "":
 		model := ""
 		if cfg.ContainerConfig != nil {
 			model = cfg.ContainerConfig.Model
 		}
-		// Check if using Go agent (provider-specific image configured) or legacy Node.js.
-		if _, hasGoImage := c.agentImages[provider.ProviderAnthropic]; hasGoImage {
-			envVars = append(envVars, corev1.EnvVar{Name: "ANTHROPIC_MODEL", Value: model})
-			envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
-			homePath = "/home/nonroot"
-		} else {
-			// Legacy Node.js agent.
-			envVars = append(envVars,
-				corev1.EnvVar{Name: "ANTHROPIC_BASE_URL", Value: c.proxyURL},
-				corev1.EnvVar{Name: "HOME", Value: "/home/node"},
-			)
-		}
+		envVars = append(envVars, corev1.EnvVar{Name: "ANTHROPIC_MODEL", Value: model})
+		envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
+		homePath = "/home/nonroot"
 	default:
-		// Unknown provider or empty — treat as Anthropic.
-		// Use Go agent path if AGENT_IMAGE_ANTHROPIC is configured, otherwise legacy Node.js.
-		if _, hasGoImage := c.agentImages[provider.ProviderAnthropic]; hasGoImage {
-			model := ""
-			if cfg.ContainerConfig != nil {
-				model = cfg.ContainerConfig.Model
-			}
-			envVars = append(envVars, corev1.EnvVar{Name: "ANTHROPIC_MODEL", Value: model})
-			envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
-			homePath = "/home/nonroot"
-		} else {
-			envVars = append(envVars,
-				corev1.EnvVar{Name: "ANTHROPIC_BASE_URL", Value: c.proxyURL},
-				corev1.EnvVar{Name: "HOME", Value: "/home/node"},
-			)
-		}
+		return nil, fmt.Errorf("sandbox: unsupported provider %q", providerID)
 	}
 
 	nonRoot := true
@@ -399,12 +377,6 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 				ReadOnly:  true,
 			},
 		},
-	}
-
-	// Legacy Node.js agent needs explicit command — only when Go Anthropic image is not configured.
-	_, hasGoAnthropicImage := c.agentImages[provider.ProviderAnthropic]
-	if (providerID == "" || providerID == provider.ProviderAnthropic) && image == c.agentImage && !hasGoAnthropicImage {
-		container.Command = []string{"node", "/app/dist/index.js", "--group", "$(GROUP_FOLDER)"}
 	}
 
 	sb := &agentsandboxv1alpha1.Sandbox{

@@ -129,9 +129,12 @@ func main() {
 		if err != nil {
 			log.Warn("failed to create controller-runtime client; sandbox admin APIs will be degraded", "error", err)
 		} else {
-			agentImages := map[string]string{
-				provider.ProviderAnthropic: cfg.K8s.AgentImageAnthropic,
-				provider.ProviderOpenAI:    cfg.K8s.AgentImageOpenAI,
+			agentImages := make(map[string]string, 2)
+			if cfg.K8s.AgentImageAnthropic != "" {
+				agentImages[provider.ProviderAnthropic] = cfg.K8s.AgentImageAnthropic
+			}
+			if cfg.K8s.AgentImageOpenAI != "" {
+				agentImages[provider.ProviderOpenAI] = cfg.K8s.AgentImageOpenAI
 			}
 			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, cfg.K8s.AgentImage, agentImages, cfg.NATS.URL, cfg.K8s.SandboxProxyURL)
 			if err != nil {

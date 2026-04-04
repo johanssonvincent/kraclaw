@@ -45,7 +45,8 @@ func createTestSandboxController() *sandbox.Controller {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
-	ctrl, _ := sandbox.New(fake.NewClientset(), ctrlClient, nil, "default", "agent:latest", nil, "redis://localhost:6379", "http://localhost:3001")
+	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
+	ctrl, _ := sandbox.New(fake.NewClientset(), ctrlClient, nil, "default", "agent:latest", agentImages, "nats://localhost:4222", "http://localhost:3001")
 	return ctrl
 }
 
@@ -458,9 +459,9 @@ func (m *mockGroupStore) GetNewMessages(context.Context, []string, time.Time, in
 func (m *mockGroupStore) GetMessagesSince(context.Context, string, time.Time, int) ([]store.Message, error) {
 	return nil, nil
 }
-func (m *mockGroupStore) UpsertChat(context.Context, *store.Chat) error          { return nil }
-func (m *mockGroupStore) GetChat(context.Context, string) (*store.Chat, error)   { return nil, nil }
-func (m *mockGroupStore) ListChats(context.Context) ([]store.Chat, error)        { return nil, nil }
+func (m *mockGroupStore) UpsertChat(context.Context, *store.Chat) error        { return nil }
+func (m *mockGroupStore) GetChat(context.Context, string) (*store.Chat, error) { return nil, nil }
+func (m *mockGroupStore) ListChats(context.Context) ([]store.Chat, error)      { return nil, nil }
 func (m *mockGroupStore) CreateTask(_ context.Context, task *store.ScheduledTask) error {
 	if m.createTaskErr != nil {
 		return m.createTaskErr
@@ -512,11 +513,11 @@ func (m *mockGroupStore) UpsertAllowlistEntry(context.Context, *store.SenderAllo
 func (m *mockGroupStore) DeleteAllowlistEntry(context.Context, int64) error { return nil }
 func (m *mockGroupStore) Close() error                                      { return nil }
 
-func (m *mockGroupStore) MarkGroupActive(context.Context, string) error              { return nil }
-func (m *mockGroupStore) MarkGroupInactive(context.Context, string) error            { return nil }
-func (m *mockGroupStore) IsGroupActive(context.Context, string) (bool, error)        { return false, nil }
-func (m *mockGroupStore) ActiveGroupCount(context.Context) (int64, error)            { return 0, nil }
-func (m *mockGroupStore) ActiveGroupJIDs(context.Context) ([]string, error)          { return nil, nil }
+func (m *mockGroupStore) MarkGroupActive(context.Context, string) error       { return nil }
+func (m *mockGroupStore) MarkGroupInactive(context.Context, string) error     { return nil }
+func (m *mockGroupStore) IsGroupActive(context.Context, string) (bool, error) { return false, nil }
+func (m *mockGroupStore) ActiveGroupCount(context.Context) (int64, error)     { return 0, nil }
+func (m *mockGroupStore) ActiveGroupJIDs(context.Context) ([]string, error)   { return nil, nil }
 
 // --- RegisterGroup tests ---
 
