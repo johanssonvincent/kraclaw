@@ -28,11 +28,11 @@ func ipcStreamName(sanitized string) string {
 }
 
 func ipcInputSubject(sanitized, agentID string) string {
-	return "kraclaw.ipc." + sanitized + "." + agentID + ".input"
+	return "kraclaw.ipc." + sanitized + "." + SanitizeAgentID(agentID) + ".input"
 }
 
 func ipcOutputSubject(sanitized, agentID string) string {
-	return "kraclaw.ipc." + sanitized + "." + agentID + ".output"
+	return "kraclaw.ipc." + sanitized + "." + SanitizeAgentID(agentID) + ".output"
 }
 
 func ipcOutputWildcard(sanitized string) string {
@@ -88,7 +88,7 @@ func (b *NATSBroker) ensureStream(ctx context.Context, group string) (string, er
 			"kraclaw.ipc." + sanitized + ".*.input",
 			"kraclaw.ipc." + sanitized + ".*.output",
 		},
-		Retention: jetstream.InterestPolicy,
+		Retention: jetstream.LimitsPolicy,
 		Storage:   jetstream.FileStorage,
 		MaxAge:    ipcStreamMaxAge,
 		Replicas:  1,
@@ -161,9 +161,9 @@ func (b *NATSBroker) ReadInput(ctx context.Context, group, agentID string) (<-ch
 	}
 	streamName := ipcStreamName(sanitized)
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
-		Durable:       "agent-" + agentID,
+		Durable:       "agent-" + SanitizeAgentID(agentID),
 		FilterSubject: ipcInputSubject(sanitized, agentID),
-		DeliverPolicy: jetstream.DeliverNewPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
 	if err != nil {

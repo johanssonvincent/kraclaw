@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"regexp"
 )
 
 // IPCMessageType represents the type of an IPC message.
@@ -31,6 +32,22 @@ const (
 func SanitizeGroupID(groupJID string) string {
 	h := sha256.Sum256([]byte(groupJID))
 	return hex.EncodeToString(h[:16])
+}
+
+// agentIDUnsafeRe matches any character that is not alphanumeric, dash, or underscore.
+// Compiled once at package init for performance.
+var agentIDUnsafeRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+// SanitizeAgentID replaces any character not in [a-zA-Z0-9_-] with "_" and
+// truncates the result to 32 characters. Safe IDs (e.g. "main") are returned
+// unchanged. This prevents NATS subject and durable-name injection when an
+// agentID contains dots, slashes, spaces, or wildcards.
+func SanitizeAgentID(agentID string) string {
+	safe := agentIDUnsafeRe.ReplaceAllString(agentID, "_")
+	if len(safe) > 32 {
+		safe = safe[:32]
+	}
+	return safe
 }
 
 // IPCMessage represents a message exchanged between agent and server.

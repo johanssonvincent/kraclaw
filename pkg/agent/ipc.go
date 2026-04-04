@@ -77,11 +77,11 @@ func (c *IPCClient) streamName() string {
 }
 
 func (c *IPCClient) inputSubject() string {
-	return "kraclaw.ipc." + c.sanitized() + "." + c.agentID + ".input"
+	return "kraclaw.ipc." + c.sanitized() + "." + ipc.SanitizeAgentID(c.agentID) + ".input"
 }
 
 func (c *IPCClient) outputSubject() string {
-	return "kraclaw.ipc." + c.sanitized() + "." + c.agentID + ".output"
+	return "kraclaw.ipc." + c.sanitized() + "." + ipc.SanitizeAgentID(c.agentID) + ".output"
 }
 
 // ensureStream creates the IPC stream if it does not exist.
@@ -94,7 +94,7 @@ func (c *IPCClient) ensureStream(ctx context.Context) error {
 			"kraclaw.ipc." + sanitized + ".*.input",
 			"kraclaw.ipc." + sanitized + ".*.output",
 		},
-		Retention: jetstream.InterestPolicy, // must match NATSBroker
+		Retention: jetstream.LimitsPolicy, // must match NATSBroker
 		Storage:   jetstream.FileStorage,
 		MaxAge:    ipcStreamMaxAge,
 		Replicas:  1,
@@ -135,9 +135,9 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 	}
 
 	cons, err := c.js.CreateOrUpdateConsumer(ctx, c.streamName(), jetstream.ConsumerConfig{
-		Durable:       "agent-" + c.agentID,
+		Durable:       "agent-" + ipc.SanitizeAgentID(c.agentID),
 		FilterSubject: c.inputSubject(),
-		DeliverPolicy: jetstream.DeliverNewPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
 	if err != nil {

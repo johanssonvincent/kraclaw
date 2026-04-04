@@ -320,6 +320,75 @@ func TestNATSBrokerClose_Idempotent(t *testing.T) {
 	}
 }
 
+// TestSanitizeAgentID verifies that SanitizeAgentID replaces unsafe characters
+// with underscores and that safe IDs pass through unchanged.
+func TestSanitizeAgentID(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "safe id passthrough", input: "main", want: "main"},
+		{name: "safe id with dash and underscore", input: "sub-a1b2_c3", want: "sub-a1b2_c3"},
+		{name: "dots replaced", input: "my.agent", want: "my_agent"},
+		{name: "slashes replaced", input: "my/agent", want: "my_agent"},
+		{name: "spaces replaced", input: "my agent", want: "my_agent"},
+		{name: "asterisks replaced", input: "my*agent", want: "my_agent"},
+		{name: "mixed unsafe", input: "my.agent/bad*id", want: "my_agent_bad_id"},
+		{name: "truncates to 32 chars", input: "abcdefghijklmnopqrstuvwxyz123456789", want: "abcdefghijklmnopqrstuvwxyz123456"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeAgentID(tt.input)
+			if got != tt.want {
+				t.Errorf("SanitizeAgentID(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNATSPublishBeforeConsumerDelivers verifies that a message published to
+// the input subject BEFORE a consumer calls ReadInput is still delivered.
+// This requires LimitsPolicy (not InterestPolicy) on the stream.
+func TestNATSPublishBeforeConsumerDelivers(t *testing.T) {
+	broker, _ := setupNATS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	group := "pre-publish-group@g.us"
+	agentID := "main"
+
+	// Publish a message BEFORE the consumer is created.
+	msg := &IPCMessage{
+		Group:   group,
+		AgentID: agentID,
+		Type:    IPCTaskCreate,
+		Payload: json.RawMessage(`{"taskId":"pre-published"}`),
+	}
+	if err := broker.SendInput(ctx, group, agentID, msg); err != nil {
+		t.Fatalf("SendInput (before consumer): %v", err)
+	}
+
+	// Now create the consumer via ReadInput.
+	ch, err := broker.ReadInput(ctx, group, agentID)
+	if err != nil {
+		t.Fatalf("ReadInput: %v", err)
+	}
+
+	// The pre-published message must be delivered.
+	select {
+	case got, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed unexpectedly")
+		}
+		if got.Type != IPCTaskCreate {
+			t.Errorf("type = %q, want %q", got.Type, IPCTaskCreate)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for pre-published message")
+	}
+}
+
 // TestNATSBrokerMalformedMessageSkipped verifies that publishing non-JSON bytes
 // to the output subject does not crash the broker and that the next valid
 // message is still delivered.
