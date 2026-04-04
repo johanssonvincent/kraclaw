@@ -16,8 +16,6 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 )
 
-const ipcStreamMaxAge = time.Hour // must match server-side NATSBroker
-
 // InboundMessage is a message received from the server.
 type InboundMessage struct {
 	Type    string          `json:"type"`
@@ -37,6 +35,11 @@ type IPCClient struct {
 	groupJID string // raw JID (used for sanitization to match server)
 	agentID  string
 	logger   *slog.Logger
+
+	readOnce sync.Once
+	msgCh    chan *InboundMessage
+	errCh    chan error
+	readErr  error
 }
 
 // NewIPCClient creates an IPC client for a specific group.
@@ -96,7 +99,7 @@ func (c *IPCClient) ensureStream(ctx context.Context) error {
 		},
 		Retention: jetstream.LimitsPolicy, // must match NATSBroker
 		Storage:   jetstream.FileStorage,
-		MaxAge:    ipcStreamMaxAge,
+		MaxAge:    ipc.StreamMaxAge,
 		Replicas:  1,
 	})
 	if err != nil {
@@ -133,12 +136,26 @@ func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error 
 	return nil
 }
 
-// ReadInput returns a channel that receives messages from the server, and an
-// error channel that receives a non-nil error if the reader stops due to
-// fatal failures.
+// ReadInput returns channels that receive messages from the server and errors
+// from the reader. Callers should read from both channels concurrently.
+// Multiple calls to ReadInput return the same channels — the first call
+// initializes; subsequent calls are idempotent via sync.Once.
 func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-chan error, error) {
+	c.readOnce.Do(func() {
+		c.msgCh = make(chan *InboundMessage, 64)
+		c.errCh = make(chan error, 1)
+		c.readErr = c.startReadInput(ctx, c.msgCh, c.errCh)
+	})
+	if c.readErr != nil {
+		return nil, nil, c.readErr
+	}
+	return c.msgCh, c.errCh, nil
+}
+
+// startReadInput initializes the message reader goroutine.
+func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage, errCh chan error) error {
 	if err := c.ensureStream(ctx); err != nil {
-		return nil, nil, fmt.Errorf("read input: %w", err)
+		return fmt.Errorf("read input: %w", err)
 	}
 
 	cons, err := c.js.CreateOrUpdateConsumer(ctx, c.streamName(), jetstream.ConsumerConfig{
@@ -148,11 +165,8 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("create input consumer: %w", err)
+		return fmt.Errorf("create input consumer: %w", err)
 	}
-
-	ch := make(chan *InboundMessage, 64)
-	errCh := make(chan error, 1)
 
 	go func() {
 		defer close(ch)
@@ -197,9 +211,22 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 				Payload json.RawMessage `json:"payload"`
 			}
 			if err := json.Unmarshal(jmsg.Data(), &ipcMsg); err != nil {
-				c.logger.Error("unmarshal ipc message", "error", err)
+				meta, _ := jmsg.Metadata()
+				var seq uint64
+				if meta != nil {
+					seq = meta.Sequence.Stream
+				}
+				c.logger.Error("unmarshal ipc message",
+					"group", c.groupJID,
+					"agent_id", c.agentID,
+					"sequence", seq,
+					"error", err)
 				if err := jmsg.Ack(); err != nil {
-					c.logger.Warn("ack malformed message", "error", err)
+					c.logger.Error("ack malformed message",
+						"group", c.groupJID,
+						"agent_id", c.agentID,
+						"sequence", seq,
+						"error", err)
 				}
 				continue
 			}
@@ -209,16 +236,34 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 			select {
 			case ch <- msg:
 				if err := jmsg.Ack(); err != nil {
-					c.logger.Error("ack ipc message", "error", err)
+					meta, _ := jmsg.Metadata()
+					var seq uint64
+					if meta != nil {
+						seq = meta.Sequence.Stream
+					}
+					c.logger.Error("ack ipc message",
+						"group", c.groupJID,
+						"agent_id", c.agentID,
+						"sequence", seq,
+						"error", err)
 				}
 			case <-ctx.Done():
 				if err := jmsg.Nak(); err != nil {
-					c.logger.Warn("nak message on context cancel", "error", err)
+					meta, _ := jmsg.Metadata()
+					var seq uint64
+					if meta != nil {
+						seq = meta.Sequence.Stream
+					}
+					c.logger.Error("nak message on context cancel",
+						"group", c.groupJID,
+						"agent_id", c.agentID,
+						"sequence", seq,
+						"error", err)
 				}
 				return
 			}
 		}
 	}()
 
-	return ch, errCh, nil
+	return nil
 }
