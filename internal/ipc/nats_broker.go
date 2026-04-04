@@ -103,7 +103,7 @@ func (b *NATSBroker) ensureStream(ctx context.Context, group string) (string, er
 func (b *NATSBroker) PublishOutput(ctx context.Context, group, agentID string, msg *IPCMessage) error {
 	sanitized, err := b.ensureStream(ctx, group)
 	if err != nil {
-		return err
+		return fmt.Errorf("publish output: %w", err)
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -120,7 +120,7 @@ func (b *NATSBroker) PublishOutput(ctx context.Context, group, agentID string, m
 func (b *NATSBroker) SendInput(ctx context.Context, group, agentID string, msg *IPCMessage) error {
 	sanitized, err := b.ensureStream(ctx, group)
 	if err != nil {
-		return err
+		return fmt.Errorf("send input: %w", err)
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -138,7 +138,7 @@ func (b *NATSBroker) SendInput(ctx context.Context, group, agentID string, msg *
 func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, error) {
 	sanitized, err := b.ensureStream(ctx, group)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("subscribe output: %w", err)
 	}
 	streamName := ipcStreamName(sanitized)
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
@@ -161,7 +161,7 @@ func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan 
 func (b *NATSBroker) ReadInput(ctx context.Context, group, agentID string) (<-chan *IPCMessage, error) {
 	sanitized, err := b.ensureStream(ctx, group)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read input: %w", err)
 	}
 	streamName := ipcStreamName(sanitized)
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
@@ -225,9 +225,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 	iter, err := cons.Messages()
 	if err != nil {
 		cancel()
-		b.logger.Error("create message iterator", "group", group, "error", err)
-		close(ch)
-		return ch, nil
+		return nil, fmt.Errorf("create message iterator for group %s: %w", group, err)
 	}
 
 	b.mu.Lock()

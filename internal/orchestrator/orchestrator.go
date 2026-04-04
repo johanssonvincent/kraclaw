@@ -708,20 +708,10 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		modelName = group.ContainerConfig.Model
 	}
 
-	// Send initial messages via IPC so the agent can read them on startup.
+	// Marshal initial input payload.
 	payload, err := marshalInitialInput(map[string]string{"messages": formatted})
 	if err != nil {
-		o.log.Error("failed to marshal initial input", "group", group.Name, "error", err)
 		return fmt.Errorf("marshal initial input: %w", err)
-	} else {
-		if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
-			Group:   group.Folder,
-			Type:    ipc.IPCMessageText,
-			Payload: payload,
-		}); err != nil {
-			o.log.Error("failed to send initial input", "group", group.Name, "error", err)
-			return fmt.Errorf("send initial input: %w", err)
-		}
 	}
 
 	// Create sandbox.
@@ -781,6 +771,15 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 			o.log.Error("failed to save state", "error", saveErr)
 		}
 		return fmt.Errorf("mark active: %w", err)
+	}
+
+	// Send initial messages via IPC so the agent can read them on startup.
+	if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
+		Group:   group.Folder,
+		Type:    ipc.IPCMessageText,
+		Payload: payload,
+	}); err != nil {
+		return fmt.Errorf("send initial input: %w", err)
 	}
 
 	// Mark initial messages as confirmed since they're pre-populated in the IPC stream
