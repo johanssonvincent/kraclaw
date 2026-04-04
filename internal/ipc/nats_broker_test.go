@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -467,6 +469,129 @@ func TestNATSBrokerMalformedMessageSkipped(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for valid message after malformed one")
+	}
+}
+
+// Test 1.3: Concurrent Agents Connecting to Same Group
+func TestNATSBrokerConcurrentAgents(t *testing.T) {
+	broker, _ := setupNATS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	group := "concurrent-test@g.us"
+	numAgents := 5
+
+	// Subscribe to receive all output from all agents
+	ch, err := broker.SubscribeOutput(ctx, group)
+	if err != nil {
+		t.Fatalf("SubscribeOutput: %v", err)
+	}
+
+	// Track goroutine count before
+	goroutinesBefore := runtime.NumGoroutine()
+
+	// Concurrently publish input messages to agents 1-5
+	var wg sync.WaitGroup
+	errChan := make(chan error, numAgents)
+
+	for i := 1; i <= numAgents; i++ {
+		wg.Add(1)
+		go func(agentID int) {
+			defer wg.Done()
+			agentName := fmt.Sprintf("agent-%d", agentID)
+
+			// Send input to agent
+			inputMsg := &IPCMessage{
+				Group:   group,
+				AgentID: agentName,
+				Type:    IPCTaskCreate,
+				Payload: json.RawMessage(fmt.Sprintf(`{"taskId":"task-%d"}`, agentID)),
+			}
+			if err := broker.SendInput(ctx, group, agentName, inputMsg); err != nil {
+				errChan <- fmt.Errorf("SendInput for %s: %w", agentName, err)
+				return
+			}
+
+			// Publish output from agent
+			outputMsg := &IPCMessage{
+				Group:   group,
+				AgentID: agentName,
+				Type:    IPCMessageText,
+				Payload: json.RawMessage(fmt.Sprintf(`{"agentId":"agent-%d","output":"done"}`, agentID)),
+			}
+			if err := broker.PublishOutput(ctx, group, agentName, outputMsg); err != nil {
+				errChan <- fmt.Errorf("PublishOutput for %s: %w", agentName, err)
+				return
+			}
+		}(i)
+	}
+
+	go func() {
+		wg.Wait()
+		close(errChan)
+	}()
+
+	// Check for errors
+	for err := range errChan {
+		if err != nil {
+			t.Fatalf("concurrent operation failed: %v", err)
+		}
+	}
+
+	// Collect received messages
+	receivedMessages := make(map[string]bool)
+	timeout := time.After(5 * time.Second)
+
+	for i := 0; i < numAgents; i++ {
+		select {
+		case msg := <-ch:
+			if msg != nil {
+				key := msg.AgentID
+				receivedMessages[key] = true
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for message %d/%d", i, numAgents)
+		}
+	}
+
+	// Verify all agents' messages were received
+	if len(receivedMessages) != numAgents {
+		t.Errorf("received %d messages, want %d", len(receivedMessages), numAgents)
+	}
+	for i := 1; i <= numAgents; i++ {
+		expected := fmt.Sprintf("agent-%d", i)
+		if !receivedMessages[expected] {
+			t.Errorf("missing message from %s", expected)
+		}
+	}
+
+	// Verify broker is still responsive
+	finalMsg := &IPCMessage{
+		Group:   group,
+		AgentID: "verify-agent",
+		Type:    IPCMessageText,
+		Payload: json.RawMessage(`{"status":"final-check"}`),
+	}
+	if err := broker.PublishOutput(ctx, group, "verify-agent", finalMsg); err != nil {
+		t.Fatalf("final verification publish failed: %v", err)
+	}
+
+	select {
+	case msg := <-ch:
+		if msg == nil || msg.AgentID != "verify-agent" {
+			t.Fatal("did not receive final verification message")
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out on final verification")
+	}
+
+	// Check goroutine cleanup
+	// Allow some grace period for goroutines to clean up
+	time.Sleep(100 * time.Millisecond)
+	gorutinesAfter := runtime.NumGoroutine()
+	// Should not have leaked goroutines (allow +2 for timing)
+	if gorutinesAfter > goroutinesBefore+2 {
+		t.Errorf("goroutine leak: before=%d, after=%d", goroutinesBefore, gorutinesAfter)
 	}
 }
 
