@@ -61,7 +61,6 @@ Where `{SANITIZED}` = first 16 bytes of SHA-256 hex of groupJID (32 hex chars), 
 
 Consumer names:
 - Dequeue: `dequeue-{sanitized}`
-- Subscribe (server): `kraclaw-queue-server-{sanitized}`
 
 ### IPC (internal/ipc/)
 
@@ -72,7 +71,7 @@ Consumer names:
 Where `{SANITIZED}` = first 16 bytes of SHA-256 hex of groupJID (32 hex chars), uppercase for stream name, lowercase for subjects. The `*` wildcard matches sanitized agentID.
 
 Consumer names:
-- Output subscriber (server): `kraclaw-server` (durable, wildcard `kraclaw.ipc.{sanitized}.*.output`)
+- Output subscriber (server): `kraclaw-server-{sanitized}` (durable, wildcard `kraclaw.ipc.{sanitized}.*.output`)
 - Input reader (agent): `agent-{sanitized_agent_id}` (durable, filtered to `kraclaw.ipc.{sanitized}.{agent_id}.input`)
 
 ## Architecture
