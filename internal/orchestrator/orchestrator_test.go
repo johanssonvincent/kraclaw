@@ -37,9 +37,9 @@ type mockStore struct {
 	allowlist            map[string][]store.SenderAllowlistEntry
 	getMessagesSinceHook func() // called at start of GetMessagesSince if non-nil
 
-	updateTaskCalled      bool
-	deleteTaskCalledWith  [2]string // [id, groupFolder]
-	setStateCalls []string // records keys passed to SetState for counting
+	updateTaskCalled     bool
+	deleteTaskCalledWith [2]string // [id, groupFolder]
+	setStateCalls        []string  // records keys passed to SetState for counting
 }
 
 func newMockStore() *mockStore {
@@ -199,11 +199,11 @@ func (m *mockStore) DeleteAllowlistEntry(_ context.Context, _ int64) error { ret
 
 func (m *mockStore) Close() error { return nil }
 
-func (m *mockStore) MarkGroupActive(_ context.Context, _ string) error              { return nil }
-func (m *mockStore) MarkGroupInactive(_ context.Context, _ string) error            { return nil }
-func (m *mockStore) IsGroupActive(_ context.Context, _ string) (bool, error)        { return false, nil }
-func (m *mockStore) ActiveGroupCount(_ context.Context) (int64, error)              { return 0, nil }
-func (m *mockStore) ActiveGroupJIDs(_ context.Context) ([]string, error)            { return nil, nil }
+func (m *mockStore) MarkGroupActive(_ context.Context, _ string) error       { return nil }
+func (m *mockStore) MarkGroupInactive(_ context.Context, _ string) error     { return nil }
+func (m *mockStore) IsGroupActive(_ context.Context, _ string) (bool, error) { return false, nil }
+func (m *mockStore) ActiveGroupCount(_ context.Context) (int64, error)       { return 0, nil }
+func (m *mockStore) ActiveGroupJIDs(_ context.Context) ([]string, error)     { return nil, nil }
 
 // --- Mock Queue ---
 
@@ -249,9 +249,9 @@ func (m *mockQueue) Close() error { return nil }
 // --- Mock IPC Broker ---
 
 type mockIPCBroker struct {
-	published          []*ipc.IPCMessage
-	inputSent          []*ipc.IPCMessage
-	subscribeCh        chan *ipc.IPCMessage // if set, SubscribeOutput returns this channel
+	published           []*ipc.IPCMessage
+	inputSent           []*ipc.IPCMessage
+	subscribeCh         chan *ipc.IPCMessage // if set, SubscribeOutput returns this channel
 	deleteStreamsCalled int
 	deleteStreamsGroup  string
 }
@@ -1009,6 +1009,50 @@ func TestProcessGroupMessages_NoMessages(t *testing.T) {
 	err := o.processGroupMessages(context.Background(), "group1@g.us")
 	if err != nil {
 		t.Errorf("processGroupMessages() error = %v, want nil for no messages", err)
+	}
+}
+
+func TestProcessGroupMessages_MarshalInitialInputFailure_ReturnsEarly(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueWithActiveCount{
+		mockQueue:   mockQueue{active: make(map[string]bool)},
+		activeCount: 0,
+	}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	o, err := New(cfg, s, mq, b, nil, channel.NewRegistry(), slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = sb
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.messages["group1@g.us"] = []store.Message{{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"}}
+
+	origMarshal := marshalInitialInput
+	marshalInitialInput = func(v interface{}) ([]byte, error) {
+		return nil, fmt.Errorf("marshal boom")
+	}
+	t.Cleanup(func() { marshalInitialInput = origMarshal })
+
+	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	if err == nil {
+		t.Fatal("processGroupMessages() error = nil, want wrapped marshal error")
+	}
+	if !strings.Contains(err.Error(), "marshal initial input") {
+		t.Fatalf("error = %q, want context %q", err.Error(), "marshal initial input")
+	}
+	if sb.createCalled {
+		t.Fatal("CreateSandbox was called, want processGroupMessages to return early")
 	}
 }
 

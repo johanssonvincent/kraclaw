@@ -27,6 +27,8 @@ const (
 	defaultIdleTimeout = 30 * time.Minute
 )
 
+var marshalInitialInput = json.Marshal
+
 // sandboxController is the interface the orchestrator uses to manage agent sandboxes.
 // *sandbox.Controller satisfies this interface.
 type sandboxController interface {
@@ -707,9 +709,10 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	}
 
 	// Send initial messages via IPC so the agent can read them on startup.
-	payload, err := json.Marshal(map[string]string{"messages": formatted})
+	payload, err := marshalInitialInput(map[string]string{"messages": formatted})
 	if err != nil {
 		o.log.Error("failed to marshal initial input", "group", group.Name, "error", err)
+		return fmt.Errorf("marshal initial input: %w", err)
 	} else {
 		if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
 			Group:   group.Folder,
