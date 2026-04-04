@@ -773,6 +773,16 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		return fmt.Errorf("mark active: %w", err)
 	}
 
+	// Spawn watchGroupOutput directly to listen for agent output (no event channel)
+	go func(jid string) {
+		defer func() {
+			if r := recover(); r != nil {
+				o.log.Error("panic in watchGroupOutput", "group_jid", jid, "panic", r)
+			}
+		}()
+		o.watchGroupOutput(ctx, jid)
+	}(chatJID)
+
 	// Send initial messages via IPC so the agent can read them on startup.
 	if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
 		Group:   group.Folder,
@@ -806,22 +816,10 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	return nil
 }
 
-// ipcWatcher subscribes to IPC output streams and processes agent results.
-// It retries on subscribe failure to avoid a permanent goroutine leak.
+// ipcWatcher is now a no-op since watchGroupOutput is spawned directly after MarkActive.
+// Kept for future use and to maintain the goroutine structure.
 func (o *Orchestrator) ipcWatcher(ctx context.Context) {
-	for {
-		if err := o.runIPCWatcher(ctx); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			o.log.Error("IPC watcher failed, retrying in 5s", "error", err)
-			select {
-			case <-time.After(5 * time.Second):
-			case <-ctx.Done():
-				return
-			}
-		}
-	}
+	<-ctx.Done()
 }
 
 // sandboxWatcher runs a self-healing loop that subscribes to Sandbox lifecycle events.
@@ -959,37 +957,6 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 	if err := o.queue.MarkInactive(ctx, chatJID); err != nil {
 		o.log.Error("sandbox event: failed to mark group inactive",
 			"folder", folder, "jid", chatJID, "error", err)
-	}
-}
-
-func (o *Orchestrator) runIPCWatcher(ctx context.Context) error {
-	o.log.Info("IPC watcher started")
-
-	events, err := o.queue.Subscribe(ctx)
-	if err != nil {
-		return fmt.Errorf("subscribe to queue events: %w", err)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			o.log.Info("IPC watcher stopped")
-			return nil
-		case event, ok := <-events:
-			if !ok {
-				return fmt.Errorf("queue event channel closed")
-			}
-			if event.Type == queue.EventActive {
-				go func(jid string) {
-					defer func() {
-						if r := recover(); r != nil {
-							o.log.Error("panic in watchGroupOutput", "group_jid", jid, "panic", r)
-						}
-					}()
-					o.watchGroupOutput(ctx, jid)
-				}(event.GroupJID)
-			}
-		}
 	}
 }
 

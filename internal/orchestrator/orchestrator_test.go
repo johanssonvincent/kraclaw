@@ -244,10 +244,6 @@ func (m *mockQueue) ActiveJIDs(_ context.Context) ([]string, error) {
 	}
 	return jids, nil
 }
-func (m *mockQueue) Subscribe(_ context.Context) (<-chan queue.QueueEvent, error) {
-	ch := make(chan queue.QueueEvent)
-	return ch, nil
-}
 func (m *mockQueue) Close() error { return nil }
 
 // --- Mock IPC Broker ---

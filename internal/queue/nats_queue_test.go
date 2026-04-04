@@ -200,35 +200,6 @@ func TestNATSQueuePeek(t *testing.T) {
 	}
 }
 
-func TestNATSQueueSubscribe_EnqueuedEvent(t *testing.T) {
-	q, _ := setupNATSQueue(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	group := "event-group@g.us"
-	events, err := q.Subscribe(ctx)
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-
-	msg := &QueueMessage{GroupJID: group, Content: "trigger event", Sender: "u", Timestamp: time.Now()}
-	if err := q.Enqueue(ctx, group, msg); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
-
-	select {
-	case evt := <-events:
-		if evt.Type != EventEnqueued {
-			t.Errorf("event type = %q, want %q", evt.Type, EventEnqueued)
-		}
-		if evt.GroupJID != group {
-			t.Errorf("event group = %q, want %q", evt.GroupJID, group)
-		}
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for enqueued event")
-	}
-}
-
 func TestNATSQueueMarkActive(t *testing.T) {
 	q, store := setupNATSQueue(t)
 	ctx := context.Background()
@@ -316,37 +287,6 @@ func (e *errActiveStore) MarkGroupInactive(_ context.Context, _ string) error {
 	return fmt.Errorf("mark group inactive: %w", store.ErrGroupNotFound)
 }
 
-// TestNATSQueueClose_StopsSubscribe verifies that q.Close() closes the channel
-// returned by Subscribe.
-func TestNATSQueueClose_StopsSubscribe(t *testing.T) {
-	nc := startQueueNATS(t)
-	gas := newMockActiveStore()
-	q, err := NewNATSQueue(nc, gas, nil)
-	if err != nil {
-		t.Fatalf("NewNATSQueue: %v", err)
-	}
-	// Do NOT register q.Close with t.Cleanup — we close it explicitly below.
-
-	ctx := context.Background()
-	ch, err := q.Subscribe(ctx)
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-
-	if err := q.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	select {
-	case _, ok := <-ch:
-		if ok {
-			t.Error("expected channel to be closed after q.Close()")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Subscribe channel to close after q.Close()")
-	}
-}
-
 // TestNATSQueueMarkActive_UnknownJID verifies that MarkActive and MarkInactive
 // propagate store.ErrGroupNotFound when the backing store returns it.
 func TestNATSQueueMarkActive_UnknownJID(t *testing.T) {
@@ -366,50 +306,6 @@ func TestNATSQueueMarkActive_UnknownJID(t *testing.T) {
 	}
 	if err := q.MarkInactive(ctx, "unknown@g.us"); !errors.Is(err, store.ErrGroupNotFound) {
 		t.Errorf("MarkInactive unknown JID: got %v, want errors.Is(err, store.ErrGroupNotFound)", err)
-	}
-}
-
-// TestNATSQueueSubscribe_ActiveEvents verifies that EventActive and EventInactive
-// are published to the Subscribe channel when MarkActive/MarkInactive are called.
-func TestNATSQueueSubscribe_ActiveEvents(t *testing.T) {
-	q, _ := setupNATSQueue(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	group := "active-event-group@g.us"
-	ch, err := q.Subscribe(ctx)
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
-
-	if err := q.MarkActive(ctx, group); err != nil {
-		t.Fatalf("MarkActive: %v", err)
-	}
-	select {
-	case evt := <-ch:
-		if evt.Type != EventActive {
-			t.Errorf("expected EventActive, got %q", evt.Type)
-		}
-		if evt.GroupJID != group {
-			t.Errorf("expected group %q, got %q", group, evt.GroupJID)
-		}
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for EventActive")
-	}
-
-	if err := q.MarkInactive(ctx, group); err != nil {
-		t.Fatalf("MarkInactive: %v", err)
-	}
-	select {
-	case evt := <-ch:
-		if evt.Type != EventInactive {
-			t.Errorf("expected EventInactive, got %q", evt.Type)
-		}
-		if evt.GroupJID != group {
-			t.Errorf("expected group %q, got %q", group, evt.GroupJID)
-		}
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for EventInactive")
 	}
 }
 

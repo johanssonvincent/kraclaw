@@ -15,21 +15,6 @@ type QueueMessage struct {
 	TaskID    string    `json:"taskId,omitempty"`
 }
 
-// QueueEventType represents the type of a queue event.
-type QueueEventType string
-
-const (
-	EventEnqueued QueueEventType = "enqueued"
-	EventActive   QueueEventType = "active"
-	EventInactive QueueEventType = "inactive"
-)
-
-// QueueEvent represents a queue state change notification.
-type QueueEvent struct {
-	Type     QueueEventType `json:"type"`
-	GroupJID string         `json:"groupJid"`
-}
-
 // groupActiveStore is the subset of the store package needed by NATSQueue for
 // active group tracking. Using a local interface avoids an import cycle and
 // makes NATSQueue easy to test with a mock.
@@ -53,6 +38,5 @@ type Queue interface {
 	ActiveCount(ctx context.Context) (int64, error)
 	// ActiveJIDs returns all group JIDs currently in the active set.
 	ActiveJIDs(ctx context.Context) ([]string, error)
-	Subscribe(ctx context.Context) (<-chan QueueEvent, error)
 	Close() error
 }

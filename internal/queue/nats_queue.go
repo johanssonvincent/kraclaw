@@ -18,7 +18,6 @@ import (
 const (
 	queueStreamMaxAge = 24 * time.Hour
 	queueFetchTimeout = 200 * time.Millisecond
-	queueEventSubject = "kraclaw.queue.events"
 )
 
 func sanitizeQueueGroupID(groupJID string) string { return ipc.SanitizeGroupID(groupJID) }
@@ -31,9 +30,8 @@ func queueSubject(sanitized string) string {
 	return "kraclaw.queue." + sanitized
 }
 
-// NATSQueue implements Queue using NATS JetStream for message storage and core
-// NATS for event notifications. Active group tracking delegates to a
-// groupActiveStore (backed by MySQL in production).
+// NATSQueue implements Queue using NATS JetStream for message storage.
+// Active group tracking delegates to a groupActiveStore (backed by MySQL in production).
 type NATSQueue struct {
 	nc     *nats.Conn
 	js     jetstream.JetStream
@@ -99,9 +97,6 @@ func (q *NATSQueue) Enqueue(ctx context.Context, groupJID string, msg *QueueMess
 	}
 	if _, err := q.js.Publish(ctx, queueSubject(sanitized), data); err != nil {
 		return fmt.Errorf("publish queue message: %w", err)
-	}
-	if err := q.publishEvent(ctx, QueueEvent{Type: EventEnqueued, GroupJID: groupJID}); err != nil {
-		return fmt.Errorf("enqueue: publish event: %w", err)
 	}
 	return nil
 }
@@ -221,24 +216,18 @@ func (q *NATSQueue) Len(ctx context.Context, groupJID string) (int64, error) {
 	return int64(info.State.Msgs), nil
 }
 
-// MarkActive delegates to the MySQL-backed GroupActiveStore and publishes an active event.
+// MarkActive delegates to the MySQL-backed GroupActiveStore.
 func (q *NATSQueue) MarkActive(ctx context.Context, groupJID string) error {
 	if err := q.gas.MarkGroupActive(ctx, groupJID); err != nil {
 		return fmt.Errorf("mark active: %w", err)
 	}
-	if err := q.publishEvent(ctx, QueueEvent{Type: EventActive, GroupJID: groupJID}); err != nil {
-		return fmt.Errorf("mark active: publish event: %w", err)
-	}
 	return nil
 }
 
-// MarkInactive delegates to the MySQL-backed GroupActiveStore and publishes an inactive event.
+// MarkInactive delegates to the MySQL-backed GroupActiveStore.
 func (q *NATSQueue) MarkInactive(ctx context.Context, groupJID string) error {
 	if err := q.gas.MarkGroupInactive(ctx, groupJID); err != nil {
 		return fmt.Errorf("mark inactive: %w", err)
-	}
-	if err := q.publishEvent(ctx, QueueEvent{Type: EventInactive, GroupJID: groupJID}); err != nil {
-		return fmt.Errorf("mark inactive: publish event: %w", err)
 	}
 	return nil
 }
@@ -270,51 +259,6 @@ func (q *NATSQueue) ActiveJIDs(ctx context.Context) ([]string, error) {
 	return jids, nil
 }
 
-// Subscribe returns a channel that receives queue events via core NATS.
-func (q *NATSQueue) Subscribe(ctx context.Context) (<-chan QueueEvent, error) {
-	ch := make(chan QueueEvent, 64)
-
-	// nc.Subscribe is called first so that cancel is only registered if the
-	// subscription succeeds; otherwise the cancel would leak in q.cancels.
-	sub, err := q.nc.Subscribe(queueEventSubject, func(msg *nats.Msg) {
-		var evt QueueEvent
-		if err := json.Unmarshal(msg.Data, &evt); err != nil {
-			q.logger.Warn("unmarshal queue event", "error", err)
-			return
-		}
-		select {
-		case ch <- evt:
-		default:
-			q.logger.Error("queue event channel full, dropping event", "type", evt.Type, "group_jid", evt.GroupJID)
-		}
-	})
-	if err != nil {
-		close(ch)
-		return nil, fmt.Errorf("subscribe queue events: %w", err)
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	q.mu.Lock()
-	q.cancels = append(q.cancels, cancel)
-	q.mu.Unlock()
-
-	go func() {
-		defer close(ch)
-		defer func() {
-			if err := sub.Drain(); err != nil {
-				q.logger.Warn("queue event subscription drain", "error", err)
-			}
-		}()
-		defer cancel()
-		select {
-		case <-ctx.Done():
-		case <-q.closedCh:
-		}
-	}()
-
-	return ch, nil
-}
-
 // Close stops all background goroutines.
 func (q *NATSQueue) Close() error {
 	q.mu.Lock()
@@ -328,18 +272,5 @@ func (q *NATSQueue) Close() error {
 	}
 	q.cancels = nil
 	close(q.closedCh)
-	return nil
-}
-
-func (q *NATSQueue) publishEvent(ctx context.Context, evt QueueEvent) error {
-	data, err := json.Marshal(evt)
-	if err != nil {
-		q.logger.Error("marshal queue event", "error", err)
-		return fmt.Errorf("marshal queue event: %w", err)
-	}
-	if err := q.nc.Publish(queueEventSubject, data); err != nil {
-		q.logger.Error("publish queue event", "type", evt.Type, "group", evt.GroupJID, "error", err)
-		return fmt.Errorf("publish queue event: %w", err)
-	}
 	return nil
 }
