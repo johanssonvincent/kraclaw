@@ -202,16 +202,16 @@ func (b *NATSBroker) Close() error {
 		return nil
 	}
 	b.closed = true
-	// Stop all iterators first — this unblocks iter.Next() calls.
-	for _, iter := range b.iters {
-		iter.Stop()
-	}
-	b.iters = nil
-	// Then cancel all contexts.
+	// Cancel all contexts first — so goroutines see ctx.Err() != nil when iter.Stop() fires.
 	for _, cancel := range b.cancels {
 		cancel()
 	}
 	b.cancels = nil
+	// Then stop all iterators — this unblocks iter.Next(), which returns a context error (silent).
+	for _, iter := range b.iters {
+		iter.Stop()
+	}
+	b.iters = nil
 	close(b.closedCh)
 	return nil
 }
