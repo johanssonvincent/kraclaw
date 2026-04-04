@@ -5,7 +5,14 @@ import { IPCClient } from "./ipc.js";
 import { applySetModel } from "./model_switch.js";
 import type { IPCMessage } from "./types.js";
 
-const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
+// TODO: migrate Node agent IPC from Redis to NATS JetStream
+// The Node agent's IPC layer (ipc.ts) still uses Redis. Until it is migrated,
+// fail fast with a clear error rather than silently consuming REDIS_URL.
+if (!process.env.NATS_URL) {
+  console.error("NATS_URL is required (Redis IPC is no longer supported)");
+  process.exit(1);
+}
+const NATS_URL = process.env.NATS_URL;
 let GROUP_FOLDER = process.env.GROUP_FOLDER ?? "";
 
 // Parse CLI arguments for --group
@@ -84,7 +91,7 @@ async function main(): Promise<void> {
 
   await initWorkspace();
 
-  const ipc = new IPCClient(REDIS_URL, GROUP_FOLDER);
+  const ipc = new IPCClient(NATS_URL, GROUP_FOLDER);
   let sessionId: string | undefined = INITIAL_SESSION_ID;
   let currentModel = INITIAL_MODEL;
   let running = true;

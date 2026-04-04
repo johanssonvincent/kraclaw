@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	nats "github.com/nats-io/nats.go"
+
+	"github.com/johanssonvincent/kraclaw/internal/ipc"
 )
 
 // Config holds common agent configuration from environment.
@@ -81,7 +84,21 @@ func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) err
 	}
 
 	if err := handler(ctx, ipcClient, log); err != nil {
+		// Attempt graceful shutdown signal even on handler failure so the
+		// orchestrator can clean up the JetStream stream.
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutCancel()
+		if sendErr := ipcClient.SendOutput(shutCtx, &OutboundMessage{Type: string(ipc.IPCShutdown)}); sendErr != nil {
+			log.Warn("failed to send IPCShutdown on handler error", "error", sendErr)
+		}
 		return fmt.Errorf("agent handler: %w", err)
+	}
+
+	// Send IPCShutdown on graceful exit so the orchestrator cleans up the stream.
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutCancel()
+	if sendErr := ipcClient.SendOutput(shutCtx, &OutboundMessage{Type: string(ipc.IPCShutdown)}); sendErr != nil {
+		log.Warn("failed to send IPCShutdown on graceful exit", "error", sendErr)
 	}
 
 	log.Info("agent stopped")
