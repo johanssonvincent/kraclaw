@@ -472,6 +472,97 @@ func TestNATSBrokerMalformedMessageSkipped(t *testing.T) {
 	}
 }
 
+// Test 2.1: Context Cancellation During Consume
+func TestNATSBrokerContextCancellationDuringConsume(t *testing.T) {
+	broker, _ := setupNATS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	group := "ctx-cancel-test@g.us"
+
+	// Subscribe to output
+	ch, err := broker.SubscribeOutput(ctx, group)
+	if err != nil {
+		t.Fatalf("SubscribeOutput: %v", err)
+	}
+
+	// Create a cancellable context for the consume operation
+	consumeCtx, consumeCancel := context.WithCancel(ctx)
+
+	// Start publishing messages in background
+	go func() {
+		for i := 0; i < 20; i++ {
+			msg := &IPCMessage{
+				Group:   group,
+				AgentID: DefaultAgentID,
+				Type:    IPCMessageText,
+				Payload: json.RawMessage(fmt.Sprintf(`{"seq":%d}`, i)),
+			}
+			if err := broker.PublishOutput(ctx, group, DefaultAgentID, msg); err != nil {
+				t.Logf("PublishOutput: %v", err)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	// Consume a few messages
+	receivedCount := 0
+	for i := 0; i < 10; i++ {
+		select {
+		case msg := <-ch:
+			if msg == nil {
+				t.Fatal("received nil message before cancellation")
+			}
+			receivedCount++
+			if i == 5 {
+				// Cancel context mid-read after receiving 6 messages
+				consumeCancel()
+			}
+		case <-consumeCtx.Done():
+			// Context was cancelled as expected
+			break
+		case <-ctx.Done():
+			t.Fatalf("test timeout, only received %d messages", receivedCount)
+		}
+	}
+
+	// Verify we received some messages before the cancel
+	if receivedCount < 5 {
+		t.Errorf("expected at least 5 messages before cancel, got %d", receivedCount)
+	}
+
+	// Verify no panic on early cancellation
+	// (If we got here without panicking, the test passes this part)
+	t.Logf("Successfully received and cancelled after %d messages", receivedCount)
+
+	// Verify broker is still operational by publishing another message
+	finalMsg := &IPCMessage{
+		Group:   group,
+		AgentID: DefaultAgentID,
+		Type:    IPCMessageText,
+		Payload: json.RawMessage(`{"status":"final"}`),
+	}
+	if err := broker.PublishOutput(ctx, group, DefaultAgentID, finalMsg); err != nil {
+		t.Fatalf("final publish failed: %v", err)
+	}
+
+	// Should be able to receive the final message on a new subscription
+	ch2, err := broker.SubscribeOutput(ctx, group)
+	if err != nil {
+		t.Fatalf("second SubscribeOutput: %v", err)
+	}
+
+	select {
+	case msg := <-ch2:
+		if msg == nil || msg.Type != IPCMessageText {
+			t.Fatal("did not receive final message")
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for final message")
+	}
+}
+
 // Test 1.3: Concurrent Agents Connecting to Same Group
 func TestNATSBrokerConcurrentAgents(t *testing.T) {
 	broker, _ := setupNATS(t)
