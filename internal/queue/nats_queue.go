@@ -68,10 +68,10 @@ func NewNATSQueue(nc *nats.Conn, gas groupActiveStore, logger *slog.Logger) (*NA
 	}, nil
 }
 
-func (q *NATSQueue) ensureStream(ctx context.Context, groupJID string) (string, error) {
+func (q *NATSQueue) ensureStream(ctx context.Context, groupJID string) (string, jetstream.Stream, error) {
 	sanitized := sanitizeQueueGroupID(groupJID)
 	name := queueStreamName(sanitized)
-	_, err := q.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	stream, err := q.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      name,
 		Subjects:  []string{queueSubject(sanitized)},
 		Retention: jetstream.WorkQueuePolicy,
@@ -80,14 +80,14 @@ func (q *NATSQueue) ensureStream(ctx context.Context, groupJID string) (string, 
 		Replicas:  1,
 	})
 	if err != nil {
-		return "", fmt.Errorf("ensure queue stream %s: %w", name, err)
+		return "", nil, fmt.Errorf("ensure queue stream %s: %w", name, err)
 	}
-	return sanitized, nil
+	return sanitized, stream, nil
 }
 
 // Enqueue adds a message to the group's JetStream queue.
 func (q *NATSQueue) Enqueue(ctx context.Context, groupJID string, msg *QueueMessage) error {
-	sanitized, err := q.ensureStream(ctx, groupJID)
+	sanitized, _, err := q.ensureStream(ctx, groupJID)
 	if err != nil {
 		return fmt.Errorf("enqueue ensure stream: %w", err)
 	}
@@ -104,7 +104,7 @@ func (q *NATSQueue) Enqueue(ctx context.Context, groupJID string, msg *QueueMess
 // Dequeue removes and returns the oldest message from the group's queue.
 // Returns nil, nil when the queue is empty.
 func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage, error) {
-	sanitized, err := q.ensureStream(ctx, groupJID)
+	sanitized, _, err := q.ensureStream(ctx, groupJID)
 	if err != nil {
 		return nil, fmt.Errorf("dequeue ensure stream: %w", err)
 	}
@@ -136,7 +136,8 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 			if err := msg.Ack(); err != nil {
 				q.logger.Error("ack malformed queue message", "subject", msg.Subject(), "sequence", seq, "error", err)
 			}
-			return nil, fmt.Errorf("unmarshal queue message: %w", err)
+			// Message was successfully discarded; caller should retry Dequeue for next message.
+			return nil, nil
 		}
 		if err := msg.Ack(); err != nil {
 			return nil, fmt.Errorf("dequeue: ack: %w", err)
@@ -156,7 +157,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 // It uses a direct stream get (not a durable consumer) so the message is never
 // locked from the Dequeue durable consumer on WorkQueuePolicy streams.
 func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, error) {
-	sanitized, err := q.ensureStream(ctx, groupJID)
+	sanitized, stream, err := q.ensureStream(ctx, groupJID)
 	if err != nil {
 		return nil, fmt.Errorf("peek ensure stream: %w", err)
 	}
@@ -167,11 +168,6 @@ func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, e
 	if derr := q.js.DeleteConsumer(ctx, streamName, "peek-"+sanitized); derr != nil &&
 		!errors.Is(derr, jetstream.ErrConsumerNotFound) {
 		q.logger.Warn("peek: failed to delete legacy peek consumer", "error", derr)
-	}
-
-	stream, err := q.js.Stream(ctx, streamName)
-	if err != nil {
-		return nil, fmt.Errorf("peek: get stream: %w", err)
 	}
 	info, err := stream.Info(ctx)
 	if err != nil {
@@ -198,16 +194,9 @@ func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, e
 
 // Len returns the number of pending messages in the group's queue.
 func (q *NATSQueue) Len(ctx context.Context, groupJID string) (int64, error) {
-	sanitized, err := q.ensureStream(ctx, groupJID)
+	_, stream, err := q.ensureStream(ctx, groupJID)
 	if err != nil {
 		return 0, fmt.Errorf("len ensure stream: %w", err)
-	}
-	stream, err := q.js.Stream(ctx, queueStreamName(sanitized))
-	if err != nil {
-		if errors.Is(err, jetstream.ErrStreamNotFound) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("get stream info: %w", err)
 	}
 	info, err := stream.Info(ctx)
 	if err != nil {
