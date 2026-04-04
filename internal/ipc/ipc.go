@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"regexp"
+	"time"
 )
 
 // IPCMessageType represents the type of an IPC message.

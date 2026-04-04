@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
+	"sync"
 
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"

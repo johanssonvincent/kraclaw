@@ -247,8 +247,8 @@ func TestNATSBrokerSubscribeOutput_AfterClose_ReturnsError(t *testing.T) {
 
 	broker.mu.Lock()
 	defer broker.mu.Unlock()
-	if len(broker.cancels) != 0 || len(broker.iters) != 0 {
-		t.Fatalf("consume resources registered on closed broker: cancels=%d iters=%d", len(broker.cancels), len(broker.iters))
+	if len(broker.cleanups) != 0 {
+		t.Fatalf("consume resources registered on closed broker: cleanups=%d", len(broker.cleanups))
 	}
 }
 
@@ -585,6 +585,7 @@ func TestNATSBrokerContextCancellationDuringConsume(t *testing.T) {
 
 	// Create a cancellable context for the consume operation
 	consumeCtx, consumeCancel := context.WithCancel(ctx)
+	defer consumeCancel()
 
 	// Start publishing messages in background
 	go func() {
@@ -870,5 +871,54 @@ func TestNATSBrokerAckFailure(t *testing.T) {
 				t.Fatal("timed out on second message - broker did not recover from ACK failure")
 			}
 		})
+	}
+}
+
+// Test for nil channel return when broker is closed
+func TestNATSBrokerSubscribeOutputClosedBroker(t *testing.T) {
+	broker, _ := setupNATS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Close broker first
+	if err := broker.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Attempt to subscribe after close
+	ch, err := broker.SubscribeOutput(ctx, "test@g.us")
+
+	// Must return nil channel and error (not closed channel and error)
+	if ch != nil {
+		t.Error("expected nil channel when broker is closed, got non-nil")
+	}
+	if err == nil {
+		t.Error("expected error when broker is closed, got nil")
+	}
+	if !strings.Contains(err.Error(), "closed") {
+		t.Errorf("expected error to mention 'closed', got: %v", err)
+	}
+}
+
+// Test for error when attempting to read after close
+func TestNATSBrokerReadInputClosedBroker(t *testing.T) {
+	broker, _ := setupNATS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Close broker first
+	if err := broker.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Attempt to read input after close
+	ch, err := broker.ReadInput(ctx, "test@g.us", DefaultAgentID)
+
+	// Must return nil channel and error
+	if ch != nil {
+		t.Error("expected nil channel when broker is closed, got non-nil")
+	}
+	if err == nil {
+		t.Error("expected error when broker is closed, got nil")
 	}
 }

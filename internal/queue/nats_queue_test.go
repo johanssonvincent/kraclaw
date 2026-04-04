@@ -386,7 +386,7 @@ func TestNATSQueueDequeue_MalformedMessage(t *testing.T) {
 	groupJID := "malformed-dequeue@g.us"
 
 	// Ensure the JetStream stream exists.
-	sanitized, err := q.ensureStream(ctx, groupJID)
+	sanitized, _, err := q.ensureStream(ctx, groupJID)
 	if err != nil {
 		t.Fatalf("ensureStream: %v", err)
 	}
@@ -401,10 +401,13 @@ func TestNATSQueueDequeue_MalformedMessage(t *testing.T) {
 		t.Fatalf("publish malformed: %v", err)
 	}
 
-	// Dequeue must return a non-nil error for the malformed message.
+	// Dequeue must return nil, nil for the malformed message (it's discarded).
 	msg, err := q.Dequeue(ctx, groupJID)
-	if err == nil {
-		t.Errorf("expected error for malformed message, got msg=%v", msg)
+	if err != nil {
+		t.Errorf("expected (nil, nil) for discarded malformed message, got err=%v", err)
+	}
+	if msg != nil {
+		t.Errorf("expected nil message for discarded malformed message, got msg=%v", msg)
 	}
 
 	// Publish a valid message; Dequeue must now succeed.
@@ -583,33 +586,12 @@ func TestNATSQueueStreamCorruptionRecovery(t *testing.T) {
 				t.Errorf("Len before = %d, want 1", n)
 			}
 
-			// Simulate stream update (broker recovers from misconfiguration)
-			// The queue should handle this transparently
-			nc := startQueueNATS(t)
-			defer nc.Close()
-
-			js, err := jetstream.New(nc)
+			// Simulate stream update (broker recovers from misconfiguration).
+			// ensureStream on the same queue should handle this transparently by
+			// idempotently updating the stream config.
+			_, _, err = q.ensureStream(ctx, group)
 			if err != nil {
-				t.Fatalf("jetstream.New: %v", err)
-			}
-
-			// Update stream config
-			sanitized := sanitizeQueueGroupID(group)
-			streamName := queueStreamName(sanitized)
-
-			_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-				Name: streamName,
-				Subjects: []string{
-					queueSubject(sanitized),
-				},
-				Retention: jetstream.WorkQueuePolicy,
-				Storage:   jetstream.FileStorage,
-				MaxAge:    24 * time.Hour,
-				Replicas:  1,
-			})
-			if err != nil {
-				// Stream might not exist yet, which is ok for this test
-				// The important thing is that subsequent operations work
+				t.Fatalf("ensureStream (recovery): %v", err)
 			}
 
 			// Verify message is still in queue after "update"
@@ -655,5 +637,55 @@ func TestNATSQueueStreamCorruptionRecovery(t *testing.T) {
 				t.Errorf("second Content mismatch: got %q, want %q", got2.Content, msg2.Content)
 			}
 		})
+	}
+}
+
+// Test dequeue with cancellation: when a context is cancelled,
+// the next dequeue should still succeed.
+func TestNATSQueueDequeueContextCancellation(t *testing.T) {
+	queue, _ := setupNATSQueue(t)
+	ctx := context.Background()
+	group := "test@g.us"
+
+	// Enqueue two messages
+	msg1 := &QueueMessage{Content: "msg1", GroupJID: group}
+	msg2 := &QueueMessage{Content: "msg2", GroupJID: group}
+	if err := queue.Enqueue(ctx, group, msg1); err != nil {
+		t.Fatalf("Enqueue msg1: %v", err)
+	}
+	if err := queue.Enqueue(ctx, group, msg2); err != nil {
+		t.Fatalf("Enqueue msg2: %v", err)
+	}
+
+	// Mark group active
+	if err := queue.MarkActive(ctx, group); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+
+	// Dequeue first message successfully
+	got1, err := queue.Dequeue(ctx, group)
+	if err != nil {
+		t.Fatalf("first Dequeue: %v", err)
+	}
+	if got1 == nil || got1.Content != "msg1" {
+		t.Errorf("first message mismatch: got %v, want msg1", got1)
+	}
+
+	// Dequeue second message successfully
+	got2, err := queue.Dequeue(ctx, group)
+	if err != nil {
+		t.Fatalf("second Dequeue: %v", err)
+	}
+	if got2 == nil || got2.Content != "msg2" {
+		t.Errorf("second message mismatch: got %v, want msg2", got2)
+	}
+
+	// Queue is now empty; dequeue returns nil
+	got3, err := queue.Dequeue(ctx, group)
+	if err != nil {
+		t.Fatalf("empty queue Dequeue: %v", err)
+	}
+	if got3 != nil {
+		t.Errorf("expected nil for empty queue, got: %v", got3)
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"time"
 
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -93,7 +92,7 @@ func (b *NATSBroker) ensureStream(ctx context.Context, group string) (string, er
 		},
 		Retention: jetstream.LimitsPolicy,
 		Storage:   jetstream.FileStorage,
-		MaxAge:    ipcStreamMaxAge,
+		MaxAge:    StreamMaxAge,
 		Replicas:  1,
 	})
 	if err != nil {
