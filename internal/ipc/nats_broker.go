@@ -144,7 +144,7 @@ func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan 
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
 		Durable:       ipcServerConsumer,
 		FilterSubject: ipcOutputWildcard(sanitized),
-		DeliverPolicy: jetstream.DeliverNewPolicy,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
