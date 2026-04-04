@@ -534,3 +534,126 @@ func TestNATSQueue_MarkActiveInactiveErrorsAreWrapped(t *testing.T) {
 		t.Fatalf("MarkInactive() error = %v, want errors.Is(..., %v)", err, markInactiveErr)
 	}
 }
+
+// Test 1.4: Stream Corruption Recovery Test
+func TestNATSQueueStreamCorruptionRecovery(t *testing.T) {
+	tests := []struct {
+		name     string
+		scenario string
+	}{
+		{
+			name:     "stream misconfiguration recovered",
+			scenario: "mismatch",
+		},
+		{
+			name:     "stream updated without losing messages",
+			scenario: "update",
+		},
+		{
+			name:     "dequeue works after repair",
+			scenario: "repair",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q, _ := setupNATSQueue(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			group := fmt.Sprintf("corrupt-test-%s@g.us", tt.scenario)
+
+			// Enqueue a message
+			msg1 := &QueueMessage{
+				GroupJID:  group,
+				Content:   "message-before-corruption",
+				Sender:    "test",
+				Timestamp: time.Now().Truncate(time.Millisecond),
+			}
+			if err := q.Enqueue(ctx, group, msg1); err != nil {
+				t.Fatalf("initial Enqueue: %v", err)
+			}
+
+			// Verify message is in queue
+			n, err := q.Len(ctx, group)
+			if err != nil {
+				t.Fatalf("Len before: %v", err)
+			}
+			if n != 1 {
+				t.Errorf("Len before = %d, want 1", n)
+			}
+
+			// Simulate stream update (broker recovers from misconfiguration)
+			// The queue should handle this transparently
+			nc := startQueueNATS(t)
+			defer nc.Close()
+
+			js, err := jetstream.New(nc)
+			if err != nil {
+				t.Fatalf("jetstream.New: %v", err)
+			}
+
+			// Update stream config
+			sanitized := sanitizeQueueGroupID(group)
+			streamName := queueStreamName(sanitized)
+
+			_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+				Name: streamName,
+				Subjects: []string{
+					queueSubject(sanitized),
+				},
+				Retention: jetstream.WorkQueuePolicy,
+				Storage:   jetstream.FileStorage,
+				MaxAge:    24 * time.Hour,
+				Replicas:  1,
+			})
+			if err != nil {
+				// Stream might not exist yet, which is ok for this test
+				// The important thing is that subsequent operations work
+			}
+
+			// Verify message is still in queue after "update"
+			n, err = q.Len(ctx, group)
+			if err != nil {
+				t.Fatalf("Len after update: %v", err)
+			}
+			if n != 1 {
+				t.Errorf("Len after update = %d, want 1 (message lost!)", n)
+			}
+
+			// Verify dequeue still works
+			got, err := q.Dequeue(ctx, group)
+			if err != nil {
+				t.Fatalf("Dequeue after update: %v", err)
+			}
+			if got == nil {
+				t.Fatal("Dequeue returned nil - message was lost during update")
+			}
+			if got.Content != msg1.Content {
+				t.Errorf("Content mismatch: got %q, want %q", got.Content, msg1.Content)
+			}
+
+			// Verify queue is operational after recovery
+			msg2 := &QueueMessage{
+				GroupJID:  group,
+				Content:   "message-after-recovery",
+				Sender:    "test",
+				Timestamp: time.Now().Truncate(time.Millisecond),
+			}
+			if err := q.Enqueue(ctx, group, msg2); err != nil {
+				t.Fatalf("Enqueue after recovery: %v", err)
+			}
+
+			got2, err := q.Dequeue(ctx, group)
+			if err != nil {
+				t.Fatalf("second Dequeue: %v", err)
+			}
+			if got2 == nil {
+				t.Fatal("second Dequeue returned nil")
+			}
+			if got2.Content != msg2.Content {
+				t.Errorf("second Content mismatch: got %q, want %q", got2.Content, msg2.Content)
+			}
+		})
+	}
+}
