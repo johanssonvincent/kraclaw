@@ -42,9 +42,9 @@ mysql:
   # secretName: name of pre-existing Secret containing key "MYSQL_DSN" (required before helm install)
   secretName: "kraclaw-mysql-url"
 
-# Redis
-redis:
-  url: "redis://redis.databases.svc.cluster.local:6379"  # REDIS_URL
+# NATS
+nats:
+  url: "nats://nats.nats.svc.cluster.local:4222"  # NATS_URL
 
 # NOTE: PVC names below assume release name "kraclaw". If using a different release name,
 # override k8s.sessionsPvc, k8s.groupsPvc, k8s.dataPvc, and sandbox.sessionsPvc, sandbox.groupsPvc,
@@ -153,7 +153,7 @@ sandbox:
   runAsUser: 1000
 
   # In-cluster service URLs — use FQDN to work across namespaces
-  redisUrl: "redis://redis.databases.svc.cluster.local:6379"
+  natsUrl: "nats://nats.nats.svc.cluster.local:4222"
   proxyUrl: "http://kraclaw-credproxy:3001"
 
   # PVC names — must match PVCs created by helm/templates/pvc-*.yaml

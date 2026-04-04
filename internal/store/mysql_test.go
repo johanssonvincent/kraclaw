@@ -250,7 +250,7 @@ func TestListGroups(t *testing.T) {
 func TestUpsertGroup(t *testing.T) {
 	store, mock := newTestStore(t)
 
-	mock.ExpectExec("REPLACE INTO").
+	mock.ExpectExec("INSERT INTO `groups`.*ON DUPLICATE KEY UPDATE").
 		WithArgs("g1@g.us", "Test", "test", "!bot", false, true, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -267,6 +267,38 @@ func TestUpsertGroup(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestUpsertGroupPreservesActiveState verifies that the UpsertGroup SQL does not
+// include is_active or last_active_at in the ON DUPLICATE KEY UPDATE clause,
+// ensuring those columns are never clobbered on update.
+func TestUpsertGroupPreservesActiveState(t *testing.T) {
+	src, err := os.ReadFile("mysql.go")
+	if err != nil {
+		t.Fatalf("read mysql.go: %v", err)
+	}
+	source := string(src)
+
+	// Must use INSERT ... ON DUPLICATE KEY UPDATE (not REPLACE INTO).
+	if strings.Contains(source, "REPLACE INTO `groups`") {
+		t.Fatal("UpsertGroup still uses REPLACE INTO — must use INSERT ... ON DUPLICATE KEY UPDATE")
+	}
+
+	// Must contain the new upsert pattern.
+	if !strings.Contains(source, "ON DUPLICATE KEY UPDATE") {
+		t.Fatal("UpsertGroup missing ON DUPLICATE KEY UPDATE")
+	}
+
+	// The UPDATE clause must NOT mention is_active or last_active_at.
+	// We verify by checking these strings do not appear in an UPDATE context.
+	// A simple presence check is sufficient because those columns should only
+	// appear in MarkGroupActive / MarkGroupInactive.
+	if strings.Contains(source, "is_active = VALUES") {
+		t.Fatal("UpsertGroup UPDATE clause must not include is_active — managed by MarkGroupActive/Inactive")
+	}
+	if strings.Contains(source, "last_active_at = VALUES") {
+		t.Fatal("UpsertGroup UPDATE clause must not include last_active_at — managed by MarkGroupActive/Inactive")
 	}
 }
 

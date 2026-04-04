@@ -150,8 +150,15 @@ func (s *MySQLStore) UpsertGroup(ctx context.Context, g *Group) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`REPLACE INTO `+"`groups`"+` (jid, name, folder, trigger_pattern, is_main, requires_trigger, container_config, added_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO `+"`groups`"+` (jid, name, folder, trigger_pattern, is_main, requires_trigger, container_config, added_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON DUPLICATE KEY UPDATE
+		   name             = VALUES(name),
+		   folder           = VALUES(folder),
+		   trigger_pattern  = VALUES(trigger_pattern),
+		   is_main          = VALUES(is_main),
+		   requires_trigger = VALUES(requires_trigger),
+		   container_config = VALUES(container_config)`,
 		g.JID, g.Name, g.Folder, g.TriggerPattern, g.IsMain, g.RequiresTrigger, ccJSON, g.AddedAt,
 	)
 	if err != nil {
