@@ -9,6 +9,8 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	nats "github.com/nats-io/nats.go"
+	natserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
 )
@@ -17,6 +19,9 @@ type integrationEnv struct {
 	pool          *dockertest.Pool
 	mysqlResource *dockertest.Resource
 	mysqlDSN      string
+	natsServer    *natserver.Server
+	natsStoreDir  string
+	natsConn      *nats.Conn
 	setupErr      error
 }
 
@@ -93,12 +98,59 @@ func setupIntegrationEnv() *integrationEnv {
 		return env
 	}
 
+	// Start embedded NATS with JetStream for IPC and queue tests.
+	natsDir, err := os.MkdirTemp("", "kraclaw-nats-test-*")
+	if err != nil {
+		env.setupErr = fmt.Errorf("create nats store dir: %w", err)
+		env.close()
+		return env
+	}
+	env.natsStoreDir = natsDir
+
+	natsOpts := &natserver.Options{
+		JetStream: true,
+		StoreDir:  natsDir,
+		Port:      -1,
+		NoLog:     true,
+		NoSigs:    true,
+	}
+	ns, err := natserver.NewServer(natsOpts)
+	if err != nil {
+		env.setupErr = fmt.Errorf("create nats server: %w", err)
+		env.close()
+		return env
+	}
+	go ns.Start()
+	if !ns.ReadyForConnections(5 * time.Second) {
+		env.setupErr = fmt.Errorf("nats server not ready")
+		env.close()
+		return env
+	}
+	env.natsServer = ns
+
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		env.setupErr = fmt.Errorf("connect to embedded nats: %w", err)
+		env.close()
+		return env
+	}
+	env.natsConn = nc
+
 	return env
 }
 
 func (e *integrationEnv) close() {
 	if e == nil || e.pool == nil {
 		return
+	}
+	if e.natsConn != nil {
+		e.natsConn.Close()
+	}
+	if e.natsServer != nil {
+		e.natsServer.Shutdown()
+	}
+	if e.natsStoreDir != "" {
+		_ = os.RemoveAll(e.natsStoreDir)
 	}
 	if e.mysqlResource != nil {
 		_ = e.pool.Purge(e.mysqlResource)

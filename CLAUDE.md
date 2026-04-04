@@ -27,8 +27,8 @@ make docker-build   # Build container image
 | `internal/config/` | envconfig-based configuration |
 | `internal/server/` | gRPC server + REST gateway + health endpoints |
 | `internal/store/` | Store interfaces and MySQL implementation |
-| `internal/queue/` | Redis-backed per-group message queue |
-| `internal/ipc/` | Redis Streams IPC broker |
+| `internal/queue/` | NATS JetStream per-group message queue |
+| `internal/ipc/` | NATS JetStream IPC broker |
 | `internal/sandbox/` | K8s Job lifecycle controller |
 | `internal/channel/` | Channel interface, registry, Discord, Telegram |
 | `internal/router/` | Message formatting and outbound routing |
@@ -44,33 +44,48 @@ make docker-build   # Build container image
 
 - **Logging:** `log/slog` (stdlib). Never use third-party loggers.
 - **Config:** `envconfig` tags on config structs.
-- **Testing:** Table-driven tests, `miniredis` for Redis, `go-sqlmock` for MySQL, `client-go/kubernetes/fake` for K8s.
+- **Testing:** Table-driven tests, embedded `nats-server/v2` for NATS JetStream, `go-sqlmock` for MySQL, `client-go/kubernetes/fake` for K8s.
 - **Commit messages:** Conventional commits — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
 - **Errors:** Always wrap with `fmt.Errorf("<operation>: %w", err)`.
 - **Ports:** gRPC (:50051), REST (:8080), credential proxy (:3001).
 
-## Redis Key Schema
+## NATS Subject Schema
 
-| Key | Purpose |
-|-----|---------|
-| `kraclaw:ipc:{group}:output` | Stream: agent → server |
-| `kraclaw:ipc:{group}:input` | Stream: server → agent |
-| `kraclaw:ipc:{group}:close` | Close signal (60s TTL) |
-| `kraclaw:queue:{groupJID}` | Per-group message list |
-| `kraclaw:active` | Set of active group JIDs |
-| `kraclaw:ipc:notify` | Pub/sub: IPC notifications |
-| `kraclaw:queue:notify` | Pub/sub: queue notifications |
+### Queue (internal/queue/)
+
+| Stream Name | Subject | Retention | Purpose |
+|-------------|---------|-----------|---------|
+| `KRACLAW_QUEUE_{SANITIZED}` | `kraclaw.queue.{sanitized}` | WorkQueuePolicy | Per-group message queue |
+
+Where `{SANITIZED}` = first 16 bytes of SHA-256 hex of groupJID (32 hex chars), uppercase for stream name, lowercase for subject.
+
+Consumer names:
+- Dequeue: `dequeue-{sanitized}`
+- Subscribe (server): `kraclaw-queue-server-{sanitized}`
+
+### IPC (internal/ipc/)
+
+| Stream Name | Subject | Retention | Purpose |
+|-------------|---------|-----------|---------|
+| `KRACLAW_IPC_{GROUP}_OUTPUT` | `kraclaw.ipc.{group}.output` | WorkQueuePolicy | Agent → server messages |
+| `KRACLAW_IPC_{GROUP}_INPUT` | `kraclaw.ipc.{group}.input` | WorkQueuePolicy | Server → agent messages |
+
+Where `{GROUP}` = group.Folder value (uppercase for stream name, lowercase for subject).
+
+Consumer names:
+- Output subscriber (server): `kraclaw-ipc-server-output-{group}`
+- Input reader (server): `kraclaw-ipc-server-input-{group}`
 
 ## Architecture
 
-Single Go binary with multiple concurrent goroutines. Redis-backed IPC and message queues. MySQL for state persistence. gRPC + REST API for external clients. Per-group isolated Kubernetes Jobs for agent execution. Channel registry pattern for pluggable messaging integrations.
+Single Go binary with multiple concurrent goroutines. NATS JetStream IPC and message queues. MySQL for state persistence. gRPC + REST API for external clients. Per-group isolated Kubernetes Jobs for agent execution. Channel registry pattern for pluggable messaging integrations.
 
 ### Layers
 
 - **API** (`internal/server/`): gRPC services, REST gateway, health checks, TLS, CIDR allowlisting.
 - **Orchestration** (`internal/orchestrator/`): Message polling, channel lifecycle, command handling, group state.
 - **Messaging** (`internal/channel/`, `internal/router/`, `internal/queue/`): Channel implementations, message formatting, per-group queues.
-- **IPC** (`internal/ipc/`): Redis Streams broker with consumer groups for server↔agent communication.
+- **IPC** (`internal/ipc/`): NATS JetStream broker for server↔agent communication.
 - **Storage** (`internal/store/`): MySQL interface with golang-migrate migrations.
 - **Sandbox** (`internal/sandbox/`): K8s Job controller for agent lifecycle.
 - **Credential Proxy** (`internal/credproxy/`): HTTP reverse proxy injecting API credentials.
@@ -79,6 +94,6 @@ Single Go binary with multiple concurrent goroutines. Redis-backed IPC and messa
 ### Key Abstractions
 
 - **Channel interface**: Standardized messaging platform integration (Discord, Telegram, TUI).
-- **Queue**: Per-group message buffering with Redis lists and pub/sub notifications.
+- **Queue**: Per-group message buffering with NATS JetStream WorkQueue streams.
 - **Store**: Composed of `GroupStore`, `MessageStore`, `ChatStore`, `TaskStore`, `SessionStore`.
-- **IPC Broker**: Redis Streams with consumer groups for asymmetric publish/subscribe.
+- **IPC Broker**: NATS JetStream streams for asymmetric server↔agent publish/subscribe.

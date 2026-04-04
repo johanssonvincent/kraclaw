@@ -208,7 +208,8 @@ func (m *mockStore) ActiveGroupJIDs(_ context.Context) ([]string, error)     { r
 // --- Mock Queue ---
 
 type mockQueue struct {
-	active map[string]bool
+	active        map[string]bool
+	markActiveErr error // if non-nil, MarkActive returns this error
 }
 
 func newMockQueue() *mockQueue {
@@ -222,6 +223,9 @@ func (m *mockQueue) Dequeue(_ context.Context, _ string) (*queue.QueueMessage, e
 func (m *mockQueue) Peek(_ context.Context, _ string) (*queue.QueueMessage, error) { return nil, nil }
 func (m *mockQueue) Len(_ context.Context, _ string) (int64, error)                { return 0, nil }
 func (m *mockQueue) MarkActive(_ context.Context, groupJID string) error {
+	if m.markActiveErr != nil {
+		return m.markActiveErr
+	}
 	m.active[groupJID] = true
 	return nil
 }
@@ -254,20 +258,28 @@ type mockIPCBroker struct {
 	subscribeCh         chan *ipc.IPCMessage // if set, SubscribeOutput returns this channel
 	deleteStreamsCalled int
 	deleteStreamsGroup  string
+	sendInputFn         func(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error
+	subscribeOutputFn   func(ctx context.Context, group string) (<-chan *ipc.IPCMessage, error)
 }
 
 func (m *mockIPCBroker) PublishOutput(_ context.Context, _ string, _ string, msg *ipc.IPCMessage) error {
 	m.published = append(m.published, msg)
 	return nil
 }
-func (m *mockIPCBroker) SubscribeOutput(_ context.Context, _ string) (<-chan *ipc.IPCMessage, error) {
+func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, error) {
+	if m.subscribeOutputFn != nil {
+		return m.subscribeOutputFn(ctx, group)
+	}
 	if m.subscribeCh != nil {
 		return m.subscribeCh, nil
 	}
 	ch := make(chan *ipc.IPCMessage)
 	return ch, nil
 }
-func (m *mockIPCBroker) SendInput(_ context.Context, _ string, _ string, msg *ipc.IPCMessage) error {
+func (m *mockIPCBroker) SendInput(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {
+	if m.sendInputFn != nil {
+		return m.sendInputFn(ctx, group, agentID, msg)
+	}
 	m.inputSent = append(m.inputSent, msg)
 	return nil
 }
@@ -628,10 +640,11 @@ func (m *mockQueueWithActiveCount) ActiveCount(_ context.Context) (int64, error)
 	return m.activeCount, m.activeCountErr
 }
 
-// mockSandboxControllerWithTracking tracks CreateSandbox calls.
+// mockSandboxControllerWithTracking tracks CreateSandbox and StopSandbox calls.
 type mockSandboxControllerWithTracking struct {
 	createCalled bool
 	createErr    error
+	stopCalled   bool
 }
 
 func (m *mockSandboxControllerWithTracking) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
@@ -642,6 +655,7 @@ func (m *mockSandboxControllerWithTracking) CreateSandbox(_ context.Context, _ s
 	return &sandbox.SandboxStatus{Name: "test-sandbox", State: sandbox.StatePending}, nil
 }
 func (m *mockSandboxControllerWithTracking) StopSandbox(_ context.Context, _ string) error {
+	m.stopCalled = true
 	return nil
 }
 func (m *mockSandboxControllerWithTracking) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
@@ -775,6 +789,121 @@ func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "check active count") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "check active count")
+	}
+}
+
+// --- SendInput / MarkActive failure tests ---
+
+func TestProcessGroupMessages_SendInputFailure_TeardownAndErrors(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	sb := &mockSandboxControllerWithTracking{}
+	b := &mockIPCBroker{
+		sendInputFn: func(_ context.Context, _, _ string, _ *ipc.IPCMessage) error {
+			return fmt.Errorf("NATS publish timeout")
+		},
+	}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 10, MessageLimit: 500},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	log := slog.Default()
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, q, b, nil, reg, log)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = sb
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	before := time.Now().Add(-time.Second)
+	o.registeredGroups["group1@g.us"] = store.Group{
+		JID:    "group1@g.us",
+		Folder: "test-group",
+		IsMain: true,
+	}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: before, Sender: "alice"},
+	}
+	o.lastAgentTimestamp["group1@g.us"] = before.Add(-time.Second)
+	previousCursor := o.lastAgentTimestamp["group1@g.us"]
+
+	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	if err == nil {
+		t.Fatal("expected error from SendInput failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "send initial input") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "send initial input")
+	}
+	if !sb.createCalled {
+		t.Error("CreateSandbox must be called before SendInput")
+	}
+	if !sb.stopCalled {
+		t.Error("StopSandbox must be called on SendInput failure")
+	}
+	if q.active["group1@g.us"] {
+		t.Error("group must be marked inactive after SendInput failure")
+	}
+	if got := o.lastAgentTimestamp["group1@g.us"]; !got.Equal(previousCursor) {
+		t.Errorf("cursor = %v, want rolled back to %v", got, previousCursor)
+	}
+}
+
+func TestProcessGroupMessages_MarkActiveFailure_StopsSandbox(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	sb := &mockSandboxControllerWithTracking{}
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 10, MessageLimit: 500},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	log := slog.Default()
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, q, b, nil, reg, log)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = sb
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	before := time.Now().Add(-time.Second)
+	o.registeredGroups["group1@g.us"] = store.Group{
+		JID:    "group1@g.us",
+		Folder: "test-group",
+		IsMain: true,
+	}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: before, Sender: "alice"},
+	}
+	o.lastAgentTimestamp["group1@g.us"] = before.Add(-time.Second)
+	previousCursor := o.lastAgentTimestamp["group1@g.us"]
+
+	q.markActiveErr = fmt.Errorf("NATS MarkActive failed")
+
+	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	if err == nil {
+		t.Fatal("expected MarkActive failure error, got nil")
+	}
+	if !strings.Contains(err.Error(), "mark active") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "mark active")
+	}
+	if !sb.stopCalled {
+		t.Error("StopSandbox must be called on MarkActive failure")
+	}
+	if q.active["group1@g.us"] {
+		t.Error("group must not be active after MarkActive failure")
+	}
+	if got := o.lastAgentTimestamp["group1@g.us"]; !got.Equal(previousCursor) {
+		t.Errorf("cursor = %v, want rolled back to %v", got, previousCursor)
 	}
 }
 

@@ -1001,6 +1001,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string) {
 	group, ok := o.registeredGroups[chatJID]
 	o.mu.Unlock()
 	if !ok {
+		o.log.Warn("watchGroupOutput: group not found in registeredGroups, skipping", "group_jid", chatJID)
 		return
 	}
 
