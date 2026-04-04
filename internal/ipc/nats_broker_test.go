@@ -6,12 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	natserver "github.com/nats-io/nats-server/v2/server"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	natserver "github.com/nats-io/nats-server/v2/server"
 )
 
 // startEmbeddedNATS starts an in-process NATS server with JetStream enabled.
@@ -225,6 +226,27 @@ func TestNATSCloseStopsSubscription(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for channel close")
+	}
+}
+
+func TestNATSBrokerSubscribeOutput_AfterClose_ReturnsError(t *testing.T) {
+	broker, _ := setupNATS(t)
+	if err := broker.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err := broker.SubscribeOutput(context.Background(), "closed-subscribe@g.us")
+	if err == nil {
+		t.Fatal("SubscribeOutput() error = nil, want closed broker error")
+	}
+	if !strings.Contains(err.Error(), "consume output") {
+		t.Fatalf("error = %q, want context %q", err.Error(), "consume output")
+	}
+
+	broker.mu.Lock()
+	defer broker.mu.Unlock()
+	if len(broker.cancels) != 0 || len(broker.iters) != 0 {
+		t.Fatalf("consume resources registered on closed broker: cancels=%d iters=%d", len(broker.cancels), len(broker.iters))
 	}
 }
 

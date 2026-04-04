@@ -150,7 +150,11 @@ func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan 
 	if err != nil {
 		return nil, fmt.Errorf("create output consumer: %w", err)
 	}
-	return b.consume(ctx, cons, group), nil
+	ch, err := b.consume(ctx, cons, group)
+	if err != nil {
+		return nil, fmt.Errorf("consume output: %w", err)
+	}
+	return ch, nil
 }
 
 // ReadInput returns a channel that receives input messages for a specific agent.
@@ -169,7 +173,11 @@ func (b *NATSBroker) ReadInput(ctx context.Context, group, agentID string) (<-ch
 	if err != nil {
 		return nil, fmt.Errorf("create input consumer: %w", err)
 	}
-	return b.consume(ctx, cons, group), nil
+	ch, err := b.consume(ctx, cons, group)
+	if err != nil {
+		return nil, fmt.Errorf("consume input: %w", err)
+	}
+	return ch, nil
 }
 
 // DeleteStreams removes the JetStream stream for a group (covers all agents).
@@ -209,7 +217,7 @@ func (b *NATSBroker) Close() error {
 }
 
 // consume creates a goroutine that drains a JetStream consumer into a channel.
-func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group string) <-chan *IPCMessage {
+func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group string) (<-chan *IPCMessage, error) {
 	ch := make(chan *IPCMessage, 64)
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -219,10 +227,17 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 		cancel()
 		b.logger.Error("create message iterator", "group", group, "error", err)
 		close(ch)
-		return ch
+		return ch, nil
 	}
 
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		iter.Stop()
+		cancel()
+		close(ch)
+		return ch, fmt.Errorf("consume: broker closed")
+	}
 	b.cancels = append(b.cancels, cancel)
 	b.iters = append(b.iters, iter)
 	b.mu.Unlock()
@@ -293,5 +308,5 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 		}
 	}()
 
-	return ch
+	return ch, nil
 }
