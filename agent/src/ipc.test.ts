@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { connect as natsConnect, AckPolicy, DeliverPolicy } from "nats";
 
 import { IPCClient } from "./ipc.js";
@@ -54,6 +55,12 @@ async function startNatsServer(
   } catch {
     return null;
   }
+}
+
+// Helper: Sanitize group JID to match agent implementation
+function sanitizeGroupID(groupJID: string): string {
+  const hash = createHash("sha256").update(groupJID).digest("hex");
+  return hash.substring(0, 32); // 16 bytes = 32 hex chars
 }
 
 // Test: IPCClient.connect() is idempotent
@@ -131,21 +138,9 @@ test("IPCClient.readInput() receives published message from server", async (t) =
     const groupJID = "test@group.us";
     const agentID = "agent-1";
 
-    // Helper to match the client's sanitization
-    function sanitizeGroupID(groupJID: string): string {
-      return Array.from(
-        new Uint8Array(
-          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(groupJID))
-        )
-      )
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("")
-        .slice(0, 32)
-        .toLowerCase();
-    }
-
-    function sanitizeAgentID(agentID: string): string {
-      return agentID.replace(/[^a-z0-9\-_]/gi, "_").toLowerCase();
+    // Helper to sanitize agent ID
+    function sanitizeAgentID(id: string): string {
+      return id.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
     }
 
     const sanitizedGroup = sanitizeGroupID(groupJID);
@@ -195,18 +190,6 @@ test("IPCClient.readInput() returns null on timeout (no message published)", asy
 
     // Create the stream so subscription works
     const groupJID = "test@timeout.us";
-    function sanitizeGroupID(groupJID: string): string {
-      return Array.from(
-        new Uint8Array(
-          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(groupJID))
-        )
-      )
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("")
-        .slice(0, 32)
-        .toLowerCase();
-    }
-
     const sanitizedGroup = sanitizeGroupID(groupJID);
     const js = await serverConn.jetstream();
     try {
@@ -253,20 +236,8 @@ test("IPCClient.publishOutput() sends a message", async (t) => {
     await client.publishOutput(outputMsg);
 
     // Verify via server subscription (subscribe to the output subject)
-    function sanitizeGroupID(groupJID: string): string {
-      return Array.from(
-        new Uint8Array(
-          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(groupJID))
-        )
-      )
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("")
-        .slice(0, 32)
-        .toLowerCase();
-    }
-
-    function sanitizeAgentID(agentID: string): string {
-      return agentID.replace(/[^a-z0-9\-_]/gi, "_").toLowerCase();
+    function sanitizeAgentID(id: string): string {
+      return id.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase();
     }
 
     const sanitizedGroup = sanitizeGroupID("test@publish.us");
@@ -291,6 +262,83 @@ test("IPCClient.publishOutput() sends a message", async (t) => {
     assert.ok(received, "message was published");
     const data = JSON.parse(new TextDecoder().decode((received as any).data));
     assert.equal(data.type, "session_update");
+  } finally {
+    await client.close();
+    serverConn.close();
+    server!.kill();
+  }
+});
+
+// Test 1.1: Promise.race() timeout race condition - timeout fires
+test("readInput() timeout fires and returns null without losing errors", async (t) => {
+  const server = await startNatsServer();
+  t.skip(!server, "nats-server not available");
+
+  const client = new IPCClient(server!.url, "test@race.us", "agent-race");
+  const serverConn = await natsConnect({ servers: server!.url });
+
+  try {
+    await client.connect();
+
+    const groupJID = "test@race.us";
+    const sanitizedGroup = sanitizeGroupID(groupJID);
+    const js = await serverConn.jetstream();
+
+    try {
+      await js.streams.add({
+        name: `KRACLAW_IPC_${sanitizedGroup.toUpperCase()}`,
+        subjects: [`kraclaw.ipc.${sanitizedGroup}.*.input`, `kraclaw.ipc.${sanitizedGroup}.*.output`],
+      });
+    } catch {
+      // stream might already exist
+    }
+
+    // Call readInput with 5s timeout (no message published)
+    const startTime = Date.now();
+    const result = await client.readInput();
+    const elapsed = Date.now() - startTime;
+
+    // Verify: timeout fired and returned null
+    assert.equal(result, null, "readInput should return null on timeout");
+    assert.ok(elapsed >= 4900 && elapsed <= 5500, `timeout should be ~5s, got ${elapsed}ms`);
+  } finally {
+    await client.close();
+    serverConn.close();
+    server!.kill();
+  }
+});
+
+// Test 1.1b: Promise.race() - verify subscription is cleaned up after timeout
+test("readInput() cleans up subscription after Promise.race() timeout", async (t) => {
+  const server = await startNatsServer();
+  t.skip(!server, "nats-server not available");
+
+  const client = new IPCClient(server!.url, "test@race-cleanup.us", "agent-cleanup");
+  const serverConn = await natsConnect({ servers: server!.url });
+
+  try {
+    await client.connect();
+
+    const groupJID = "test@race-cleanup.us";
+    const sanitizedGroup = sanitizeGroupID(groupJID);
+    const js = await serverConn.jetstream();
+
+    try {
+      await js.streams.add({
+        name: `KRACLAW_IPC_${sanitizedGroup.toUpperCase()}`,
+        subjects: [`kraclaw.ipc.${sanitizedGroup}.*.input`, `kraclaw.ipc.${sanitizedGroup}.*.output`],
+      });
+    } catch {
+      // stream might already exist
+    }
+
+    // Call readInput which will timeout
+    const result1 = await client.readInput();
+    assert.equal(result1, null, "first readInput should timeout and return null");
+
+    // Call readInput again - should also timeout cleanly (subscription was cleaned up)
+    const result2 = await client.readInput();
+    assert.equal(result2, null, "second readInput should also timeout (subscription was cleaned up)");
   } finally {
     await client.close();
     serverConn.close();
