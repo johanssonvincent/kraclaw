@@ -53,7 +53,7 @@ func TestIPCClient_SendOutput(t *testing.T) {
 	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
-		Retention: jetstream.InterestPolicy,
+		Retention: jetstream.LimitsPolicy,
 		MaxAge:    time.Hour,
 	})
 	if err != nil {
@@ -82,7 +82,7 @@ func TestIPCClient_ReadInput(t *testing.T) {
 	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
-		Retention: jetstream.InterestPolicy,
+		Retention: jetstream.LimitsPolicy,
 		MaxAge:    time.Hour,
 	})
 	if err != nil {
@@ -91,8 +91,7 @@ func TestIPCClient_ReadInput(t *testing.T) {
 
 	inputSubject := "kraclaw.ipc." + sanitized + ".main.input"
 
-	// Create the consumer first (ReadInput does this), then publish.
-	// InterestPolicy only retains messages when consumers exist.
+	// Create the consumer (ReadInput), then publish.
 	ch, errCh, err := client.ReadInput(ctx)
 	if err != nil {
 		t.Fatalf("ReadInput: %v", err)
