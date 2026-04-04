@@ -108,7 +108,7 @@ func (c *IPCClient) ensureStream(ctx context.Context) error {
 // SendOutput publishes a message from this agent to the server.
 func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error {
 	if err := c.ensureStream(ctx); err != nil {
-		return fmt.Errorf("ensure ipc stream: %w", err)
+		return fmt.Errorf("send output: %w", err)
 	}
 
 	ipcMsg := map[string]interface{}{
@@ -138,7 +138,7 @@ func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error 
 // fatal failures.
 func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-chan error, error) {
 	if err := c.ensureStream(ctx); err != nil {
-		return nil, nil, fmt.Errorf("ensure ipc stream: %w", err)
+		return nil, nil, fmt.Errorf("read input: %w", err)
 	}
 
 	cons, err := c.js.CreateOrUpdateConsumer(ctx, c.streamName(), jetstream.ConsumerConfig{
@@ -212,7 +212,9 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 					c.logger.Error("ack ipc message", "error", err)
 				}
 			case <-ctx.Done():
-				_ = jmsg.Nak() // prevent silent redelivery on cancel race
+				if err := jmsg.Nak(); err != nil {
+					c.logger.Warn("nak message on context cancel", "error", err)
+				}
 				return
 			}
 		}

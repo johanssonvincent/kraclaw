@@ -297,10 +297,14 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 					b.logger.Error("ack ipc message", "group", group, "error", err)
 				}
 			case <-ctx.Done():
-				_ = jmsg.Nak() // prevent silent redelivery on cancel race
+				if err := jmsg.Nak(); err != nil {
+					b.logger.Warn("nak message", "group", group, "error", err)
+				}
 				return
 			case <-b.closedCh:
-				_ = jmsg.Nak() // prevent silent redelivery on close race
+				if err := jmsg.Nak(); err != nil {
+					b.logger.Warn("nak message", "group", group, "error", err)
+				}
 				return
 			}
 		}

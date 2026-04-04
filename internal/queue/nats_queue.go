@@ -100,7 +100,9 @@ func (q *NATSQueue) Enqueue(ctx context.Context, groupJID string, msg *QueueMess
 	if _, err := q.js.Publish(ctx, queueSubject(sanitized), data); err != nil {
 		return fmt.Errorf("publish queue message: %w", err)
 	}
-	q.publishEvent(ctx, QueueEvent{Type: EventEnqueued, GroupJID: groupJID})
+	if err := q.publishEvent(ctx, QueueEvent{Type: EventEnqueued, GroupJID: groupJID}); err != nil {
+		return fmt.Errorf("enqueue: publish event: %w", err)
+	}
 	return nil
 }
 
@@ -224,7 +226,9 @@ func (q *NATSQueue) MarkActive(ctx context.Context, groupJID string) error {
 	if err := q.gas.MarkGroupActive(ctx, groupJID); err != nil {
 		return fmt.Errorf("mark active: %w", err)
 	}
-	q.publishEvent(ctx, QueueEvent{Type: EventActive, GroupJID: groupJID})
+	if err := q.publishEvent(ctx, QueueEvent{Type: EventActive, GroupJID: groupJID}); err != nil {
+		return fmt.Errorf("mark active: publish event: %w", err)
+	}
 	return nil
 }
 
@@ -233,23 +237,37 @@ func (q *NATSQueue) MarkInactive(ctx context.Context, groupJID string) error {
 	if err := q.gas.MarkGroupInactive(ctx, groupJID); err != nil {
 		return fmt.Errorf("mark inactive: %w", err)
 	}
-	q.publishEvent(ctx, QueueEvent{Type: EventInactive, GroupJID: groupJID})
+	if err := q.publishEvent(ctx, QueueEvent{Type: EventInactive, GroupJID: groupJID}); err != nil {
+		return fmt.Errorf("mark inactive: publish event: %w", err)
+	}
 	return nil
 }
 
 // IsActive delegates to the MySQL-backed GroupActiveStore.
 func (q *NATSQueue) IsActive(ctx context.Context, groupJID string) (bool, error) {
-	return q.gas.IsGroupActive(ctx, groupJID)
+	active, err := q.gas.IsGroupActive(ctx, groupJID)
+	if err != nil {
+		return false, fmt.Errorf("is active: %w", err)
+	}
+	return active, nil
 }
 
 // ActiveCount delegates to the MySQL-backed GroupActiveStore.
 func (q *NATSQueue) ActiveCount(ctx context.Context) (int64, error) {
-	return q.gas.ActiveGroupCount(ctx)
+	count, err := q.gas.ActiveGroupCount(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("active count: %w", err)
+	}
+	return count, nil
 }
 
 // ActiveJIDs delegates to the MySQL-backed GroupActiveStore.
 func (q *NATSQueue) ActiveJIDs(ctx context.Context) ([]string, error) {
-	return q.gas.ActiveGroupJIDs(ctx)
+	jids, err := q.gas.ActiveGroupJIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("active jids: %w", err)
+	}
+	return jids, nil
 }
 
 // Subscribe returns a channel that receives queue events via core NATS.
@@ -313,13 +331,15 @@ func (q *NATSQueue) Close() error {
 	return nil
 }
 
-func (q *NATSQueue) publishEvent(ctx context.Context, evt QueueEvent) {
+func (q *NATSQueue) publishEvent(ctx context.Context, evt QueueEvent) error {
 	data, err := json.Marshal(evt)
 	if err != nil {
-		q.logger.Warn("marshal queue event", "error", err)
-		return
+		q.logger.Error("marshal queue event", "error", err)
+		return fmt.Errorf("marshal queue event: %w", err)
 	}
 	if err := q.nc.Publish(queueEventSubject, data); err != nil {
-		q.logger.Warn("publish queue event", "type", evt.Type, "group", evt.GroupJID, "error", err)
+		q.logger.Error("publish queue event", "type", evt.Type, "group", evt.GroupJID, "error", err)
+		return fmt.Errorf("publish queue event: %w", err)
 	}
+	return nil
 }
