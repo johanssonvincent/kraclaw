@@ -17,7 +17,6 @@ func validConfig() Config {
 			AnthropicAPIKey: "sk-test",
 		},
 		K8s: K8sConfig{
-			AgentImage:          "ghcr.io/test/agent:latest",
 			AgentImageAnthropic: "ghcr.io/test/anthropic:latest",
 		},
 		Queue: QueueConfig{
@@ -31,7 +30,6 @@ func validConfig() Config {
 
 func TestValidate_RequiresAtLeastOneAgentImage(t *testing.T) {
 	cfg := validConfig()
-	cfg.K8s.AgentImage = ""
 	cfg.K8s.AgentImageAnthropic = ""
 	cfg.K8s.AgentImageOpenAI = ""
 	if err := cfg.Validate(); err == nil {
@@ -39,9 +37,8 @@ func TestValidate_RequiresAtLeastOneAgentImage(t *testing.T) {
 	}
 }
 
-func TestValidate_RejectsLegacyAnthropicFallback(t *testing.T) {
+func TestValidate_RequiresAnthropicImageWhenAnthropicKeySet(t *testing.T) {
 	cfg := validConfig()
-	cfg.K8s.AgentImage = "ghcr.io/test/agent:latest"
 	cfg.K8s.AgentImageAnthropic = ""
 	cfg.K8s.AgentImageOpenAI = ""
 	if err := cfg.Validate(); err == nil {
@@ -51,7 +48,6 @@ func TestValidate_RejectsLegacyAnthropicFallback(t *testing.T) {
 
 func TestValidate_AcceptsProviderSpecificImage(t *testing.T) {
 	cfg := validConfig()
-	cfg.K8s.AgentImage = ""
 	cfg.K8s.AgentImageAnthropic = "ghcr.io/test/anthropic:latest"
 	cfg.K8s.AgentImageOpenAI = ""
 	if err := cfg.Validate(); err != nil {

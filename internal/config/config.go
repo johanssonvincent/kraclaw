@@ -46,7 +46,6 @@ type NATSConfig struct {
 
 type K8sConfig struct {
 	Namespace             string        `envconfig:"K8S_NAMESPACE" default:"kraclaw"`
-	AgentImage            string        `envconfig:"AGENT_IMAGE"`
 	AgentImageAnthropic   string        `envconfig:"AGENT_IMAGE_ANTHROPIC"`
 	AgentImageOpenAI      string        `envconfig:"AGENT_IMAGE_OPENAI"`
 	InCluster             bool          `envconfig:"K8S_IN_CLUSTER" default:"true"`
@@ -144,8 +143,8 @@ func (c *Config) Validate() error {
 	if c.Queue.MaxConcurrent <= 0 {
 		return fmt.Errorf("MAX_CONCURRENT must be positive, got %d", c.Queue.MaxConcurrent)
 	}
-	if c.K8s.AgentImage == "" && c.K8s.AgentImageAnthropic == "" && c.K8s.AgentImageOpenAI == "" {
-		return fmt.Errorf("at least one agent image must be set (AGENT_IMAGE, AGENT_IMAGE_ANTHROPIC, or AGENT_IMAGE_OPENAI)")
+	if c.K8s.AgentImageAnthropic == "" && c.K8s.AgentImageOpenAI == "" {
+		return fmt.Errorf("at least one agent image must be set (AGENT_IMAGE_ANTHROPIC or AGENT_IMAGE_OPENAI)")
 	}
 	if c.Proxy.AnthropicAPIKey != "" && c.K8s.AgentImageAnthropic == "" {
 		return fmt.Errorf("AGENT_IMAGE_ANTHROPIC is required when ANTHROPIC_API_KEY is configured (legacy AGENT_IMAGE fallback is not supported with NATS)")

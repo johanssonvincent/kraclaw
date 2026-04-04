@@ -779,6 +779,20 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		Type:    ipc.IPCMessageText,
 		Payload: payload,
 	}); err != nil {
+		o.log.Error("failed to send initial input to agent, tearing down sandbox", "group", group.Name, "error", err)
+		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
+			o.log.Error("failed to stop sandbox after SendInput failure", "group", group.Name, "job", status.Name, "error", cleanupErr)
+		}
+		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
+			o.log.Error("failed to mark group inactive after SendInput failure", "group", group.Name, "error", markErr)
+		}
+		o.mu.Lock()
+		delete(o.activeSandboxes, chatJID)
+		o.lastAgentTimestamp[chatJID] = previousCursor
+		o.mu.Unlock()
+		if saveErr := o.saveState(ctx); saveErr != nil {
+			o.log.Error("failed to save state after SendInput failure", "group", group.Name, "error", saveErr)
+		}
 		return fmt.Errorf("send initial input: %w", err)
 	}
 

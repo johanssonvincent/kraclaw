@@ -318,7 +318,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 	}
 
 	// Determine HOME path for session mount.
-	homePath := "/home/node"
+	homePath := "/home/nonroot"
 
 	switch providerID {
 	case provider.ProviderOpenAI:
