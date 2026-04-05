@@ -28,6 +28,14 @@ function sanitizeAgentID(id: string): string {
   return safe;
 }
 
+function isNotFoundError(err: unknown): boolean {
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    return msg.includes("not found") || msg.includes("404");
+  }
+  return String(err).toLowerCase().includes("not found");
+}
+
 export class IPCClient {
   private nc: NatsConnection | null = null;
   private jsClient: JetStreamClient | null = null;
@@ -113,6 +121,11 @@ export class IPCClient {
       // Try to get existing stream
       await this.jsManager.streams.info(streamName);
     } catch (err) {
+      if (!isNotFoundError(err)) {
+        throw new Error(
+          `ipc ensure stream: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
       // Stream doesn't exist, create it
       try {
         await this.jsManager.streams.add({
@@ -140,8 +153,8 @@ export class IPCClient {
     }
   }
 
-  // readInput reads the next input message with timeout
-  // Uses a pending promise to serialize concurrent calls (sync.Once equivalent)
+  // readInput reads the next input message, waiting up to 5 seconds for one to arrive.
+  // A pending promise serializes concurrent callers so only one pull is in-flight at a time.
   async readInput(): Promise<IPCMessage | null> {
     if (this.pendingReadInput) {
       return this.pendingReadInput;
@@ -163,11 +176,16 @@ export class IPCClient {
     const streamName = this.streamName();
     const consumerName = "agent-" + sanitizeAgentID(this.agentID);
 
-    // Create or update durable consumer with DeliverAllPolicy
+    // Ensure durable pull consumer exists; create if absent, skip if already exists.
     try {
       // Try to get existing consumer
       await this.jsManager.consumers.info(streamName, consumerName);
-    } catch {
+    } catch (err) {
+      if (!isNotFoundError(err)) {
+        throw new Error(
+          `ipc read input: consumer info: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
       // Create new consumer if it doesn't exist
       try {
         await this.jsManager.consumers.add(streamName, {
@@ -189,73 +207,30 @@ export class IPCClient {
       }
     }
 
+    const consumer = await this.jsClient.consumers.get(streamName, consumerName);
+    const jmsg = await consumer.next({ expires: 5_000 });
+    if (!jmsg) return null;
+
+    let parsed;
     try {
-      const sub = await this.jsClient.subscribe(this.inputSubject(), {
-        config: {
-          durable_name: consumerName,
-        },
+      parsed = JSON.parse(new TextDecoder().decode(jmsg.data));
+    } catch (parseErr) {
+      console.error("ipc read input: failed to parse JSON", {
+        error: parseErr instanceof Error ? parseErr.message : String(parseErr),
+        data: new TextDecoder().decode(jmsg.data).substring(0, 200),
       });
-
-      try {
-        // Set a 5 second timeout for reading
-        const timeoutMs = 5000;
-        const startTime = Date.now();
-
-        for await (const jmsg of sub) {
-          // Check if timeout has been exceeded
-          if (Date.now() - startTime > timeoutMs) {
-            return null;
-          }
-
-          // Parse the message
-          const data = new TextDecoder().decode(jmsg.data);
-          let parsed;
-          try {
-            parsed = JSON.parse(data);
-          } catch (parseErr) {
-            console.error("ipc read input: failed to parse JSON", {
-              error: parseErr instanceof Error ? parseErr.message : String(parseErr),
-              data: data.substring(0, 200),
-            });
-            // Acknowledge the malformed message so we don't loop forever
-            if (jmsg.ack) {
-              try {
-                await jmsg.ack();
-              } catch (ackErr) {
-                console.error("failed to ack malformed message", ackErr);
-              }
-            }
-            continue;
-          }
-
-          const msg: IPCMessage = {
-            group: this.groupJID,
-            type: parsed.type,
-            payload: parsed.payload || {},
-          };
-
-          // Explicitly acknowledge the message
-          if (jmsg.ack) {
-            try {
-              await jmsg.ack();
-            } catch (ackErr) {
-              console.error("ipc read input: failed to acknowledge message", ackErr);
-            }
-          }
-
-          return msg;
-        }
-
-        // Timeout reached with no message
-        return null;
-      } finally {
-        await sub.unsubscribe();
-      }
-    } catch (err) {
-      throw new Error(
-        `ipc read input: ${err instanceof Error ? err.message : String(err)}`
-      );
+      await jmsg.ack();
+      return null;
     }
+
+    const msg: IPCMessage = {
+      group: this.groupJID,
+      type: parsed.type,
+      payload: parsed.payload || {},
+    };
+
+    await jmsg.ack();
+    return msg;
   }
 
   // publishOutput publishes a message from the agent to the server

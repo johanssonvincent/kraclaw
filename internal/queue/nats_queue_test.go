@@ -640,52 +640,34 @@ func TestNATSQueueStreamCorruptionRecovery(t *testing.T) {
 	}
 }
 
-// Test dequeue with cancellation: when a context is cancelled,
-// the next dequeue should still succeed.
+// TestNATSQueueDequeueContextCancellation verifies that Dequeue honours
+// context cancellation: a pre-cancelled context returns promptly, and a
+// Dequeue blocked on an empty queue returns when its context is cancelled.
 func TestNATSQueueDequeueContextCancellation(t *testing.T) {
-	queue, _ := setupNATSQueue(t)
-	ctx := context.Background()
-	group := "test@g.us"
+	q, _ := setupNATSQueue(t)
+	group := "cancel-test@g.us"
 
-	// Enqueue two messages
-	msg1 := &QueueMessage{Content: "msg1", GroupJID: group}
-	msg2 := &QueueMessage{Content: "msg2", GroupJID: group}
-	if err := queue.Enqueue(ctx, group, msg1); err != nil {
-		t.Fatalf("Enqueue msg1: %v", err)
-	}
-	if err := queue.Enqueue(ctx, group, msg2); err != nil {
-		t.Fatalf("Enqueue msg2: %v", err)
+	// Test 1: pre-cancelled context
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	cancel1()
+	msg, _ := q.Dequeue(ctx1, group)
+	if msg != nil {
+		t.Errorf("expected nil msg on cancelled context, got %v", msg)
 	}
 
-	// Mark group active
-	if err := queue.MarkActive(ctx, group); err != nil {
-		t.Fatalf("MarkActive: %v", err)
-	}
-
-	// Dequeue first message successfully
-	got1, err := queue.Dequeue(ctx, group)
-	if err != nil {
-		t.Fatalf("first Dequeue: %v", err)
-	}
-	if got1 == nil || got1.Content != "msg1" {
-		t.Errorf("first message mismatch: got %v, want msg1", got1)
-	}
-
-	// Dequeue second message successfully
-	got2, err := queue.Dequeue(ctx, group)
-	if err != nil {
-		t.Fatalf("second Dequeue: %v", err)
-	}
-	if got2 == nil || got2.Content != "msg2" {
-		t.Errorf("second message mismatch: got %v, want msg2", got2)
-	}
-
-	// Queue is now empty; dequeue returns nil
-	got3, err := queue.Dequeue(ctx, group)
-	if err != nil {
-		t.Fatalf("empty queue Dequeue: %v", err)
-	}
-	if got3 != nil {
-		t.Errorf("expected nil for empty queue, got: %v", got3)
+	// Test 2: cancel while blocking on empty queue
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		q.Dequeue(ctx2, group) //nolint:errcheck
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel2()
+	select {
+	case <-done:
+		// passed
+	case <-time.After(2 * time.Second):
+		t.Fatal("Dequeue did not return after context cancellation")
 	}
 }

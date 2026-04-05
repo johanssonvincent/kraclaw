@@ -136,10 +136,12 @@ func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error 
 	return nil
 }
 
-// ReadInput returns channels that receive messages from the server and errors
-// from the reader. Callers should read from both channels concurrently.
-// Multiple calls to ReadInput return the same channels — the first call
-// initializes; subsequent calls are idempotent via sync.Once.
+// ReadInput initialises the background reader on the first call and returns
+// the same channels on all subsequent calls.  The ctx passed to the FIRST
+// call must be long-lived (process lifetime) because it governs the reader
+// goroutine: if that ctx is already cancelled when the first call arrives,
+// startReadInput returns immediately and all subsequent callers see a closed
+// channel with no error.
 func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-chan error, error) {
 	c.readOnce.Do(func() {
 		c.msgCh = make(chan *InboundMessage, 64)
@@ -179,7 +181,9 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 		}
 		defer iter.Stop()
 
-		done := make(chan struct{}) // closed when this goroutine exits
+		done := make(chan struct{}) // closed when the consumer goroutine exits
+		// The watcher goroutine below relies on defer close(done) to detect
+		// consumer exit before ctx is done — do not remove the defer.
 		go func() {
 			select {
 			case <-ctx.Done():
@@ -246,7 +250,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 						"agent_id", c.agentID,
 						"sequence", seq,
 						"error", err)
-					return
+					continue
 				}
 			case <-ctx.Done():
 				if err := jmsg.Nak(); err != nil {

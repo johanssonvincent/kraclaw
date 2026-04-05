@@ -27,8 +27,6 @@ const (
 	defaultIdleTimeout = 30 * time.Minute
 )
 
-var marshalInitialInput = json.Marshal
-
 // sandboxController is the interface the orchestrator uses to manage agent sandboxes.
 // *sandbox.Controller satisfies this interface.
 type sandboxController interface {
@@ -76,6 +74,8 @@ type Orchestrator struct {
 	notify chan struct{} // buffered signal to trigger immediate poll
 	mu     sync.Mutex
 	log    *slog.Logger
+
+	marshalInitialInput func(v any) ([]byte, error)
 }
 
 // New creates a new Orchestrator.
@@ -128,6 +128,7 @@ func New(
 		rateLimiters:           make(map[string]*TokenBucket),
 		notify:                 make(chan struct{}, 1),
 		log:                    log.With("component", "orchestrator"),
+		marshalInitialInput:    json.Marshal,
 	}, nil
 }
 
@@ -187,9 +188,6 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 			return
 		}
 	}()
-
-	// 5. Start IPC watcher in goroutine.
-	go o.ipcWatcher(ctx)
 
 	// 5.5. Clean up orphaned sandboxes from previous runs.
 	if o.sandbox != nil {
@@ -709,7 +707,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	}
 
 	// Marshal initial input payload.
-	payload, err := marshalInitialInput(map[string]string{"messages": formatted})
+	payload, err := o.marshalInitialInput(map[string]string{"messages": formatted})
 	if err != nil {
 		return fmt.Errorf("marshal initial input: %w", err)
 	}
@@ -773,15 +771,36 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		return fmt.Errorf("mark active: %w", err)
 	}
 
+	// Subscribe to IPC output BEFORE spawning the watcher goroutine and BEFORE
+	// SendInput, so we cannot miss the agent's first output (race fix).
+	outputCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
+	if err != nil {
+		o.log.Error("failed to subscribe to IPC output, tearing down sandbox", "group", group.Name, "error", err)
+		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
+			o.log.Error("failed to stop sandbox after SubscribeOutput failure", "group", group.Name, "job", status.Name, "error", cleanupErr)
+		}
+		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
+			o.log.Error("failed to mark group inactive after SubscribeOutput failure", "group", group.Name, "error", markErr)
+		}
+		o.mu.Lock()
+		delete(o.activeSandboxes, chatJID)
+		o.lastAgentTimestamp[chatJID] = previousCursor
+		o.mu.Unlock()
+		if saveErr := o.saveState(ctx); saveErr != nil {
+			o.log.Error("failed to save state after SubscribeOutput failure", "group", group.Name, "error", saveErr)
+		}
+		return fmt.Errorf("subscribe output: %w", err)
+	}
+
 	// Spawn watchGroupOutput directly to listen for agent output (no event channel)
-	go func(jid string) {
+	go func(jid string, ch <-chan *ipc.IPCMessage) {
 		defer func() {
 			if r := recover(); r != nil {
 				o.log.Error("panic in watchGroupOutput", "group_jid", jid, "panic", r)
 			}
 		}()
-		o.watchGroupOutput(ctx, jid)
-	}(chatJID)
+		o.watchGroupOutput(ctx, jid, ch)
+	}(chatJID, outputCh)
 
 	// Send initial messages via IPC so the agent can read them on startup.
 	if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
@@ -814,12 +833,6 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 
 	o.log.Info("sandbox created", "group", group.Name, "job", status.Name)
 	return nil
-}
-
-// ipcWatcher is now a no-op since watchGroupOutput is spawned directly after MarkActive.
-// Kept for future use and to maintain the goroutine structure.
-func (o *Orchestrator) ipcWatcher(ctx context.Context) {
-	<-ctx.Done()
 }
 
 // sandboxWatcher runs a self-healing loop that subscribes to Sandbox lifecycle events.
@@ -963,21 +976,12 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 // watchGroupOutput subscribes to IPC output for a single group and processes messages.
 // It also periodically checks that the agent Job still exists to avoid getting stuck
 // if the agent dies without sending a shutdown message.
-func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string) {
+func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch <-chan *ipc.IPCMessage) {
 	o.mu.Lock()
 	group, ok := o.registeredGroups[chatJID]
 	o.mu.Unlock()
 	if !ok {
 		o.log.Warn("watchGroupOutput: group not found in registeredGroups, skipping", "group_jid", chatJID)
-		return
-	}
-
-	ch, err := o.ipc.SubscribeOutput(ctx, group.Folder)
-	if err != nil {
-		o.log.Error("failed to subscribe to IPC output, deactivating group", "group", group.Name, "error", err)
-		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
-			o.log.Error("failed to mark group inactive after subscribe failure", "group", group.Name, "error", markErr)
-		}
 		return
 	}
 
@@ -1020,7 +1024,8 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string) {
 		}
 		o.mu.Unlock()
 		if err := o.saveState(ctx); err != nil {
-			o.log.Error("failed to save state after deactivation", "group", group.Name, "error", err)
+			o.log.Error("failed to save state after deactivation — cursor rollback is in-memory only; messages may be re-sent or lost on restart",
+				"group", group.Name, "error", err)
 		}
 
 		// Check MySQL for pending messages (not just the NATS queue).
@@ -1032,9 +1037,20 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string) {
 			o.log.Error("failed to check pending messages", "group", group.Name, "error", err)
 		}
 		// Also drain the NATS queue for scheduled tasks.
-		qMsg, err := o.queue.Dequeue(ctx, chatJID)
-		if err != nil {
-			o.log.Error("failed to dequeue message", "group", group.Name, "error", err)
+		// Dequeue returns nil,nil for both an empty queue and a malformed-message
+		// that was ACK'd and skipped. Loop a few times so that skipped malformed
+		// messages do not mask valid queued tasks.
+		var qMsg *queue.QueueMessage
+		for range 5 {
+			msg, deqErr := o.queue.Dequeue(ctx, chatJID)
+			if deqErr != nil {
+				o.log.Error("failed to dequeue message", "group", group.Name, "error", deqErr)
+				break
+			}
+			if msg != nil {
+				qMsg = msg
+				break
+			}
 		}
 
 		if len(pending) > 0 || qMsg != nil {

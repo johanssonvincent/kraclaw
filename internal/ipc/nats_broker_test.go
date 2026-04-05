@@ -577,15 +577,16 @@ func TestNATSBrokerContextCancellationDuringConsume(t *testing.T) {
 
 	group := "ctx-cancel-test@g.us"
 
-	// Subscribe to output
-	ch, err := broker.SubscribeOutput(ctx, group)
-	if err != nil {
-		t.Fatalf("SubscribeOutput: %v", err)
-	}
-
 	// Create a cancellable context for the consume operation
 	consumeCtx, consumeCancel := context.WithCancel(ctx)
 	defer consumeCancel()
+
+	// Subscribe to output using the cancellable consume context so that
+	// cancelling consumeCancel propagates into the broker's consume goroutine.
+	ch, err := broker.SubscribeOutput(consumeCtx, group)
+	if err != nil {
+		t.Fatalf("SubscribeOutput: %v", err)
+	}
 
 	// Start publishing messages in background
 	go func() {
@@ -786,6 +787,11 @@ func TestNATSBrokerConcurrentAgents(t *testing.T) {
 
 // Test 1.2: ACK failure handling - verifies broker logs errors and continues
 func TestNATSBrokerAckFailure(t *testing.T) {
+	// This test is a regression test for the ACK-failure-kills-goroutine bug.
+	// It verifies that after delivering a first message, the broker is still
+	// operational — which it would not be if the consume goroutine returned on
+	// ACK failure. The test cannot simulate real ACK network failures with
+	// embedded NATS, so it validates the behaviour indirectly.
 	tests := []struct {
 		name     string
 		scenario string

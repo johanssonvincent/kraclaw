@@ -204,7 +204,7 @@ func TestPipeSandboxInput_Valid(t *testing.T) {
 }
 
 func TestPipeSandboxInput_SendError(t *testing.T) {
-	broker := &mockIPCBroker{sendErr: fmt.Errorf("redis down")}
+	broker := &mockIPCBroker{sendErr: fmt.Errorf("ipc unavailable")}
 	svc := &sandboxService{ipc: broker, log: testLogger()}
 	_, err := svc.PipeSandboxInput(context.Background(), &kraclawv1.PipeSandboxInputRequest{
 		GroupFolder: "mygroup",

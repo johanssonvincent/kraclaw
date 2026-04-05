@@ -66,7 +66,7 @@ function sanitizeGroupID(groupJID: string): string {
 // Test: IPCClient.connect() is idempotent
 test("IPCClient.connect() is idempotent", async (t) => {
   const server = await startNatsServer();
-  t.skip(!server, "nats-server not available");
+  if (!server) { t.skip("nats-server not available"); return; }
 
   const client = new IPCClient(server!.url, "test@group.us", "test-agent");
   try {
@@ -98,7 +98,7 @@ test("IPCClient.connect() fails on invalid NATS URL", async () => {
 // Test: IPCClient.close() is idempotent
 test("IPCClient.close() is idempotent", async (t) => {
   const server = await startNatsServer();
-  t.skip(!server, "nats-server not available");
+  if (!server) { t.skip("nats-server not available"); return; }
 
   const client = new IPCClient(server!.url, "test@group.us", "test-agent");
   try {
@@ -119,7 +119,7 @@ test("IPCClient.close() is idempotent", async (t) => {
 // Test: IPCClient.readInput() receives published messages
 test("IPCClient.readInput() receives published message from server", async (t) => {
   const server = await startNatsServer();
-  t.skip(!server, "nats-server not available");
+  if (!server) { t.skip("nats-server not available"); return; }
 
   const client = new IPCClient(server!.url, "test@group.us", "agent-1");
   const serverConn = await natsConnect({ servers: server!.url });
@@ -148,9 +148,10 @@ test("IPCClient.readInput() receives published message from server", async (t) =
     const subject = `kraclaw.ipc.${sanitizedGroup}.${sanitizedAgent}.input`;
 
     // Create stream and publish via server connection
-    const js = await serverConn.jetstream();
+    const js = serverConn.jetstream();
+    const jsm = await serverConn.jetstreamManager();
     try {
-      await js.streams.add({
+      await jsm.streams.add({
         name: `KRACLAW_IPC_${sanitizedGroup.toUpperCase()}`,
         subjects: [`kraclaw.ipc.${sanitizedGroup}.*.input`, `kraclaw.ipc.${sanitizedGroup}.*.output`],
       });
@@ -180,7 +181,7 @@ test("IPCClient.readInput() receives published message from server", async (t) =
 // Test: IPCClient.readInput() times out after 5 seconds
 test("IPCClient.readInput() returns null on timeout (no message published)", async (t) => {
   const server = await startNatsServer();
-  t.skip(!server, "nats-server not available");
+  if (!server) { t.skip("nats-server not available"); return; }
 
   const client = new IPCClient(server!.url, "test@timeout.us", "agent-timeout");
   const serverConn = await natsConnect({ servers: server!.url });
@@ -191,9 +192,10 @@ test("IPCClient.readInput() returns null on timeout (no message published)", asy
     // Create the stream so subscription works
     const groupJID = "test@timeout.us";
     const sanitizedGroup = sanitizeGroupID(groupJID);
-    const js = await serverConn.jetstream();
+    const js = serverConn.jetstream();
+    const jsm = await serverConn.jetstreamManager();
     try {
-      await js.streams.add({
+      await jsm.streams.add({
         name: `KRACLAW_IPC_${sanitizedGroup.toUpperCase()}`,
         subjects: [`kraclaw.ipc.${sanitizedGroup}.*.input`, `kraclaw.ipc.${sanitizedGroup}.*.output`],
       });
@@ -218,7 +220,7 @@ test("IPCClient.readInput() returns null on timeout (no message published)", asy
 // Test: IPCClient.publishOutput() sends message
 test("IPCClient.publishOutput() sends a message", async (t) => {
   const server = await startNatsServer();
-  t.skip(!server, "nats-server not available");
+  if (!server) { t.skip("nats-server not available"); return; }
 
   const client = new IPCClient(server!.url, "test@publish.us", "agent-pub");
   const serverConn = await natsConnect({ servers: server!.url });
@@ -242,7 +244,7 @@ test("IPCClient.publishOutput() sends a message", async (t) => {
 
     const sanitizedGroup = sanitizeGroupID("test@publish.us");
     const sanitizedAgent = sanitizeAgentID("agent-pub");
-    const js = await serverConn.jetstream();
+    const js = serverConn.jetstream();
 
     // Subscribe to output messages
     const sub = await js.subscribe(`kraclaw.ipc.${sanitizedGroup}.${sanitizedAgent}.output`, {
@@ -272,7 +274,7 @@ test("IPCClient.publishOutput() sends a message", async (t) => {
 // Test 1.1: Promise.race() timeout race condition - timeout fires
 test("readInput() timeout fires and returns null without losing errors", async (t) => {
   const server = await startNatsServer();
-  t.skip(!server, "nats-server not available");
+  if (!server) { t.skip("nats-server not available"); return; }
 
   const client = new IPCClient(server!.url, "test@race.us", "agent-race");
   const serverConn = await natsConnect({ servers: server!.url });
@@ -282,10 +284,11 @@ test("readInput() timeout fires and returns null without losing errors", async (
 
     const groupJID = "test@race.us";
     const sanitizedGroup = sanitizeGroupID(groupJID);
-    const js = await serverConn.jetstream();
+    const js = serverConn.jetstream();
+    const jsm = await serverConn.jetstreamManager();
 
     try {
-      await js.streams.add({
+      await jsm.streams.add({
         name: `KRACLAW_IPC_${sanitizedGroup.toUpperCase()}`,
         subjects: [`kraclaw.ipc.${sanitizedGroup}.*.input`, `kraclaw.ipc.${sanitizedGroup}.*.output`],
       });
@@ -311,7 +314,7 @@ test("readInput() timeout fires and returns null without losing errors", async (
 // Test 2.2: Concurrent ReadInput() Safety
 test("concurrent readInput() calls handled safely without consumer conflicts", async (t) => {
   const server = await startNatsServer();
-  t.skip(!server, "nats-server not available");
+  if (!server) { t.skip("nats-server not available"); return; }
 
   const client = new IPCClient(server!.url, "test@concurrent.us", "agent-concurrent");
   const serverConn = await natsConnect({ servers: server!.url });
@@ -321,10 +324,11 @@ test("concurrent readInput() calls handled safely without consumer conflicts", a
 
     const groupJID = "test@concurrent.us";
     const sanitizedGroup = sanitizeGroupID(groupJID);
-    const js = await serverConn.jetstream();
+    const js = serverConn.jetstream();
+    const jsm = await serverConn.jetstreamManager();
 
     try {
-      await js.streams.add({
+      await jsm.streams.add({
         name: `KRACLAW_IPC_${sanitizedGroup.toUpperCase()}`,
         subjects: [`kraclaw.ipc.${sanitizedGroup}.*.input`, `kraclaw.ipc.${sanitizedGroup}.*.output`],
       });
@@ -368,7 +372,7 @@ test("concurrent readInput() calls handled safely without consumer conflicts", a
 // Test 1.1b: Promise.race() - verify subscription is cleaned up after timeout
 test("readInput() cleans up subscription after Promise.race() timeout", async (t) => {
   const server = await startNatsServer();
-  t.skip(!server, "nats-server not available");
+  if (!server) { t.skip("nats-server not available"); return; }
 
   const client = new IPCClient(server!.url, "test@race-cleanup.us", "agent-cleanup");
   const serverConn = await natsConnect({ servers: server!.url });
@@ -378,10 +382,11 @@ test("readInput() cleans up subscription after Promise.race() timeout", async (t
 
     const groupJID = "test@race-cleanup.us";
     const sanitizedGroup = sanitizeGroupID(groupJID);
-    const js = await serverConn.jetstream();
+    const js = serverConn.jetstream();
+    const jsm = await serverConn.jetstreamManager();
 
     try {
-      await js.streams.add({
+      await jsm.streams.add({
         name: `KRACLAW_IPC_${sanitizedGroup.toUpperCase()}`,
         subjects: [`kraclaw.ipc.${sanitizedGroup}.*.input`, `kraclaw.ipc.${sanitizedGroup}.*.output`],
       });

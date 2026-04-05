@@ -149,6 +149,8 @@ func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan 
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
+	// The durable consumer is keyed by name so it won't accumulate even if
+	// consume() fails; a subsequent call will reuse the same server-side consumer.
 	if err != nil {
 		return nil, fmt.Errorf("create output consumer: %w", err)
 	}
@@ -172,6 +174,8 @@ func (b *NATSBroker) ReadInput(ctx context.Context, group, agentID string) (<-ch
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 	})
+	// The durable consumer is keyed by name so it won't accumulate even if
+	// consume() fails; a subsequent call will reuse the same server-side consumer.
 	if err != nil {
 		return nil, fmt.Errorf("create input consumer: %w", err)
 	}
@@ -304,7 +308,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 						seq = meta.Sequence.Stream
 					}
 					b.logger.Error("ack ipc message", "group", group, "sequence", seq, "error", err)
-					return
+					continue
 				}
 			case <-ctx.Done():
 				meta, _ := jmsg.Metadata()

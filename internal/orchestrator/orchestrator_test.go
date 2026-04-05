@@ -752,7 +752,7 @@ func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
 	s := newMockStore()
 	mq := &mockQueueWithActiveCount{
 		mockQueue:      mockQueue{active: make(map[string]bool)},
-		activeCountErr: fmt.Errorf("redis connection failed"),
+		activeCountErr: fmt.Errorf("queue connection failed"),
 	}
 	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 	b := &mockIPCBroker{}
@@ -1163,11 +1163,9 @@ func TestProcessGroupMessages_MarshalInitialInputFailure_ReturnsEarly(t *testing
 	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
 	s.messages["group1@g.us"] = []store.Message{{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"}}
 
-	origMarshal := marshalInitialInput
-	marshalInitialInput = func(v interface{}) ([]byte, error) {
+	o.marshalInitialInput = func(v any) ([]byte, error) {
 		return nil, fmt.Errorf("marshal boom")
 	}
-	t.Cleanup(func() { marshalInitialInput = origMarshal })
 
 	err = o.processGroupMessages(context.Background(), "group1@g.us")
 	if err == nil {
@@ -1322,7 +1320,7 @@ func TestDeactivate_RollsBackCursorToConfirmed(t *testing.T) {
 	close(ipcCh)
 	b.subscribeCh = ipcCh
 
-	o.watchGroupOutput(context.Background(), "group1@g.us")
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
 
 	// Agent cursor should be rolled back to confirmed.
 	o.mu.Lock()
@@ -1395,7 +1393,7 @@ func TestDeactivate_PendingMessagesTriggersReprocessing(t *testing.T) {
 	close(ipcCh)
 	b.subscribeCh = ipcCh
 
-	o.watchGroupOutput(context.Background(), "group1@g.us")
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
 
 	// Wait for processGroupMessages goroutine to start (it calls GetMessagesSince).
 	<-processStarted
@@ -1440,7 +1438,7 @@ func TestDeactivate_NoRollbackWhenCursorsMatch(t *testing.T) {
 	close(ipcCh)
 	b.subscribeCh = ipcCh
 
-	o.watchGroupOutput(context.Background(), "group1@g.us")
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
 
 	// Cursor should remain unchanged.
 	agent := o.lastAgentTimestamp["group1@g.us"]
@@ -1551,7 +1549,7 @@ func TestWatchGroupOutput_StartupTimeoutDeactivatesGroupWhenPodNeverStarts(t *te
 	b.subscribeCh = ipcCh
 
 	// watchGroupOutput should block until the startup timeout fires, then deactivate.
-	o.watchGroupOutput(context.Background(), "group1@g.us")
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
 
 	// Group should be deactivated.
 	if q.active["group1@g.us"] {
@@ -1599,7 +1597,7 @@ func TestWatchGroupOutput_StartupTimeoutNotFiredWhenAgentConnects(t *testing.T) 
 	close(ipcCh)
 	b.subscribeCh = ipcCh
 
-	o.watchGroupOutput(context.Background(), "group1@g.us")
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
 
 	// Group should be deactivated by normal agent shutdown, not by startup timeout.
 	// The cursor should NOT be rolled back because confirmedTs == agentTs.
@@ -1890,7 +1888,7 @@ func TestWatchGroupOutput_NilSandboxNoPanic(t *testing.T) {
 	}()
 
 	// This must not panic even though o.sandbox is nil.
-	o.watchGroupOutput(context.Background(), "group1@g.us")
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
 }
 
 // --- BUG-03: DeleteStreams on shutdown test ---

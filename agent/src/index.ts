@@ -6,7 +6,7 @@ import { applySetModel } from "./model_switch.js";
 import type { IPCMessage } from "./types.js";
 
 if (!process.env.NATS_URL) {
-  console.error("NATS_URL is required (Redis IPC is no longer supported)");
+  console.error("NATS_URL is required");
   process.exit(1);
 }
 const NATS_URL = process.env.NATS_URL;
@@ -49,12 +49,21 @@ async function initWorkspace(): Promise<void> {
       const global = await fs.readFile(globalClaudeMd, "utf-8");
       await fs.writeFile(groupClaudeMd, global);
       console.log("seeded CLAUDE.md from global template");
-    } catch {
-      await fs.writeFile(
-        groupClaudeMd,
-        `# ${GROUP_FOLDER}\n\nGroup memory and instructions.\n`
-      );
-      console.log("created default CLAUDE.md");
+    } catch (seedErr) {
+      console.error("failed to read global CLAUDE.md template, creating default", {
+        error: seedErr instanceof Error ? seedErr.message : String(seedErr),
+      });
+      try {
+        await fs.writeFile(
+          groupClaudeMd,
+          `# ${GROUP_FOLDER}\n\nGroup memory and instructions.\n`
+        );
+        console.log("created default CLAUDE.md");
+      } catch (writeErr) {
+        console.error("failed to create default CLAUDE.md", {
+          error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+        });
+      }
     }
   }
 }
@@ -165,7 +174,10 @@ async function main(): Promise<void> {
         (err) => console.error("failed to archive conversation", err)
       );
     } catch (err) {
-      console.error("failed to process message", err);
+      console.error("failed to process message", {
+        error: err instanceof Error ? err.message : String(err),
+        type: err instanceof Error ? err.constructor.name : typeof err,
+      });
       try {
         await ipc.publishOutput({
           group: GROUP_FOLDER,
