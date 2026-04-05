@@ -227,6 +227,7 @@ export class IPCClient {
       group: this.groupJID,
       type: parsed.type,
       payload: parsed.payload || {},
+      id: String(jmsg.info.streamSequence),
     };
 
     await jmsg.ack();
@@ -261,6 +262,10 @@ export class IPCClient {
 
   // Close closes the NATS connection
   async close(): Promise<void> {
+    if (this.pendingReadInput) {
+      await this.pendingReadInput.catch(() => {});
+      this.pendingReadInput = null;
+    }
     if (this.nc) {
       await this.nc.close();
       this.nc = null;

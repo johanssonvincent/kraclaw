@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -252,6 +253,7 @@ type mockIPCBroker struct {
 	published           []*ipc.IPCMessage
 	inputSent           []*ipc.IPCMessage
 	subscribeCh         chan *ipc.IPCMessage // if set, SubscribeOutput returns this channel
+	subscribeCount      int                  // number of SubscribeOutput calls
 	deleteStreamsCalled int
 	deleteStreamsGroup  string
 	sendInputFn         func(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error
@@ -263,10 +265,17 @@ func (m *mockIPCBroker) PublishOutput(_ context.Context, _ string, _ string, msg
 	return nil
 }
 func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, error) {
+	m.subscribeCount++
 	if m.subscribeOutputFn != nil {
 		return m.subscribeOutputFn(ctx, group)
 	}
 	if m.subscribeCh != nil {
+		// Return the preset channel on the first call only. Subsequent calls
+		// (e.g. from the watchGroupOutput reconnect path) fail so tests that
+		// pre-close subscribeCh don't loop forever.
+		if m.subscribeCount > 1 {
+			return nil, errors.New("mockIPCBroker: subscribeCh already consumed")
+		}
 		return m.subscribeCh, nil
 	}
 	ch := make(chan *ipc.IPCMessage)
@@ -335,6 +344,9 @@ func newTestOrchestrator(s *mockStore, q *mockQueue, b *mockIPCBroker) *Orchestr
 	if err != nil {
 		panic("newTestOrchestrator: " + err.Error())
 	}
+	// Shrink IPC reconnect backoff so tests that exercise the watchGroupOutput
+	// reconnect path don't burn the 1+2+4+8 second production schedule.
+	o.ipcReconnectDelays = []time.Duration{time.Millisecond, time.Millisecond}
 	return o
 }
 

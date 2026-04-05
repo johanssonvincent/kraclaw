@@ -38,8 +38,9 @@ type NATSQueue struct {
 	gas    groupActiveStore
 	logger *slog.Logger
 
-	mu     sync.Mutex
-	closed bool
+	mu        sync.Mutex
+	closed    bool
+	consumers sync.Map // sanitized groupID -> jetstream.Consumer
 }
 
 // NewNATSQueue creates a NATSQueue. gas must not be nil.
@@ -106,16 +107,24 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 		return nil, fmt.Errorf("dequeue ensure stream: %w", err)
 	}
 	streamName := queueStreamName(sanitized)
-	cons, err := q.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
-		Durable:   "dequeue-" + sanitized,
-		AckPolicy: jetstream.AckExplicitPolicy,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create dequeue consumer: %w", err)
+	var cons jetstream.Consumer
+	if cached, ok := q.consumers.Load(sanitized); ok {
+		cons = cached.(jetstream.Consumer)
+	} else {
+		created, err := q.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+			Durable:   "dequeue-" + sanitized,
+			AckPolicy: jetstream.AckExplicitPolicy,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create dequeue consumer: %w", err)
+		}
+		cons = created
+		q.consumers.Store(sanitized, cons)
 	}
 
 	msgs, err := cons.Fetch(1, jetstream.FetchMaxWait(queueFetchTimeout))
 	if err != nil {
+		q.consumers.Delete(sanitized)
 		return nil, fmt.Errorf("fetch queue message: %w", err)
 	}
 	if msg, ok := <-msgs.Messages(); ok {

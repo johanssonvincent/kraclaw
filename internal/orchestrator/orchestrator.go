@@ -76,6 +76,11 @@ type Orchestrator struct {
 	log    *slog.Logger
 
 	marshalInitialInput func(v any) ([]byte, error)
+
+	// ipcReconnectDelays controls the backoff schedule used by watchGroupOutput
+	// when the IPC output channel closes unexpectedly. Exposed as a field so
+	// tests can shrink the delays.
+	ipcReconnectDelays []time.Duration
 }
 
 // New creates a new Orchestrator.
@@ -129,6 +134,7 @@ func New(
 		notify:                 make(chan struct{}, 1),
 		log:                    log.With("component", "orchestrator"),
 		marshalInitialInput:    json.Marshal,
+		ipcReconnectDelays:     []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second},
 	}, nil
 }
 
@@ -1040,8 +1046,10 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 		// Dequeue returns nil,nil for both an empty queue and a malformed-message
 		// that was ACK'd and skipped. Loop a few times so that skipped malformed
 		// messages do not mask valid queued tasks.
+		const maxMalformedRetries = 5
 		var qMsg *queue.QueueMessage
-		for range 5 {
+		skipped := 0
+		for range maxMalformedRetries {
 			msg, deqErr := o.queue.Dequeue(ctx, chatJID)
 			if deqErr != nil {
 				o.log.Error("failed to dequeue message", "group", group.Name, "error", deqErr)
@@ -1051,6 +1059,11 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				qMsg = msg
 				break
 			}
+			skipped++
+		}
+		if skipped == maxMalformedRetries {
+			o.log.Error("dequeue exhausted malformed-message retries: all messages were nil or malformed",
+				"group", group.Name, "retries", maxMalformedRetries)
 		}
 
 		if len(pending) > 0 || qMsg != nil {
@@ -1089,8 +1102,32 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			}
 		case msg, ok := <-ch:
 			if !ok {
-				deactivate()
-				return
+				if ctx.Err() != nil {
+					return
+				}
+				// Reconnect with exponential backoff before giving up.
+				var reconnected bool
+				for _, delay := range o.ipcReconnectDelays {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(delay):
+					}
+					newCh, err := o.ipc.SubscribeOutput(ctx, chatJID)
+					if err == nil {
+						ch = newCh
+						reconnected = true
+						o.log.Info("reconnected to IPC output after iterator error", "group", group.Name)
+						break
+					}
+					o.log.Warn("IPC reconnect failed, retrying", "group", group.Name, "error", err, "delay", delay)
+				}
+				if !reconnected {
+					o.log.Error("IPC reconnect exhausted, deactivating group", "group", group.Name)
+					deactivate()
+					return
+				}
+				continue
 			}
 			agentConnected = true
 			if o.handleIPCMessage(ctx, chatJID, group, msg) {

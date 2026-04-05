@@ -42,7 +42,14 @@ async function initWorkspace(): Promise<void> {
   const groupClaudeMd = path.join(WORKSPACE_DIR, "CLAUDE.md");
   try {
     await fs.access(groupClaudeMd);
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      console.error("unexpected error checking CLAUDE.md, attempting to seed anyway", {
+        error: err instanceof Error ? err.message : String(err),
+        code,
+      });
+    }
     // No per-group CLAUDE.md yet — try to seed from global template.
     const globalClaudeMd = path.join(CONFIG_DIR, "global-CLAUDE.md");
     try {
@@ -291,11 +298,19 @@ async function processMessage(
     if (message.type === "system" && "subtype" in message && message.subtype === "init") {
       result.sessionId = message.session_id;
 
-      await ipc.publishOutput({
-        group: GROUP_FOLDER,
-        type: "session_update",
-        payload: { sessionId: message.session_id },
-      });
+      try {
+        await ipc.publishOutput({
+          group: GROUP_FOLDER,
+          type: "session_update",
+          payload: { sessionId: message.session_id },
+        });
+      } catch (publishErr) {
+        console.error("failed to publish output to orchestrator", {
+          messageType: message.type,
+          error: publishErr instanceof Error ? publishErr.message : String(publishErr),
+        });
+        throw publishErr;
+      }
     }
 
     // Extract text from assistant messages.
@@ -308,11 +323,19 @@ async function processMessage(
         for (const block of assistantMsg.content) {
           if (block.type === "text" && block.text) {
             result.responseText += block.text + "\n";
-            await ipc.publishOutput({
-              group: GROUP_FOLDER,
-              type: "message",
-              payload: { text: block.text },
-            });
+            try {
+              await ipc.publishOutput({
+                group: GROUP_FOLDER,
+                type: "message",
+                payload: { text: block.text },
+              });
+            } catch (publishErr) {
+              console.error("failed to publish output to orchestrator", {
+                messageType: message.type,
+                error: publishErr instanceof Error ? publishErr.message : String(publishErr),
+              });
+              throw publishErr;
+            }
           }
         }
       }
@@ -322,11 +345,19 @@ async function processMessage(
     if (message.type === "result" && "session_id" in message) {
       result.sessionId = message.session_id;
 
-      await ipc.publishOutput({
-        group: GROUP_FOLDER,
-        type: "session_update",
-        payload: { sessionId: message.session_id },
-      });
+      try {
+        await ipc.publishOutput({
+          group: GROUP_FOLDER,
+          type: "session_update",
+          payload: { sessionId: message.session_id },
+        });
+      } catch (publishErr) {
+        console.error("failed to publish output to orchestrator", {
+          messageType: message.type,
+          error: publishErr instanceof Error ? publishErr.message : String(publishErr),
+        });
+        throw publishErr;
+      }
     }
   }
 

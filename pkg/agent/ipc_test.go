@@ -221,3 +221,161 @@ func TestIPCClientSyncOnce(t *testing.T) {
 
 	t.Log("IPCClient has proper sync.Once fields for read idempotency")
 }
+
+// TestIPCClient_ReadInput_MultiGroupIsolation verifies that two IPCClients
+// bound to different groupJIDs do not cross-deliver input messages, even when
+// they share a single NATS connection.
+func TestIPCClient_ReadInput_MultiGroupIsolation(t *testing.T) {
+	nc := startTestNATS(t)
+
+	groupA := "iso-group-a@g.us"
+	groupB := "iso-group-b@g.us"
+
+	clientA, err := NewIPCClient(nc, groupA, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient A: %v", err)
+	}
+	clientB, err := NewIPCClient(nc, groupB, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient B: %v", err)
+	}
+
+	ctxA, cancelA := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelA()
+	ctxB, cancelB := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelB()
+
+	// Pre-create both streams (as the server normally would).
+	js, _ := jetstream.New(nc)
+	for _, g := range []string{groupA, groupB} {
+		sanitized := sanitizeGroupID(g)
+		if _, err := js.CreateOrUpdateStream(ctxA, jetstream.StreamConfig{
+			Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+			Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+			Retention: jetstream.LimitsPolicy,
+			MaxAge:    time.Hour,
+		}); err != nil {
+			t.Fatalf("create stream %s: %v", g, err)
+		}
+	}
+
+	// Subscribe both clients first so their consumers exist before publishing.
+	chA, errChA, err := clientA.ReadInput(ctxA)
+	if err != nil {
+		t.Fatalf("ReadInput A: %v", err)
+	}
+	chB, errChB, err := clientB.ReadInput(ctxB)
+	if err != nil {
+		t.Fatalf("ReadInput B: %v", err)
+	}
+
+	// Publish an input message to group A only.
+	sanitizedA := sanitizeGroupID(groupA)
+	inputSubjectA := "kraclaw.ipc." + sanitizedA + ".main.input"
+	payload, _ := json.Marshal(map[string]interface{}{
+		"group":   groupA,
+		"type":    "message",
+		"payload": json.RawMessage(`{"text":"for-A"}`),
+	})
+	if _, err := js.Publish(ctxA, inputSubjectA, payload); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	// Group A must receive the message.
+	select {
+	case msg, ok := <-chA:
+		if !ok {
+			t.Fatal("group A channel closed unexpectedly")
+		}
+		if msg.Type != "message" {
+			t.Errorf("group A msg.Type = %q, want %q", msg.Type, "message")
+		}
+	case err := <-errChA:
+		t.Fatalf("group A error: %v", err)
+	case <-ctxA.Done():
+		t.Fatal("timed out waiting for group A delivery")
+	}
+
+	// Group B must NOT receive it. Wait for B's short-lived context to expire
+	// and verify no message arrived in the meantime.
+	select {
+	case msg, ok := <-chB:
+		if ok {
+			t.Fatalf("group B received cross-delivered message: %+v", msg)
+		}
+		// Channel closed due to ctxB expiring is acceptable.
+	case err, ok := <-errChB:
+		if ok && err != nil {
+			// Context-cancel errors are acceptable here; only surface unexpected errors.
+			if !strings.Contains(err.Error(), "context") {
+				t.Fatalf("group B error: %v", err)
+			}
+		}
+	case <-ctxB.Done():
+		// ctxB expired with no cross-delivered message — the isolation invariant holds.
+	}
+}
+
+// TestIPCClient_ReadInput_MalformedMessage verifies that malformed (non-JSON)
+// input messages are ACK'd and skipped without panicking or breaking the
+// subscription.
+func TestIPCClient_ReadInput_MalformedMessage(t *testing.T) {
+	nc := startTestNATS(t)
+
+	groupJID := "malformed-input@g.us"
+	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Pre-create the stream.
+	js, _ := jetstream.New(nc)
+	sanitized := sanitizeGroupID(groupJID)
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    time.Hour,
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	// Subscribe first so the consumer exists before the malformed publish.
+	ch, errCh, err := client.ReadInput(ctx)
+	if err != nil {
+		t.Fatalf("ReadInput: %v", err)
+	}
+
+	inputSubject := "kraclaw.ipc." + sanitized + ".main.input"
+	if _, err := js.Publish(ctx, inputSubject, []byte("not-json")); err != nil {
+		t.Fatalf("publish malformed: %v", err)
+	}
+
+	// Now publish a valid message; if the malformed message was correctly ACK'd
+	// and skipped, the consume loop should still deliver this one.
+	validPayload, _ := json.Marshal(map[string]interface{}{
+		"group":   groupJID,
+		"type":    "message",
+		"payload": json.RawMessage(`{"text":"after-malformed"}`),
+	})
+	if _, err := js.Publish(ctx, inputSubject, validPayload); err != nil {
+		t.Fatalf("publish valid: %v", err)
+	}
+
+	select {
+	case msg, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed before valid message delivered")
+		}
+		if msg.Type != "message" {
+			t.Errorf("msg.Type = %q, want %q", msg.Type, "message")
+		}
+	case err := <-errCh:
+		t.Fatalf("ipc error: %v", err)
+	case <-ctx.Done():
+		t.Fatal("timed out: malformed message may have broken subscription")
+	}
+}

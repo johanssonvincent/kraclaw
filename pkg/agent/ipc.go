@@ -40,6 +40,9 @@ type IPCClient struct {
 	msgCh    chan *InboundMessage
 	errCh    chan error
 	readErr  error
+
+	mu            sync.Mutex
+	streamCreated bool
 }
 
 // NewIPCClient creates an IPC client for a specific group.
@@ -90,8 +93,13 @@ func (c *IPCClient) outputSubject() string {
 // ensureStream creates the IPC stream if it does not exist.
 // The server creates it first, but the agent calls this defensively.
 func (c *IPCClient) ensureStream(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.streamCreated {
+		return nil
+	}
 	sanitized := c.sanitized()
-	_, err := c.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	if _, err := c.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: c.streamName(),
 		Subjects: []string{
 			"kraclaw.ipc." + sanitized + ".*.input",
@@ -101,10 +109,10 @@ func (c *IPCClient) ensureStream(ctx context.Context) error {
 		Storage:   jetstream.FileStorage,
 		MaxAge:    ipc.StreamMaxAge,
 		Replicas:  1,
-	})
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("ensure ipc stream %s: %w", c.streamName(), err)
 	}
+	c.streamCreated = true
 	return nil
 }
 
@@ -147,6 +155,10 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 		c.msgCh = make(chan *InboundMessage, 64)
 		c.errCh = make(chan error, 1)
 		c.readErr = c.startReadInput(ctx, c.msgCh, c.errCh)
+		if c.readErr != nil {
+			c.msgCh = nil
+			c.errCh = nil
+		}
 	})
 	if c.readErr != nil {
 		return nil, nil, c.readErr
@@ -250,7 +262,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 						"agent_id", c.agentID,
 						"sequence", seq,
 						"error", err)
-					continue
+					return
 				}
 			case <-ctx.Done():
 				if err := jmsg.Nak(); err != nil {

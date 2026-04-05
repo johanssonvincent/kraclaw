@@ -54,10 +54,12 @@ type NATSBroker struct {
 	js     jetstream.JetStream
 	logger *slog.Logger
 
-	mu       sync.Mutex
-	cleanups []consumerCleanup // paired cancel + iterator for ordered cleanup
-	closed   bool
-	closedCh chan struct{}
+	mu            sync.Mutex
+	cleanups      map[int]consumerCleanup // paired cancel + iterator, keyed by id for O(1) removal
+	nextID        int
+	closed        bool
+	closedCh      chan struct{}
+	streamCreated sync.Map // sanitized group -> bool; caches successful ensureStream calls
 }
 
 // NewNATSBroker creates a NATSBroker using the provided NATS connection.
@@ -76,6 +78,7 @@ func NewNATSBroker(nc *nats.Conn, logger *slog.Logger) (*NATSBroker, error) {
 		nc:       nc,
 		js:       js,
 		logger:   logger,
+		cleanups: make(map[int]consumerCleanup),
 		closedCh: make(chan struct{}),
 	}, nil
 }
@@ -83,6 +86,9 @@ func NewNATSBroker(nc *nats.Conn, logger *slog.Logger) (*NATSBroker, error) {
 // ensureStream creates the per-group JetStream stream if it does not exist.
 func (b *NATSBroker) ensureStream(ctx context.Context, group string) (string, error) {
 	sanitized := sanitizeGroupID(group)
+	if _, ok := b.streamCreated.Load(sanitized); ok {
+		return sanitized, nil
+	}
 	name := ipcStreamName(sanitized)
 	_, err := b.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: name,
@@ -98,6 +104,7 @@ func (b *NATSBroker) ensureStream(ctx context.Context, group string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("ensure ipc stream %s: %w", name, err)
 	}
+	b.streamCreated.Store(sanitized, true)
 	return sanitized, nil
 }
 
@@ -216,7 +223,7 @@ func (b *NATSBroker) Close() error {
 	for _, cleanup := range b.cleanups {
 		cleanup.iter.Stop()
 	}
-	b.cleanups = nil
+	b.cleanups = make(map[int]consumerCleanup)
 	close(b.closedCh)
 	return nil
 }
@@ -240,7 +247,9 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 		cancel()
 		return nil, fmt.Errorf("consume: broker closed")
 	}
-	b.cleanups = append(b.cleanups, consumerCleanup{cancel: cancel, iter: iter})
+	id := b.nextID
+	b.nextID++
+	b.cleanups[id] = consumerCleanup{cancel: cancel, iter: iter}
 	b.mu.Unlock()
 
 	done := make(chan struct{}) // closed when the consumer goroutine exits
@@ -261,6 +270,11 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 	}()
 
 	go func() {
+		defer func() {
+			b.mu.Lock()
+			delete(b.cleanups, id)
+			b.mu.Unlock()
+		}()
 		defer close(done)
 		defer close(ch)
 		defer cancel()
@@ -308,7 +322,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 						seq = meta.Sequence.Stream
 					}
 					b.logger.Error("ack ipc message", "group", group, "sequence", seq, "error", err)
-					continue
+					return
 				}
 			case <-ctx.Done():
 				meta, _ := jmsg.Metadata()

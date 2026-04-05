@@ -271,7 +271,7 @@ test("IPCClient.publishOutput() sends a message", async (t) => {
   }
 });
 
-// Test 1.1: Promise.race() timeout race condition - timeout fires
+// Test 1.1: consumer.next({ expires: 5000 }) timeout path - timeout fires
 test("readInput() timeout fires and returns null without losing errors", async (t) => {
   const server = await startNatsServer();
   if (!server) { t.skip("nats-server not available"); return; }
@@ -369,8 +369,8 @@ test("concurrent readInput() calls handled safely without consumer conflicts", a
   }
 });
 
-// Test 1.1b: Promise.race() - verify subscription is cleaned up after timeout
-test("readInput() cleans up subscription after Promise.race() timeout", async (t) => {
+// Test 1.1b: consumer.next({ expires: 5000 }) - verify subscription is cleaned up after timeout
+test("readInput() cleans up subscription after consumer.next({ expires: 5000 }) timeout", async (t) => {
   const server = await startNatsServer();
   if (!server) { t.skip("nats-server not available"); return; }
 

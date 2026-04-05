@@ -1,13 +1,16 @@
 package ipc
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -765,28 +768,30 @@ func TestNATSBrokerConcurrentAgents(t *testing.T) {
 	}
 }
 
-// Test 1.2: ACK failure handling - verifies broker logs errors and continues
-func TestNATSBrokerAckFailure(t *testing.T) {
-	// This test is a regression test for the ACK-failure-kills-goroutine bug.
-	// It verifies that after delivering a first message, the broker is still
-	// operational — which it would not be if the consume goroutine returned on
-	// ACK failure. The test cannot simulate real ACK network failures with
-	// embedded NATS, so it validates the behaviour indirectly.
+// TestNATSBrokerMessageDeliveryAndRecovery verifies that consecutive messages
+// are delivered successfully through the broker. Historically this test was
+// framed as an "ACK failure" regression test, but embedded NATS cannot simulate
+// real ACK network failures — so the test only validates the happy-path: a
+// message is delivered, ACK'd, and a subsequent message is also delivered on
+// the same subscription. Since the C1 fix made the consume goroutine exit on
+// ACK failure (return instead of continue), any test that actually triggered
+// an ACK failure would see the channel close, not receive another message.
+func TestNATSBrokerMessageDeliveryAndRecovery(t *testing.T) {
 	tests := []struct {
 		name     string
 		scenario string
 	}{
 		{
-			name:     "ack fails - broker continues consuming",
-			scenario: "connection_lost",
+			name:     "first message delivered to channel",
+			scenario: "first_delivery",
 		},
 		{
-			name:     "ack fails - message stays in stream",
-			scenario: "consumer_error",
+			name:     "subsequent message delivered on same subscription",
+			scenario: "subsequent_delivery",
 		},
 		{
-			name:     "ack fails - broker logs with context",
-			scenario: "temporary_failure",
+			name:     "broker continues consuming across multiple messages",
+			scenario: "multi_delivery",
 		},
 	}
 
@@ -813,8 +818,7 @@ func TestNATSBrokerAckFailure(t *testing.T) {
 				t.Fatalf("PublishOutput: %v", err)
 			}
 
-			// Receive the message - even if ACK fails internally,
-			// the message should still be delivered to the channel
+			// Receive the first message from the subscription.
 			select {
 			case got, ok := <-ch:
 				if !ok {
@@ -830,7 +834,7 @@ func TestNATSBrokerAckFailure(t *testing.T) {
 					t.Errorf("payload = %s, want {\"text\":\"test-ack\"}", got.Payload)
 				}
 			case <-ctx.Done():
-				t.Fatal("timed out waiting for message - broker may have stopped on ACK failure")
+				t.Fatal("timed out waiting for first message")
 			}
 
 			// Verify broker is still operational by publishing another message
@@ -844,17 +848,17 @@ func TestNATSBrokerAckFailure(t *testing.T) {
 				t.Fatalf("second PublishOutput: %v", err)
 			}
 
-			// Should receive the second message - proves broker recovered from ACK failure
+			// Should receive the second message on the same subscription.
 			select {
 			case got, ok := <-ch:
 				if !ok {
-					t.Fatal("channel closed - broker did not recover from ACK failure")
+					t.Fatal("channel closed before second message")
 				}
 				if string(got.Payload) != `{"text":"test-ack-2"}` {
 					t.Errorf("second message payload = %s, want {\"text\":\"test-ack-2\"}", got.Payload)
 				}
 			case <-ctx.Done():
-				t.Fatal("timed out on second message - broker did not recover from ACK failure")
+				t.Fatal("timed out waiting for second message")
 			}
 		})
 	}
@@ -906,5 +910,134 @@ func TestNATSBrokerReadInputClosedBroker(t *testing.T) {
 	}
 	if err == nil {
 		t.Error("expected error when broker is closed, got nil")
+	}
+}
+
+// syncBuffer is a concurrency-safe wrapper around bytes.Buffer for use as an
+// slog handler sink from multiple goroutines.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// TestNATSBrokerCloseCleanupOrdering verifies that Close() cancels contexts
+// before stopping iterators so that consume goroutines observe ctx.Err() != nil
+// when iter.Next() returns, preventing spurious "ipc message iterator error"
+// log lines. Also verifies all consume goroutines have exited after Close().
+func TestNATSBrokerCloseCleanupOrdering(t *testing.T) {
+	nc := startEmbeddedNATS(t)
+
+	logSink := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(logSink, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	broker, err := NewNATSBroker(nc, logger)
+	if err != nil {
+		t.Fatalf("NewNATSBroker: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	groups := []string{
+		"cleanup-order-a@g.us",
+		"cleanup-order-b@g.us",
+		"cleanup-order-c@g.us",
+	}
+
+	chans := make([]<-chan *IPCMessage, 0, len(groups))
+	for _, g := range groups {
+		ch, err := broker.SubscribeOutput(ctx, g)
+		if err != nil {
+			t.Fatalf("SubscribeOutput(%s): %v", g, err)
+		}
+		chans = append(chans, ch)
+	}
+
+	// Give the consume goroutines a moment to block on iter.Next().
+	time.Sleep(50 * time.Millisecond)
+
+	if err := broker.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// All channels must close — proves every consume goroutine exited.
+	deadline := time.After(5 * time.Second)
+	for i, ch := range chans {
+		select {
+		case _, ok := <-ch:
+			if ok {
+				// Drain any in-flight messages until close.
+				for {
+					select {
+					case _, ok := <-ch:
+						if !ok {
+							goto next
+						}
+					case <-deadline:
+						t.Fatalf("group %d: channel did not close after Close()", i)
+					}
+				}
+			}
+		case <-deadline:
+			t.Fatalf("group %d: channel did not close after Close()", i)
+		}
+	next:
+	}
+
+	// Verify no "ipc message iterator error" log lines — those would indicate
+	// iter.Stop() fired before the context was cancelled (wrong ordering).
+	if got := logSink.String(); strings.Contains(got, "ipc message iterator error") {
+		t.Errorf("unexpected iterator error log after Close(); logs:\n%s", got)
+	}
+}
+
+// TestNATSBrokerDeleteStreamsWithActiveConsumer verifies DeleteStreams can be
+// called while a consume goroutine is active for the target group, and that
+// the subscription channel is eventually closed.
+func TestNATSBrokerDeleteStreamsWithActiveConsumer(t *testing.T) {
+	broker, _ := setupNATS(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	group := "delete-active-consumer@g.us"
+
+	ch, err := broker.SubscribeOutput(ctx, group)
+	if err != nil {
+		t.Fatalf("SubscribeOutput: %v", err)
+	}
+
+	// Give the consume goroutine a moment to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// Must not panic.
+	if err := broker.DeleteStreams(ctx, group); err != nil {
+		t.Fatalf("DeleteStreams: %v", err)
+	}
+
+	// The consume goroutine should eventually exit once the stream is gone,
+	// closing the output channel.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("subscription channel did not close after DeleteStreams")
+		}
 	}
 }
