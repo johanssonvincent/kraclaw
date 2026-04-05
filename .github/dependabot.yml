@@ -21,14 +21,3 @@ updates:
       - ci
     commit-message:
       prefix: "chore(ci):"
-
-  - package-ecosystem: npm
-    directory: "/agent"
-    schedule:
-      interval: weekly
-      day: monday
-    labels:
-      - dependencies
-      - agent
-    commit-message:
-      prefix: "chore(deps):"
