@@ -152,11 +152,32 @@ async function main(): Promise<void> {
         console.warn("skipping malformed ipc message", { error: err.message });
         continue;
       }
-      throw err;
+      // Non-recoverable IPC error: publish shutdown so the orchestrator marks
+      // the group inactive immediately rather than waiting for the liveness ticker.
+      console.error("ipc.readInput failed, initiating graceful shutdown", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      running = false;
+      try {
+        await ipc.publishOutput({ group: GROUP_FOLDER, type: "shutdown", payload: {} });
+      } catch (pubErr) {
+        console.error("failed to publish shutdown after ipc error", pubErr);
+      }
+      try {
+        await ipc.close();
+      } catch (closeErr) {
+        console.error("failed to close ipc after fatal error", closeErr);
+      }
+      process.exit(1);
     }
     if (!input) {
       if (++consecutiveEmpty >= 12) {
         console.error("No IPC input for ~60 seconds, giving up");
+        try {
+          await ipc.publishOutput({ group: GROUP_FOLDER, type: "shutdown", payload: {} });
+        } catch (pubErr) {
+          console.error("failed to publish shutdown on idle timeout", pubErr);
+        }
         break;
       }
       continue;
