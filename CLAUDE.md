@@ -46,6 +46,7 @@ make docker-build   # Build container image
 - **Config:** `envconfig` tags on config structs.
 - **Testing:** Table-driven tests, embedded `nats-server/v2` for NATS JetStream, `go-sqlmock` for MySQL, `client-go/kubernetes/fake` for K8s.
 - **Commit messages:** Conventional commits — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
+- **PR Docker images:** Tag as `{current-version}-PR-{pr-number}` (e.g., `v1.2.3-PR-42`).
 - **Errors:** Always wrap with `fmt.Errorf("<operation>: %w", err)`.
 - **Ports:** gRPC (:50051), REST (:8080), credential proxy (:3001).
 
