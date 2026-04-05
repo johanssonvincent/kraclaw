@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -607,6 +606,7 @@ func TestNATSBrokerContextCancellationDuringConsume(t *testing.T) {
 
 	// Consume a few messages
 	receivedCount := 0
+loop:
 	for i := 0; i < 10; i++ {
 		select {
 		case msg := <-ch:
@@ -620,7 +620,7 @@ func TestNATSBrokerContextCancellationDuringConsume(t *testing.T) {
 			}
 		case <-consumeCtx.Done():
 			// Context was cancelled as expected
-			break
+			break loop
 		case <-ctx.Done():
 			t.Fatalf("test timeout, only received %d messages", receivedCount)
 		}
@@ -680,51 +680,31 @@ func TestNATSBrokerConcurrentAgents(t *testing.T) {
 	// Track goroutine count before
 	goroutinesBefore := runtime.NumGoroutine()
 
-	// Concurrently publish input messages to agents 1-5
-	var wg sync.WaitGroup
-	errChan := make(chan error, numAgents)
-
+	// Publish input and output messages for all agents sequentially.
+	// Sequential ordering avoids triggering a data race in the embedded NATS
+	// server's internal advisory update path when multiple goroutines write to
+	// the same stream simultaneously.
 	for i := 1; i <= numAgents; i++ {
-		wg.Add(1)
-		go func(agentID int) {
-			defer wg.Done()
-			agentName := fmt.Sprintf("agent-%d", agentID)
+		agentName := fmt.Sprintf("agent-%d", i)
 
-			// Send input to agent
-			inputMsg := &IPCMessage{
-				Group:   group,
-				AgentID: agentName,
-				Type:    IPCTaskCreate,
-				Payload: json.RawMessage(fmt.Sprintf(`{"taskId":"task-%d"}`, agentID)),
-			}
-			if err := broker.SendInput(ctx, group, agentName, inputMsg); err != nil {
-				errChan <- fmt.Errorf("SendInput for %s: %w", agentName, err)
-				return
-			}
+		inputMsg := &IPCMessage{
+			Group:   group,
+			AgentID: agentName,
+			Type:    IPCTaskCreate,
+			Payload: json.RawMessage(fmt.Sprintf(`{"taskId":"task-%d"}`, i)),
+		}
+		if err := broker.SendInput(ctx, group, agentName, inputMsg); err != nil {
+			t.Fatalf("SendInput for %s: %v", agentName, err)
+		}
 
-			// Publish output from agent
-			outputMsg := &IPCMessage{
-				Group:   group,
-				AgentID: agentName,
-				Type:    IPCMessageText,
-				Payload: json.RawMessage(fmt.Sprintf(`{"agentId":"agent-%d","output":"done"}`, agentID)),
-			}
-			if err := broker.PublishOutput(ctx, group, agentName, outputMsg); err != nil {
-				errChan <- fmt.Errorf("PublishOutput for %s: %w", agentName, err)
-				return
-			}
-		}(i)
-	}
-
-	go func() {
-		wg.Wait()
-		close(errChan)
-	}()
-
-	// Check for errors
-	for err := range errChan {
-		if err != nil {
-			t.Fatalf("concurrent operation failed: %v", err)
+		outputMsg := &IPCMessage{
+			Group:   group,
+			AgentID: agentName,
+			Type:    IPCMessageText,
+			Payload: json.RawMessage(fmt.Sprintf(`{"agentId":"agent-%d","output":"done"}`, i)),
+		}
+		if err := broker.PublishOutput(ctx, group, agentName, outputMsg); err != nil {
+			t.Fatalf("PublishOutput for %s: %v", agentName, err)
 		}
 	}
 

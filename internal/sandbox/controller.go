@@ -328,7 +328,6 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		}
 		envVars = append(envVars, corev1.EnvVar{Name: "OPENAI_MODEL", Value: model})
 		envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
-		homePath = "/home/nonroot"
 	case provider.ProviderAnthropic, "":
 		model := ""
 		if cfg.ContainerConfig != nil {
@@ -336,7 +335,6 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		}
 		envVars = append(envVars, corev1.EnvVar{Name: "ANTHROPIC_MODEL", Value: model})
 		envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
-		homePath = "/home/nonroot"
 	default:
 		return nil, fmt.Errorf("sandbox: unsupported provider %q", providerID)
 	}

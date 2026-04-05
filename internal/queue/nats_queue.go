@@ -118,7 +118,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 	if err != nil {
 		return nil, fmt.Errorf("fetch queue message: %w", err)
 	}
-	for msg := range msgs.Messages() {
+	if msg, ok := <-msgs.Messages(); ok {
 		var qm QueueMessage
 		if err := json.Unmarshal(msg.Data(), &qm); err != nil {
 			meta, _ := msg.Metadata()
