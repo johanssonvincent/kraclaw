@@ -246,6 +246,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 						"agent_id", c.agentID,
 						"sequence", seq,
 						"error", err)
+					return
 				}
 			case <-ctx.Done():
 				if err := jmsg.Nak(); err != nil {

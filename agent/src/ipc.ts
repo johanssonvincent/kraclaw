@@ -35,6 +35,7 @@ export class IPCClient {
   private groupJID: string;
   private agentID: string;
   private natsUrl: string;
+  private pendingReadInput: Promise<IPCMessage | null> | null = null;
 
   constructor(natsUrl: string, groupJID: string, agentID: string = "node") {
     this.natsUrl = natsUrl;
@@ -140,7 +141,19 @@ export class IPCClient {
   }
 
   // readInput reads the next input message with timeout
+  // Uses a pending promise to serialize concurrent calls (sync.Once equivalent)
   async readInput(): Promise<IPCMessage | null> {
+    if (this.pendingReadInput) {
+      return this.pendingReadInput;
+    }
+    this.pendingReadInput = this.doReadInput().finally(() => {
+      this.pendingReadInput = null;
+    });
+    return this.pendingReadInput;
+  }
+
+  // doReadInput performs the actual read operation
+  private async doReadInput(): Promise<IPCMessage | null> {
     if (!this.jsClient || !this.jsManager) {
       throw new Error("jetstream client not initialized - call connect() first");
     }
@@ -196,7 +209,24 @@ export class IPCClient {
 
           // Parse the message
           const data = new TextDecoder().decode(jmsg.data);
-          const parsed = JSON.parse(data);
+          let parsed;
+          try {
+            parsed = JSON.parse(data);
+          } catch (parseErr) {
+            console.error("ipc read input: failed to parse JSON", {
+              error: parseErr instanceof Error ? parseErr.message : String(parseErr),
+              data: data.substring(0, 200),
+            });
+            // Acknowledge the malformed message so we don't loop forever
+            if (jmsg.ack) {
+              try {
+                await jmsg.ack();
+              } catch (ackErr) {
+                console.error("failed to ack malformed message", ackErr);
+              }
+            }
+            continue;
+          }
 
           const msg: IPCMessage = {
             group: this.groupJID,
@@ -206,7 +236,11 @@ export class IPCClient {
 
           // Explicitly acknowledge the message
           if (jmsg.ack) {
-            await jmsg.ack();
+            try {
+              await jmsg.ack();
+            } catch (ackErr) {
+              console.error("ipc read input: failed to acknowledge message", ackErr);
+            }
           }
 
           return msg;
@@ -222,13 +256,6 @@ export class IPCClient {
         `ipc read input: ${err instanceof Error ? err.message : String(err)}`
       );
     }
-  }
-
-  // checkClose checks if a close signal was sent (stub implementation)
-  async checkClose(): Promise<boolean> {
-    // This would check for a special "close" message on the input stream
-    // For now, return false to indicate no close signal
-    return false;
   }
 
   // publishOutput publishes a message from the agent to the server

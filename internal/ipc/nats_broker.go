@@ -304,6 +304,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 						seq = meta.Sequence.Stream
 					}
 					b.logger.Error("ack ipc message", "group", group, "sequence", seq, "error", err)
+					return
 				}
 			case <-ctx.Done():
 				meta, _ := jmsg.Metadata()

@@ -95,7 +95,7 @@ func TestNATSIPCAndQueueRoundTrip(t *testing.T) {
 		t.Cleanup(func() { _ = broker.Close() })
 
 		group := "integration-ipc-output"
-		// SubscribeOutput BEFORE PublishOutput — required by WorkQueuePolicy.
+		// SubscribeOutput BEFORE PublishOutput — required by LimitsPolicy with DeliverAllPolicy.
 		ch, err := broker.SubscribeOutput(ctx, group)
 		if err != nil {
 			t.Fatalf("SubscribeOutput: %v", err)
@@ -134,7 +134,7 @@ func TestNATSIPCAndQueueRoundTrip(t *testing.T) {
 		t.Cleanup(func() { _ = broker.Close() })
 
 		group := "integration-ipc-input"
-		// ReadInput BEFORE SendInput — required by WorkQueuePolicy.
+		// ReadInput BEFORE SendInput — required by LimitsPolicy with DeliverAllPolicy.
 		ch, err := broker.ReadInput(ctx, group, ipc.DefaultAgentID)
 		if err != nil {
 			t.Fatalf("ReadInput: %v", err)
@@ -162,8 +162,8 @@ func TestNATSIPCAndQueueRoundTrip(t *testing.T) {
 		}
 	})
 
-	// subscribe-before-publish regression: WorkQueuePolicy streams require a
-	// consumer to exist before publish, otherwise messages are lost
+	// subscribe-before-publish regression: LimitsPolicy IPC streams with DeliverAllPolicy
+	// require a consumer to exist before publish, otherwise messages are lost
 	// (InterestPolicy regression). This sub-test guards that SubscribeOutput
 	// (which creates the durable consumer) is always called before PublishOutput.
 	t.Run("subscribe-before-publish regression", func(t *testing.T) {
@@ -196,7 +196,7 @@ func TestNATSIPCAndQueueRoundTrip(t *testing.T) {
 				t.Errorf("Type = %q, want %q", got.Type, want.Type)
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatal("regression: message lost — SubscribeOutput must be called before PublishOutput on WorkQueuePolicy streams")
+			t.Fatal("regression: message lost — SubscribeOutput must be called before PublishOutput on LimitsPolicy IPC streams")
 		}
 	})
 }

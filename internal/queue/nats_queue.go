@@ -38,10 +38,8 @@ type NATSQueue struct {
 	gas    groupActiveStore
 	logger *slog.Logger
 
-	mu       sync.Mutex
-	cancels  []context.CancelFunc
-	closed   bool
-	closedCh chan struct{}
+	mu     sync.Mutex
+	closed bool
 }
 
 // NewNATSQueue creates a NATSQueue. gas must not be nil.
@@ -60,11 +58,10 @@ func NewNATSQueue(nc *nats.Conn, gas groupActiveStore, logger *slog.Logger) (*NA
 		return nil, fmt.Errorf("nats queue: jetstream: %w", err)
 	}
 	return &NATSQueue{
-		nc:       nc,
-		js:       js,
-		gas:      gas,
-		logger:   logger,
-		closedCh: make(chan struct{}),
+		nc:     nc,
+		js:     js,
+		gas:    gas,
+		logger: logger,
 	}, nil
 }
 
@@ -135,6 +132,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 				"raw", string(msg.Data()))
 			if err := msg.Ack(); err != nil {
 				q.logger.Error("ack malformed queue message", "subject", msg.Subject(), "sequence", seq, "error", err)
+				return nil, fmt.Errorf("dequeue: malformed message ack: %w", err)
 			}
 			// Message was successfully discarded; caller should retry Dequeue for next message.
 			return nil, nil
@@ -256,10 +254,5 @@ func (q *NATSQueue) Close() error {
 		return nil
 	}
 	q.closed = true
-	for _, cancel := range q.cancels {
-		cancel()
-	}
-	q.cancels = nil
-	close(q.closedCh)
 	return nil
 }

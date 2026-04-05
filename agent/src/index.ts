@@ -5,9 +5,6 @@ import { IPCClient } from "./ipc.js";
 import { applySetModel } from "./model_switch.js";
 import type { IPCMessage } from "./types.js";
 
-// TODO: migrate Node agent IPC from Redis to NATS JetStream
-// The Node agent's IPC layer (ipc.ts) still uses Redis. Until it is migrated,
-// fail fast with a clear error rather than silently consuming REDIS_URL.
 if (!process.env.NATS_URL) {
   console.error("NATS_URL is required (Redis IPC is no longer supported)");
   process.exit(1);
@@ -93,9 +90,11 @@ async function main(): Promise<void> {
 
   const AGENT_ID = process.env.KRACLAW_AGENT_ID ?? "node";
   const ipc = new IPCClient(NATS_URL, GROUP_FOLDER, AGENT_ID);
+  await ipc.connect();
   let sessionId: string | undefined = INITIAL_SESSION_ID;
   let currentModel = INITIAL_MODEL;
   let running = true;
+  let consecutiveEmpty = 0;
 
   // Graceful shutdown: notify orchestrator so the group gets marked inactive.
   let shuttingDown = false;
@@ -122,18 +121,16 @@ async function main(): Promise<void> {
   const systemPrompt = buildSystemPrompt();
 
   while (running) {
-    // Check close signal.
-    const shouldClose = await ipc.checkClose();
-    if (shouldClose) {
-      console.log("close signal received, shutting down");
-      break;
-    }
-
     // Read input from IPC.
     const input = await ipc.readInput();
     if (!input) {
+      if (++consecutiveEmpty >= 12) {
+        console.error("No IPC input for ~60 seconds, giving up");
+        break;
+      }
       continue;
     }
+    consecutiveEmpty = 0;
 
     console.log("received input", { type: input.type, id: input.id });
 
@@ -169,11 +166,15 @@ async function main(): Promise<void> {
       );
     } catch (err) {
       console.error("failed to process message", err);
-      await ipc.publishOutput({
-        group: GROUP_FOLDER,
-        type: "message",
-        payload: { text: "I encountered an error processing your message. Please try again." },
-      });
+      try {
+        await ipc.publishOutput({
+          group: GROUP_FOLDER,
+          type: "message",
+          payload: { text: "I encountered an error processing your message. Please try again." },
+        });
+      } catch (publishErr) {
+        console.error("failed to send error response to orchestrator", publishErr);
+      }
     }
   }
 
