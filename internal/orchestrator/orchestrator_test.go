@@ -1431,6 +1431,61 @@ func TestDeactivate_PendingMessagesTriggersReprocessing(t *testing.T) {
 	close(processBlock)
 }
 
+// TestDeactivate_PendingCheckFailedTriggersReprocessing verifies that when
+// GetMessagesSince returns an error during deactivation, pendingCheckFailed is
+// set and processGroupMessages is still triggered defensively.
+func TestDeactivate_PendingCheckFailedTriggersReprocessing(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
+
+	group := store.Group{
+		JID:    "group1@g.us",
+		Folder: "test-group",
+		IsMain: true,
+	}
+	o.registeredGroups["group1@g.us"] = group
+	q.active["group1@g.us"] = true
+
+	// First GetMessagesSince call (from deactivate's pending check) returns an error,
+	// triggering pendingCheckFailed = true. The hook clears the error on the second
+	// call so processGroupMessages can proceed without panicking.
+	var callCount atomic.Int32
+	processStarted := make(chan struct{})
+	processBlock := make(chan struct{})
+	s.getMessagesSinceErr = errors.New("store unavailable")
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) < 2 {
+			return // first call: leave error set so deactivate sees it
+		}
+		s.getMessagesSinceErr = nil
+		select {
+		case processStarted <- struct{}{}:
+		default:
+		}
+		<-processBlock
+	}
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
+
+	// processGroupMessages must have been triggered even though the pending check failed.
+	select {
+	case <-processStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processGroupMessages was not triggered after pendingCheckFailed")
+	}
+
+	// Clear messages and unblock the goroutine so it finishes cleanly.
+	s.messages["group1@g.us"] = nil
+	close(processBlock)
+}
+
 func TestDeactivate_NoRollbackWhenCursorsMatch(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()

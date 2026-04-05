@@ -46,8 +46,8 @@ type consumerCleanup struct {
 //
 // Per-group stream topology:
 //   - Stream name: KRACLAW_IPC_{sanitized_group}
-//   - Input subject:  kraclaw.ipc.{sanitized}.{agentID}.input
-//   - Output subject: kraclaw.ipc.{sanitized}.{agentID}.output
+//   - Input subject:  kraclaw.ipc.{sanitized}.{sanitized_agent_id}.input
+//   - Output subject: kraclaw.ipc.{sanitized}.{sanitized_agent_id}.output
 //   - Server subscribes to wildcard: kraclaw.ipc.{sanitized}.*.output
 type NATSBroker struct {
 	nc     *nats.Conn

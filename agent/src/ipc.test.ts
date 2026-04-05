@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { connect as natsConnect, AckPolicy, DeliverPolicy } from "nats";
 
-import { IPCClient } from "./ipc.js";
+import { IPCClient, MalformedMessageError } from "./ipc.js";
 import type { IPCMessage } from "./types.js";
 
 // Helper: wait for a port to become available
@@ -405,5 +405,70 @@ test("readInput() cleans up subscription after consumer.next({ expires: 5000 }) 
     await client.close();
     serverConn.close();
     server!.kill();
+  }
+});
+
+// Test: readInput() throws MalformedMessageError on non-JSON payload and ACKs the message.
+// The ACK is verified indirectly: a second readInput() after the throw returns null
+// (timeout) rather than re-receiving the malformed payload, confirming it was consumed.
+test("readInput() throws MalformedMessageError for non-JSON payload and ACKs the message", async (t) => {
+  const server = await startNatsServer(14229);
+  if (!server) { t.skip("nats-server not available"); return; }
+
+  const groupJID = "test@malformed.us";
+  const agentID = "agent-malformed";
+  const sanitizedGroup = sanitizeGroupID(groupJID);
+  // sanitizeAgentID: replace non-alphanumeric/dash/underscore with underscore, max 32 chars
+  const sanitizedAgent = agentID.replace(/[^a-zA-Z0-9_-]/g, "_").substring(0, 32);
+  const inputSubject = `kraclaw.ipc.${sanitizedGroup}.${sanitizedAgent}.input`;
+
+  const client = new IPCClient(server.url, groupJID, agentID);
+  const serverConn = await natsConnect({ servers: server.url });
+
+  try {
+    await client.connect();
+
+    const jsm = await serverConn.jetstreamManager();
+    const js = serverConn.jetstream();
+
+    try {
+      await jsm.streams.add({
+        name: `KRACLAW_IPC_${sanitizedGroup.toUpperCase()}`,
+        subjects: [
+          `kraclaw.ipc.${sanitizedGroup}.*.input`,
+          `kraclaw.ipc.${sanitizedGroup}.*.output`,
+        ],
+      });
+    } catch {
+      // stream already exists
+    }
+
+    // Publish invalid JSON to the input subject.
+    const encoder = new TextEncoder();
+    await js.publish(inputSubject, encoder.encode("not valid json {{{"));
+
+    // readInput() must throw MalformedMessageError, not return null or another error.
+    await assert.rejects(
+      () => client.readInput(),
+      (err: unknown) => {
+        assert.ok(
+          err instanceof MalformedMessageError,
+          `expected MalformedMessageError, got ${err instanceof Error ? err.constructor.name : String(err)}`
+        );
+        return true;
+      }
+    );
+
+    // A second readInput() should time out (return null), not re-receive the malformed
+    // message. This confirms the message was ACK'd before the throw.
+    const second = await Promise.race([
+      client.readInput(),
+      new Promise<IPCMessage | null>((resolve) => setTimeout(() => resolve(null), 6000)),
+    ]);
+    assert.equal(second, null, "second readInput should time out — malformed message was ACK'd");
+  } finally {
+    await client.close();
+    serverConn.close();
+    server.kill();
   }
 });
