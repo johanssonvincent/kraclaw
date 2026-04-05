@@ -1,6 +1,7 @@
 import {
   connect,
   NatsConnection,
+  NatsError,
   RetentionPolicy,
   StorageType,
   DeliverPolicy,
@@ -9,6 +10,44 @@ import {
 import { createHash } from "crypto";
 import type { IPCMessage } from "./types.js";
 import type { JetStreamClient, JetStreamManager } from "nats";
+
+// MalformedMessageError is thrown when an IPC message fails to parse. The
+// caller should distinguish this from "no message waiting" so that malformed
+// messages do not count toward the empty-poll giving-up threshold.
+export class MalformedMessageError extends Error {
+  constructor(msg?: string) {
+    super(msg ?? "malformed ipc message");
+    this.name = "MalformedMessageError";
+  }
+}
+
+// JetStream API error codes (see nats.js source: jetstream/jsapi_types).
+// These are stable wire-level codes returned by the NATS server.
+const JS_ERR_STREAM_NAME_IN_USE = 10058;
+const JS_ERR_CONSUMER_NAME_EXISTS = 10148;
+
+// isStreamExistsError checks whether a JetStream "stream already exists" error
+// was returned. Prefers the typed NatsError.api_error.err_code (10058) when
+// available; falls back to defensive string matching for older nats.js
+// releases that may not surface the code consistently. nats.js v3+ introduces
+// richer typed errors — revisit this when upgrading.
+function isStreamExistsError(err: unknown): boolean {
+  if (err instanceof NatsError && err.api_error?.err_code === JS_ERR_STREAM_NAME_IN_USE) {
+    return true;
+  }
+  const s = err instanceof Error ? err.message : String(err);
+  return s.includes("stream already exists") || s.includes("STREAM_EXISTS") || s.includes("stream name already in use");
+}
+
+// isConsumerExistsError checks whether a JetStream "consumer already exists"
+// error was returned. See isStreamExistsError for rationale.
+function isConsumerExistsError(err: unknown): boolean {
+  if (err instanceof NatsError && err.api_error?.err_code === JS_ERR_CONSUMER_NAME_EXISTS) {
+    return true;
+  }
+  const s = err instanceof Error ? err.message : String(err);
+  return s.includes("consumer already exists") || s.includes("CONSUMER_EXISTS") || s.includes("consumer name already in use");
+}
 
 // Max age for IPC stream: 1 hour (must match server-side NATSBroker)
 const IPC_STREAM_MAX_AGE = 60 * 60 * 1_000_000_000; // nanoseconds
@@ -141,12 +180,7 @@ export class IPCClient {
         });
       } catch (createErr) {
         // Race condition: stream was created by server or another agent instance
-        if (
-          !(
-            String(createErr).includes("stream already exists") ||
-            String(createErr).includes("STREAM_EXISTS")
-          )
-        ) {
+        if (!isStreamExistsError(createErr)) {
           throw createErr;
         }
       }
@@ -154,6 +188,8 @@ export class IPCClient {
   }
 
   // readInput reads the next input message, waiting up to 5 seconds for one to arrive.
+  // Note: on the first call, consumer and stream setup adds additional network latency
+  // beyond the 5-second window.
   // A pending promise serializes concurrent callers so only one pull is in-flight at a time.
   async readInput(): Promise<IPCMessage | null> {
     if (this.pendingReadInput) {
@@ -196,12 +232,7 @@ export class IPCClient {
         });
       } catch (createErr) {
         // Race condition: consumer was created by another agent instance
-        if (
-          !(
-            String(createErr).includes("consumer already exists") ||
-            String(createErr).includes("CONSUMER_EXISTS")
-          )
-        ) {
+        if (!isConsumerExistsError(createErr)) {
           throw createErr;
         }
       }
@@ -215,12 +246,13 @@ export class IPCClient {
     try {
       parsed = JSON.parse(new TextDecoder().decode(jmsg.data));
     } catch (parseErr) {
+      const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
       console.error("ipc read input: failed to parse JSON", {
-        error: parseErr instanceof Error ? parseErr.message : String(parseErr),
+        error: errMsg,
         data: new TextDecoder().decode(jmsg.data).substring(0, 200),
       });
       await jmsg.ack();
-      return null;
+      throw new MalformedMessageError(errMsg);
     }
 
     const msg: IPCMessage = {
@@ -263,7 +295,11 @@ export class IPCClient {
   // Close closes the NATS connection
   async close(): Promise<void> {
     if (this.pendingReadInput) {
-      await this.pendingReadInput.catch(() => {});
+      await this.pendingReadInput.catch((err) => {
+        console.error("ipc close: pending read failed during shutdown", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
       this.pendingReadInput = null;
     }
     if (this.nc) {

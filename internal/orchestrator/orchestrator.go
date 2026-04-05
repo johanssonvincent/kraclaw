@@ -195,7 +195,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}
 	}()
 
-	// 5.5. Clean up orphaned sandboxes from previous runs.
+	// 5. Clean up orphaned sandboxes from previous runs.
 	if o.sandbox != nil {
 		if err := o.sandbox.CleanupOrphans(ctx); err != nil {
 			o.log.Error("orphan cleanup at startup failed", "error", err)
@@ -203,13 +203,13 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}
 	}
 
-	// 5.55. Reconcile the active group set against actual K8s state.
+	// 6. Reconcile the active group set against actual K8s state.
 	// Sandboxes that completed or were deleted while the server was down leave
 	// stale entries in the active group store.  If enough accumulate they exceed
 	// MaxConcurrent and prevent any new sandbox from starting.
 	o.reconcileActiveSet(ctx)
 
-	// 5.6. Start periodic orphan cleanup.
+	// 7. Start periodic orphan cleanup.
 	if o.sandbox != nil {
 		go func() {
 			ticker := time.NewTicker(10 * time.Minute)
@@ -227,18 +227,18 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}()
 	}
 
-	// 5.7. Start sandbox watcher with reconnect loop.
+	// 8. Start sandbox watcher with reconnect loop.
 	if o.sandbox != nil {
 		go o.sandboxWatcher(ctx)
 	}
 
-	// 6. Start message loop in goroutine.
+	// 9. Start message loop in goroutine.
 	go o.messageLoop(ctx)
 
-	// 7. Recover pending messages.
+	// 10. Recover pending messages.
 	o.recoverPendingMessages(ctx)
 
-	// 8. Block on ctx.Done().
+	// 11. Block on ctx.Done().
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -1039,8 +1039,10 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 		agentTs := o.lastAgentTimestamp[chatJID]
 		o.mu.Unlock()
 		pending, err := o.store.GetMessagesSince(ctx, chatJID, agentTs, 1)
+		pendingCheckFailed := false
 		if err != nil {
-			o.log.Error("failed to check pending messages", "group", group.Name, "error", err)
+			o.log.Error("failed to check pending messages; triggering recovery defensively", "group", group.Name, "error", err)
+			pendingCheckFailed = true
 		}
 		// Also drain the NATS queue for scheduled tasks.
 		// Dequeue returns nil,nil for both an empty queue and a malformed-message
@@ -1066,7 +1068,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				"group", group.Name, "retries", maxMalformedRetries)
 		}
 
-		if len(pending) > 0 || qMsg != nil {
+		if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
 			go func() {
 				if err := o.processGroupMessages(ctx, chatJID); err != nil {
 					o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
@@ -1107,6 +1109,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				}
 				// Reconnect with exponential backoff before giving up.
 				var reconnected bool
+				var lastErr error
 				for _, delay := range o.ipcReconnectDelays {
 					select {
 					case <-ctx.Done():
@@ -1120,10 +1123,13 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						o.log.Info("reconnected to IPC output after iterator error", "group", group.Name)
 						break
 					}
+					lastErr = err
 					o.log.Warn("IPC reconnect failed, retrying", "group", group.Name, "error", err, "delay", delay)
 				}
 				if !reconnected {
-					o.log.Error("IPC reconnect exhausted, deactivating group", "group", group.Name)
+					o.log.Error("IPC reconnect exhausted, deactivating group",
+						"group", group.Name,
+						"last_error", lastErr)
 					deactivate()
 					return
 				}
@@ -1152,7 +1158,13 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 			return false
 		}
 		if err := o.router.RouteOutbound(ctx, chatJID, payload.Text); err != nil {
-			o.log.Error("failed to route outbound message", "group", group.Name, "error", err)
+			// Outbound routing failed — do NOT advance the confirmed cursor
+			// so the message remains eligible for retry on the next agent
+			// invocation. Skip storing the bot reply as well, since the user
+			// never received it.
+			o.log.Error("failed to route outbound message; leaving cursor unadvanced for retry",
+				"group", group.Name, "error", err)
+			return false
 		}
 
 		// Store bot reply so FormatMessagesForAgent attributes it as an assistant turn.

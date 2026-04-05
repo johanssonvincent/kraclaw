@@ -1,7 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { IPCClient } from "./ipc.js";
+import { IPCClient, MalformedMessageError } from "./ipc.js";
 import { applySetModel } from "./model_switch.js";
 import type { IPCMessage } from "./types.js";
 
@@ -50,7 +50,7 @@ async function initWorkspace(): Promise<void> {
         code,
       });
     }
-    // No per-group CLAUDE.md yet — try to seed from global template.
+    // CLAUDE.md not accessible (ENOENT: does not exist; other errors already logged) — try to seed from global template.
     const globalClaudeMd = path.join(CONFIG_DIR, "global-CLAUDE.md");
     try {
       const global = await fs.readFile(globalClaudeMd, "utf-8");
@@ -128,7 +128,11 @@ async function main(): Promise<void> {
     } catch (err) {
       console.error("failed to publish shutdown", err);
     }
-    await ipc.close();
+    try {
+      await ipc.close();
+    } catch (closeErr) {
+      console.error("failed to close IPC connection during shutdown", closeErr);
+    }
     process.exit(0);
   };
   process.on("SIGTERM", shutdown);
@@ -137,8 +141,19 @@ async function main(): Promise<void> {
   const systemPrompt = buildSystemPrompt();
 
   while (running) {
-    // Read input from IPC.
-    const input = await ipc.readInput();
+    // Read input from IPC. A malformed message is distinct from an empty
+    // queue: the message was consumed and ACK'd, but could not be parsed.
+    // Do not count that toward the empty-poll giving-up threshold.
+    let input: IPCMessage | null;
+    try {
+      input = await ipc.readInput();
+    } catch (err) {
+      if (err instanceof MalformedMessageError) {
+        console.warn("skipping malformed ipc message", { error: err.message });
+        continue;
+      }
+      throw err;
+    }
     if (!input) {
       if (++consecutiveEmpty >= 12) {
         console.error("No IPC input for ~60 seconds, giving up");
@@ -289,8 +304,11 @@ async function processMessage(
     stream = await queryWithTimeout(prompt, retryOptions, 120_000);
   }
   if (!stream) {
-    console.error("query produced no output");
-    return result;
+    // Both the initial query and the resume-retry (if attempted) timed out.
+    // Throwing here surfaces the failure to the main loop, which publishes
+    // an error message to the user instead of silently returning an empty
+    // response.
+    throw new Error("query produced no output within timeout (both initial and retry attempts failed)");
   }
 
   for await (const message of stream) {

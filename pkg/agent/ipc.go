@@ -218,6 +218,10 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 				if ctx.Err() != nil {
 					return
 				}
+				c.logger.Error("ipc read goroutine terminating",
+					"group", c.groupJID,
+					"agent_id", c.agentID,
+					"error", err)
 				errCh <- fmt.Errorf("ipc read: %w", err)
 				return
 			}
@@ -261,7 +265,8 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 						"group", c.groupJID,
 						"agent_id", c.agentID,
 						"sequence", seq,
-						"error", err)
+						"error", err,
+						"cause", "ack_failure")
 					return
 				}
 			case <-ctx.Done():

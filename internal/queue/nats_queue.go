@@ -124,7 +124,14 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 
 	msgs, err := cons.Fetch(1, jetstream.FetchMaxWait(queueFetchTimeout))
 	if err != nil {
-		q.consumers.Delete(sanitized)
+		// Only evict the cached consumer on fatal errors that indicate the
+		// consumer no longer exists server-side. Transient errors (timeouts,
+		// connection hiccups) should not trigger eviction, as that would
+		// cascade into unnecessary consumer re-creation.
+		if errors.Is(err, jetstream.ErrConsumerNotFound) ||
+			errors.Is(err, jetstream.ErrConsumerDeleted) {
+			q.consumers.Delete(sanitized)
+		}
 		return nil, fmt.Errorf("fetch queue message: %w", err)
 	}
 	if msg, ok := <-msgs.Messages(); ok {
