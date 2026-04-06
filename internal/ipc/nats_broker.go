@@ -322,6 +322,12 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 						seq = meta.Sequence.Stream
 					}
 					b.logger.Error("ack ipc message", "group", group, "sequence", seq, "error", err, "cause", "ack_failure")
+					// NAK so NATS redelivers promptly rather than waiting for AckWait
+					// expiry. The message was already sent on ch, so the current session
+					// has acted on it; the NAK ensures recovery for a fresh consumer.
+					if nakErr := jmsg.Nak(); nakErr != nil {
+						b.logger.Error("nak after ack failure", "group", group, "sequence", seq, "error", nakErr)
+					}
 					return
 				}
 			case <-ctx.Done():
