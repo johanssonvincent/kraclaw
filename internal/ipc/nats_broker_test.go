@@ -210,6 +210,31 @@ func TestNATSDeleteStreams(t *testing.T) {
 	}
 }
 
+func TestNATSDeleteStreams_CacheClearedOnDelete(t *testing.T) {
+	broker, _ := setupNATS(t)
+	ctx := context.Background()
+	group := "cache-clear-test@g.us"
+
+	msg := &IPCMessage{Group: group, AgentID: "main", Type: IPCMessageText, Payload: json.RawMessage(`{}`)}
+
+	// First publish populates the streamCreated cache.
+	if err := broker.PublishOutput(ctx, group, "main", msg); err != nil {
+		t.Fatalf("first PublishOutput: %v", err)
+	}
+
+	// DeleteStreams removes the stream server-side and must clear the cache.
+	if err := broker.DeleteStreams(ctx, group); err != nil {
+		t.Fatalf("DeleteStreams: %v", err)
+	}
+
+	// Second publish must succeed. If streamCreated was not cleared, ensureStream
+	// would skip CreateOrUpdateStream, the publish would target a non-existent stream,
+	// and this call would fail — which was the bug before the fix.
+	if err := broker.PublishOutput(ctx, group, "main", msg); err != nil {
+		t.Fatalf("PublishOutput after DeleteStreams: %v (streamCreated cache was not cleared)", err)
+	}
+}
+
 func TestNATSCloseStopsSubscription(t *testing.T) {
 	broker, _ := setupNATS(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
