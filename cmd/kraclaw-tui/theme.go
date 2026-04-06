@@ -9,7 +9,7 @@ import (
 )
 
 // chatTheme holds all named colors for the TUI. Fields are grouped by area:
-// chat messages, general UI, panels, sidebar scaffolding, and status bar.
+// chat messages, general UI, panels, sidebar, and status bar.
 type chatTheme struct {
 	// Chat messages
 	UserBorder    color.Color // #5C8FFF - user message left border
@@ -26,11 +26,11 @@ type chatTheme struct {
 	Text          color.Color // #CDD6F4 - primary foreground
 	TextSecondary color.Color // #A6ADC8 - secondary foreground
 
-	// Panels (scaffolding for Phase 5+)
+	// Panels
 	PanelBorder  color.Color // #313244 - subtle border between panels
 	ActiveBorder color.Color // #7C3AED - focused panel border
 
-	// Sidebar (scaffolding for Phase 5)
+	// Sidebar
 	SidebarTitle color.Color // #CDD6F4 - sidebar section titles
 	SidebarLabel color.Color // #6C7086 - sidebar key labels
 	SidebarValue color.Color // #A6ADC8 - sidebar values
