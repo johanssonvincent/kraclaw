@@ -1160,8 +1160,8 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 		if err := o.router.RouteOutbound(ctx, chatJID, payload.Text); err != nil {
 			// Outbound routing failed — do NOT advance the confirmed cursor
 			// so the message remains eligible for retry on the next agent
-			// invocation. Skip storing the bot reply as well, since the user
-			// never received it.
+			// invocation. Skip storing the bot reply as well, since delivery
+			// was not confirmed.
 			o.log.Error("failed to route outbound message; leaving cursor unadvanced for retry",
 				"group", group.Name, "error", err)
 			return false

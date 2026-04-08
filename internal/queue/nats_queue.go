@@ -127,7 +127,8 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 		// Only evict the cached consumer on fatal errors that indicate the
 		// consumer no longer exists server-side. Transient errors (timeouts,
 		// connection hiccups) should not trigger eviction, as that would
-		// cascade into unnecessary consumer re-creation.
+		// cascade into unnecessary consumer re-creation. Stream-level errors
+		// are handled by ensureStream on the next call.
 		if errors.Is(err, jetstream.ErrConsumerNotFound) ||
 			errors.Is(err, jetstream.ErrConsumerDeleted) {
 			q.consumers.Delete(sanitized)

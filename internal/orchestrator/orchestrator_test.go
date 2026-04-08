@@ -2505,6 +2505,46 @@ func TestWatchGroupOutput_ReconnectSuccess(t *testing.T) {
 	// (Implicit in subCalls==1 and got=="sess-from-ch2".)
 }
 
+// TestWatchGroupOutput_ReconnectExhaustedLogsLastError verifies that when all
+// reconnect attempts fail, watchGroupOutput deactivates the group.
+func TestWatchGroupOutput_ReconnectExhaustedLogsLastError(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	b := &mockIPCBroker{}
+
+	// Every SubscribeOutput call returns an error, simulating a persistently
+	// broken IPC connection during the reconnect phase.
+	reconnectErr := errors.New("ipc: connection refused")
+	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, error) {
+		return nil, reconnectErr
+	}
+
+	o := newTestOrchestrator(s, q, b)
+
+	group := store.Group{
+		JID:    "group1@g.us",
+		Folder: "test-group",
+		IsMain: true,
+	}
+	o.registeredGroups["group1@g.us"] = group
+	q.active["group1@g.us"] = true
+	o.activeSandboxes["group1@g.us"] = "kraclaw-agent-test-abc"
+
+	// channel1 closes immediately, triggering the reconnect loop.
+	channel1 := make(chan *ipc.IPCMessage)
+	close(channel1)
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", channel1)
+
+	// After all reconnect delays are exhausted, the group must be deactivated.
+	if q.active["group1@g.us"] {
+		t.Error("group still active after reconnect exhaustion; expected MarkInactive to be called")
+	}
+	if _, exists := o.activeSandboxes["group1@g.us"]; exists {
+		t.Error("activeSandboxes entry still present after reconnect exhaustion; expected it to be removed")
+	}
+}
+
 // mockQueueRecording wraps mockQueue and records Enqueue calls for assertion.
 type mockQueueRecording struct {
 	*mockQueue
