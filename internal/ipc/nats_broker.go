@@ -200,10 +200,12 @@ func (b *NATSBroker) DeleteStreams(ctx context.Context, group string) error {
 	if err := b.js.DeleteStream(ctx, streamName); err != nil {
 		// Treat "stream not found" as success (idempotent delete).
 		if errors.Is(err, jetstream.ErrStreamNotFound) {
+			b.streamCreated.Delete(sanitized)
 			return nil
 		}
 		return fmt.Errorf("delete ipc stream %s: %w", streamName, err)
 	}
+	b.streamCreated.Delete(sanitized)
 	return nil
 }
 

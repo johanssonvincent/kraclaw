@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -377,5 +379,118 @@ func TestIPCClient_ReadInput_MalformedMessage(t *testing.T) {
 		t.Fatalf("ipc error: %v", err)
 	case <-ctx.Done():
 		t.Fatal("timed out: malformed message may have broken subscription")
+	}
+}
+
+// mockAckFailMsg is a jetstream.Msg whose Ack always returns an error.
+// Used to test the Ack-failure error-propagation path in ReadInput.
+type mockAckFailMsg struct {
+	data []byte
+}
+
+func (m *mockAckFailMsg) Metadata() (*jetstream.MsgMetadata, error) { return nil, nil }
+func (m *mockAckFailMsg) Data() []byte                              { return m.data }
+func (m *mockAckFailMsg) Headers() nats.Header                     { return nil }
+func (m *mockAckFailMsg) Subject() string                          { return "" }
+func (m *mockAckFailMsg) Reply() string                            { return "" }
+func (m *mockAckFailMsg) Ack() error                               { return errors.New("simulated ack failure") }
+func (m *mockAckFailMsg) DoubleAck(context.Context) error          { return nil }
+func (m *mockAckFailMsg) Nak() error                               { return nil }
+func (m *mockAckFailMsg) NakWithDelay(time.Duration) error         { return nil }
+func (m *mockAckFailMsg) InProgress() error                        { return nil }
+func (m *mockAckFailMsg) Term() error                              { return nil }
+func (m *mockAckFailMsg) TermWithReason(string) error              { return nil }
+
+// mockMessagesCtx delivers one message then blocks until Stop/Drain is called.
+type mockMessagesCtx struct {
+	msg  jetstream.Msg
+	sent bool
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *mockMessagesCtx) Next(...jetstream.NextOpt) (jetstream.Msg, error) {
+	if !c.sent {
+		c.sent = true
+		return c.msg, nil
+	}
+	<-c.done
+	return nil, jetstream.ErrMsgIteratorClosed
+}
+
+func (c *mockMessagesCtx) Stop()  { c.once.Do(func() { close(c.done) }) }
+func (c *mockMessagesCtx) Drain() { c.once.Do(func() { close(c.done) }) }
+
+// mockAckFailConsumer embeds jetstream.Consumer and overrides only Messages.
+type mockAckFailConsumer struct {
+	jetstream.Consumer
+	iter *mockMessagesCtx
+}
+
+func (c *mockAckFailConsumer) Messages(...jetstream.PullMessagesOpt) (jetstream.MessagesContext, error) {
+	return c.iter, nil
+}
+
+// mockAckFailJS embeds jetstream.JetStream and overrides only the methods used
+// by ReadInput (CreateOrUpdateStream and CreateOrUpdateConsumer).
+type mockAckFailJS struct {
+	jetstream.JetStream
+	consumer *mockAckFailConsumer
+}
+
+func (js *mockAckFailJS) CreateOrUpdateStream(_ context.Context, _ jetstream.StreamConfig) (jetstream.Stream, error) {
+	return nil, nil
+}
+
+func (js *mockAckFailJS) CreateOrUpdateConsumer(_ context.Context, _ string, _ jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	return js.consumer, nil
+}
+
+func TestIPCClient_ReadInput_AckFailurePropagatesError(t *testing.T) {
+	// Inject a mock JetStream that delivers one message whose Ack always fails.
+	// Before the fix the goroutine returned silently without writing to errCh,
+	// making the failure indistinguishable from clean shutdown.
+	msg := &mockAckFailMsg{data: []byte(`{"type":"message","payload":{}}`)}
+	iter := &mockMessagesCtx{msg: msg, done: make(chan struct{})}
+	consumer := &mockAckFailConsumer{iter: iter}
+	js := &mockAckFailJS{consumer: consumer}
+
+	c := &IPCClient{
+		groupJID: "ack-fail-test@g.us",
+		agentID:  "main",
+		logger:   slog.Default(),
+		js:       js,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch, errCh, err := c.ReadInput(ctx)
+	if err != nil {
+		t.Fatalf("ReadInput: %v", err)
+	}
+
+	select {
+	case _, ok := <-ch:
+		if !ok {
+			t.Fatal("message channel closed before delivery")
+		}
+	case err := <-errCh:
+		t.Fatalf("unexpected errCh before delivery: %v", err)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for message delivery")
+	}
+
+	// Ack failure must propagate to errCh rather than silently swallowing the error.
+	select {
+	case err, ok := <-errCh:
+		if !ok || err == nil {
+			t.Fatal("errCh closed without an error; Ack failure was not propagated")
+		}
+		if !strings.Contains(err.Error(), "ack ipc message") {
+			t.Errorf("errCh error = %v, want error containing 'ack ipc message'", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out: Ack failure was not propagated to errCh")
 	}
 }
