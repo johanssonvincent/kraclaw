@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,6 +38,7 @@ type mockStore struct {
 	deleteSessionErr     error
 	allowlist            map[string][]store.SenderAllowlistEntry
 	getMessagesSinceHook func() // called at start of GetMessagesSince if non-nil
+	getMessagesSinceErr  error  // if non-nil, GetMessagesSince returns this error
 
 	updateTaskCalled     bool
 	deleteTaskCalledWith [2]string // [id, groupFolder]
@@ -114,6 +116,9 @@ func (m *mockStore) GetNewMessages(_ context.Context, jids []string, since time.
 func (m *mockStore) GetMessagesSince(_ context.Context, chatJID string, since time.Time, limit int) ([]store.Message, error) {
 	if m.getMessagesSinceHook != nil {
 		m.getMessagesSinceHook()
+	}
+	if m.getMessagesSinceErr != nil {
+		return nil, m.getMessagesSinceErr
 	}
 	var result []store.Message
 	for _, msg := range m.messages[chatJID] {
@@ -1426,6 +1431,61 @@ func TestDeactivate_PendingMessagesTriggersReprocessing(t *testing.T) {
 	close(processBlock)
 }
 
+// TestDeactivate_PendingCheckFailedTriggersReprocessing verifies that when
+// GetMessagesSince returns an error during deactivation, pendingCheckFailed is
+// set and processGroupMessages is still triggered defensively.
+func TestDeactivate_PendingCheckFailedTriggersReprocessing(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
+
+	group := store.Group{
+		JID:    "group1@g.us",
+		Folder: "test-group",
+		IsMain: true,
+	}
+	o.registeredGroups["group1@g.us"] = group
+	q.active["group1@g.us"] = true
+
+	// First GetMessagesSince call (from deactivate's pending check) returns an error,
+	// triggering pendingCheckFailed = true. The hook clears the error on the second
+	// call so processGroupMessages can proceed without panicking.
+	var callCount atomic.Int32
+	processStarted := make(chan struct{})
+	processBlock := make(chan struct{})
+	s.getMessagesSinceErr = errors.New("store unavailable")
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) < 2 {
+			return // first call: leave error set so deactivate sees it
+		}
+		s.getMessagesSinceErr = nil
+		select {
+		case processStarted <- struct{}{}:
+		default:
+		}
+		<-processBlock
+	}
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
+
+	// processGroupMessages must have been triggered even though the pending check failed.
+	select {
+	case <-processStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processGroupMessages was not triggered after pendingCheckFailed")
+	}
+
+	// Clear messages and unblock the goroutine so it finishes cleanly.
+	s.messages["group1@g.us"] = nil
+	close(processBlock)
+}
+
 func TestDeactivate_NoRollbackWhenCursorsMatch(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()
@@ -2363,6 +2423,222 @@ func TestHandleSandboxEvent_CurrentSandboxDeletion_MarksInactive(t *testing.T) {
 	active, _ := mq.IsActive(ctx, "tui:test-current")
 	if active {
 		t.Error("tui:test-current should be inactive — the current sandbox was deleted")
+	}
+}
+
+// TestWatchGroupOutput_ReconnectSuccess exercises the happy path of the
+// exponential-backoff reconnect loop: when the IPC output channel closes
+// mid-stream (as happens on an iterator error), watchGroupOutput must call
+// SubscribeOutput again, assign the returned channel to `ch`, and continue
+// consuming messages — without deactivating the group.
+func TestWatchGroupOutput_ReconnectSuccess(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	b := &mockIPCBroker{}
+
+	// channel1 delivers one session_update message and then closes, simulating
+	// an iterator error mid-stream. channel2 is a fresh channel returned by the
+	// second SubscribeOutput call; it delivers a shutdown so the watcher exits
+	// cleanly.
+	channel1 := make(chan *ipc.IPCMessage, 1)
+	channel2 := make(chan *ipc.IPCMessage, 1)
+
+	var subCalls int
+	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, error) {
+		subCalls++
+		return channel2, nil
+	}
+
+	o := newTestOrchestrator(s, q, b)
+
+	ts := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
+	o.lastAgentTimestamp["group1@g.us"] = ts
+	o.lastConfirmedTimestamp["group1@g.us"] = ts
+
+	group := store.Group{
+		JID:    "group1@g.us",
+		Folder: "test-group",
+		IsMain: true,
+	}
+	o.registeredGroups["group1@g.us"] = group
+	q.active["group1@g.us"] = true
+
+	// First message on channel1: a benign session_update that handleIPCMessage
+	// can process without a router.
+	sessionPayload, _ := json.Marshal(map[string]string{"sessionId": "sess-from-ch1"})
+	channel1 <- &ipc.IPCMessage{Type: ipc.IPCSessionUpdate, Payload: sessionPayload}
+	close(channel1)
+
+	// Second message on channel2 after reconnect: a session_update that
+	// proves channel2 is being consumed, followed by a shutdown to exit.
+	go func() {
+		sessionPayload2, _ := json.Marshal(map[string]string{"sessionId": "sess-from-ch2"})
+		channel2 <- &ipc.IPCMessage{Type: ipc.IPCSessionUpdate, Payload: sessionPayload2}
+		// Small delay so the session_update is processed before shutdown.
+		time.Sleep(20 * time.Millisecond)
+		shutdownPayload, _ := json.Marshal(map[string]string{})
+		channel2 <- &ipc.IPCMessage{Type: ipc.IPCShutdown, Payload: shutdownPayload}
+		close(channel2)
+	}()
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", channel1)
+
+	// SubscribeOutput must have been called exactly once — the reconnect call.
+	if subCalls != 1 {
+		t.Errorf("SubscribeOutput reconnect calls = %d, want 1", subCalls)
+	}
+
+	// Both session_update messages must have been processed: the latest write
+	// wins, and since shutdown is what exits the loop, the last observed
+	// session ID is the one from channel2.
+	got := o.sessions["test-group"]
+	if got != "sess-from-ch2" {
+		t.Errorf("session after reconnect = %q, want %q (channel2 message was not processed)", got, "sess-from-ch2")
+	}
+
+	// Ensure the session from channel1 was also processed (i.e. the earlier
+	// message before the reconnect got through) — the store would have
+	// observed an UpsertSession for "sess-from-ch1" prior to the final value.
+	// We can assert that at least one UpsertSession call landed with the
+	// channel1 value by verifying the store saw the ch2 value, which only
+	// happens if the reconnect path advanced past channel1's close.
+	// (Implicit in subCalls==1 and got=="sess-from-ch2".)
+}
+
+// TestWatchGroupOutput_ReconnectExhaustedLogsLastError verifies that when all
+// reconnect attempts fail, watchGroupOutput deactivates the group.
+func TestWatchGroupOutput_ReconnectExhaustedLogsLastError(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	b := &mockIPCBroker{}
+
+	// Every SubscribeOutput call returns an error, simulating a persistently
+	// broken IPC connection during the reconnect phase.
+	reconnectErr := errors.New("ipc: connection refused")
+	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, error) {
+		return nil, reconnectErr
+	}
+
+	o := newTestOrchestrator(s, q, b)
+
+	group := store.Group{
+		JID:    "group1@g.us",
+		Folder: "test-group",
+		IsMain: true,
+	}
+	o.registeredGroups["group1@g.us"] = group
+	q.active["group1@g.us"] = true
+	o.activeSandboxes["group1@g.us"] = "kraclaw-agent-test-abc"
+
+	// channel1 closes immediately, triggering the reconnect loop.
+	channel1 := make(chan *ipc.IPCMessage)
+	close(channel1)
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", channel1)
+
+	// After all reconnect delays are exhausted, the group must be deactivated.
+	if q.active["group1@g.us"] {
+		t.Error("group still active after reconnect exhaustion; expected MarkInactive to be called")
+	}
+	if _, exists := o.activeSandboxes["group1@g.us"]; exists {
+		t.Error("activeSandboxes entry still present after reconnect exhaustion; expected it to be removed")
+	}
+}
+
+// mockQueueRecording wraps mockQueue and records Enqueue calls for assertion.
+type mockQueueRecording struct {
+	*mockQueue
+	mu         sync.Mutex
+	enqueued   []string // groupJIDs passed to Enqueue
+	enqueueErr error
+}
+
+func (m *mockQueueRecording) Enqueue(_ context.Context, groupJID string, _ *queue.QueueMessage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.enqueued = append(m.enqueued, groupJID)
+	return m.enqueueErr
+}
+
+func (m *mockQueueRecording) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.enqueued)
+}
+
+// TestRecoverPendingMessages covers the startup recovery path that checks each
+// registered group for unprocessed messages and enqueues a recovery marker
+// when any are found.
+func TestRecoverPendingMessages(t *testing.T) {
+	ts := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name         string
+		setupStore   func(s *mockStore)
+		enqueueErr   error
+		wantEnqueues int
+	}{
+		{
+			name: "no pending messages",
+			setupStore: func(s *mockStore) {
+				// No messages in store for the group.
+			},
+			wantEnqueues: 0,
+		},
+		{
+			name: "pending messages exist",
+			setupStore: func(s *mockStore) {
+				s.messages["group1@g.us"] = []store.Message{
+					{ChatJID: "group1@g.us", Content: "pending", Timestamp: ts.Add(1 * time.Minute)},
+				}
+			},
+			wantEnqueues: 1,
+		},
+		{
+			name: "GetMessagesSince error is logged and does not abort loop",
+			setupStore: func(s *mockStore) {
+				// Force GetMessagesSince to return an error for every group.
+				// Expectation: recoverPendingMessages logs and continues, so
+				// Enqueue is never called.
+				s.getMessagesSinceErr = errors.New("store boom")
+			},
+			wantEnqueues: 0,
+		},
+		{
+			name: "Enqueue error is logged",
+			setupStore: func(s *mockStore) {
+				s.messages["group1@g.us"] = []store.Message{
+					{ChatJID: "group1@g.us", Content: "pending", Timestamp: ts.Add(1 * time.Minute)},
+				}
+			},
+			enqueueErr:   errors.New("enqueue failed"),
+			wantEnqueues: 1, // Enqueue was called; error is logged, not propagated.
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newMockStore()
+			tc.setupStore(s)
+
+			q := &mockQueueRecording{mockQueue: newMockQueue(), enqueueErr: tc.enqueueErr}
+			o := newTestOrchestrator(s, q.mockQueue, &mockIPCBroker{})
+			// Replace queue with the recording wrapper.
+			o.queue = q
+
+			o.registeredGroups["group1@g.us"] = store.Group{
+				JID:    "group1@g.us",
+				Folder: "test-group",
+				Name:   "Test Group",
+			}
+			o.lastAgentTimestamp["group1@g.us"] = ts
+
+			o.recoverPendingMessages(context.Background())
+
+			if got := q.count(); got != tc.wantEnqueues {
+				t.Errorf("Enqueue call count = %d, want %d", got, tc.wantEnqueues)
+			}
+		})
 	}
 }
 

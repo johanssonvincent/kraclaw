@@ -13,8 +13,6 @@ import (
 	natserver "github.com/nats-io/nats-server/v2/server"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-
-	"github.com/johanssonvincent/kraclaw/internal/ipc"
 )
 
 func startTestNATS(t *testing.T) *nats.Conn {
@@ -200,28 +198,167 @@ func TestIPCClient_SendOutput_EnsureStreamError_Wrapped(t *testing.T) {
 	}
 }
 
-// TestIPCClientSyncOnce verifies that ReadInput uses sync.Once for idempotency.
-// Verifies that calling ReadInput multiple times returns same channels (preventing
-// duplicate consumer creation that could cause message loss or duplication).
+// TestIPCClientSyncOnce verifies the behavioral idempotency contract of
+// ReadInput: concurrent callers must receive the SAME channel references so
+// that only a single consumer is created (preventing message loss or
+// duplication from multiple consumer instances).
 func TestIPCClientSyncOnce(t *testing.T) {
-	// Create a minimal IPCClient without full NATS setup just to verify the struct is correct.
-	// The actual ReadInput behavior is tested via integration tests with real NATS.
-	client := &IPCClient{
-		groupJID: "test@g.us",
-		agentID:  ipc.DefaultAgentID,
+	nc := startTestNATS(t)
+	groupJID := "sync-once@g.us"
+	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
 	}
 
-	// Verify the sync.Once field exists and is zero-initialized
-	if client.readOnce != (sync.Once{}) {
-		t.Errorf("IPCClient.readOnce not zero-initialized")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Pre-create the stream.
+	js, _ := jetstream.New(nc)
+	sanitized := sanitizeGroupID(groupJID)
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    time.Hour,
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
 	}
 
-	// Verify the message channel fields exist
-	if client.msgCh != nil || client.errCh != nil {
-		t.Errorf("IPCClient message channels should be nil before ReadInput")
+	type result struct {
+		msgCh <-chan *InboundMessage
+		errCh <-chan error
+		err   error
 	}
 
-	t.Log("IPCClient has proper sync.Once fields for read idempotency")
+	var wg sync.WaitGroup
+	results := make([]result, 2)
+	for i := range results {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			msgCh, errCh, err := client.ReadInput(ctx)
+			results[idx] = result{msgCh: msgCh, errCh: errCh, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	for i, r := range results {
+		if r.err != nil {
+			t.Fatalf("ReadInput call %d: %v", i, r.err)
+		}
+	}
+
+	// Both goroutines must observe the same channel references — proof that
+	// sync.Once ran the initializer exactly once.
+	if results[0].msgCh != results[1].msgCh {
+		t.Errorf("ReadInput returned different msgCh pointers: %p vs %p", results[0].msgCh, results[1].msgCh)
+	}
+	if results[0].errCh != results[1].errCh {
+		t.Errorf("ReadInput returned different errCh pointers: %p vs %p", results[0].errCh, results[1].errCh)
+	}
+}
+
+// startTestNATSServer is a variant of startTestNATS that also returns the
+// underlying server handle so tests can forcibly shut it down to simulate
+// connection-loss iterator errors.
+func startTestNATSServer(t *testing.T) (*nats.Conn, *natserver.Server) {
+	t.Helper()
+	opts := &natserver.Options{
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		Port:      -1,
+		NoLog:     true,
+		NoSigs:    true,
+	}
+	s, err := natserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("new nats server: %v", err)
+	}
+	go s.Start()
+	if !s.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats server not ready")
+	}
+	t.Cleanup(func() {
+		if s.Running() {
+			s.Shutdown()
+		}
+	})
+	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
+	if err != nil {
+		t.Fatalf("nats connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	return nc, s
+}
+
+// TestIPCClient_ReadInput_IteratorError verifies that when the underlying
+// NATS connection/iterator fails with a non-context error, ReadInput
+// surfaces the error on errCh and closes both channels so callers unblock.
+func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
+	nc, server := startTestNATSServer(t)
+	groupJID := "iterator-error@g.us"
+	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Pre-create the stream.
+	js, _ := jetstream.New(nc)
+	sanitized := sanitizeGroupID(groupJID)
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    time.Hour,
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	msgCh, errCh, err := client.ReadInput(ctx)
+	if err != nil {
+		t.Fatalf("ReadInput: %v", err)
+	}
+
+	// Kill the server underneath the consumer to force a non-context
+	// iterator error.
+	server.Shutdown()
+
+	// Expect an error on errCh and subsequent closure of both channels.
+	timeout := time.After(10 * time.Second)
+	gotErr := false
+	msgChClosed := false
+	errChClosed := false
+
+	for !gotErr || !msgChClosed || !errChClosed {
+		select {
+		case _, ok := <-msgCh:
+			if !ok {
+				msgChClosed = true
+			}
+		case e, ok := <-errCh:
+			if !ok {
+				errChClosed = true
+				continue
+			}
+			if e == nil {
+				continue
+			}
+			// Any non-nil, non-context error is a valid iterator error for
+			// this test. Context errors would indicate the test itself
+			// timed out waiting, not the code under test.
+			if strings.Contains(e.Error(), "context") {
+				t.Fatalf("got context error, expected non-context iterator error: %v", e)
+			}
+			gotErr = true
+		case <-timeout:
+			t.Fatalf("timed out: gotErr=%v msgChClosed=%v errChClosed=%v",
+				gotErr, msgChClosed, errChClosed)
+		}
+	}
 }
 
 // TestIPCClient_ReadInput_MultiGroupIsolation verifies that two IPCClients

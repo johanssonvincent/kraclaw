@@ -73,7 +73,7 @@ Where `{SANITIZED}` = first 16 bytes of SHA-256 hex of groupJID (32 hex chars), 
 
 Consumer names:
 - Output subscriber (server): `kraclaw-server-{sanitized}` (durable, wildcard `kraclaw.ipc.{sanitized}.*.output`)
-- Input reader (agent): `agent-{sanitized_agent_id}` (durable, filtered to `kraclaw.ipc.{sanitized}.{agent_id}.input`)
+- Input reader (agent): `agent-{sanitized_agent_id}` (durable, filtered to `kraclaw.ipc.{sanitized}.{sanitized_agent_id}.input`)
 
 ## Architecture
 

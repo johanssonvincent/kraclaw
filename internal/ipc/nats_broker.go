@@ -46,8 +46,8 @@ type consumerCleanup struct {
 //
 // Per-group stream topology:
 //   - Stream name: KRACLAW_IPC_{sanitized_group}
-//   - Input subject:  kraclaw.ipc.{sanitized}.{agentID}.input
-//   - Output subject: kraclaw.ipc.{sanitized}.{agentID}.output
+//   - Input subject:  kraclaw.ipc.{sanitized}.{sanitized_agent_id}.input
+//   - Output subject: kraclaw.ipc.{sanitized}.{sanitized_agent_id}.output
 //   - Server subscribes to wildcard: kraclaw.ipc.{sanitized}.*.output
 type NATSBroker struct {
 	nc     *nats.Conn
@@ -143,7 +143,7 @@ func (b *NATSBroker) SendInput(ctx context.Context, group, agentID string, msg *
 }
 
 // SubscribeOutput returns a channel that receives output from all agents in
-// the group via a durable wildcard push consumer.
+// the group via a durable wildcard pull consumer.
 func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, error) {
 	sanitized, err := b.ensureStream(ctx, group)
 	if err != nil {
@@ -296,7 +296,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 				if ctx.Err() != nil {
 					return
 				}
-				b.logger.Error("ipc message iterator error", "group", group, "error", err)
+				b.logger.Error("ipc message iterator error", "group", group, "error", err, "error_type", fmt.Sprintf("%T", err))
 				return
 			}
 
@@ -323,7 +323,14 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 					if meta != nil {
 						seq = meta.Sequence.Stream
 					}
-					b.logger.Error("ack ipc message", "group", group, "sequence", seq, "error", err)
+					b.logger.Error("ack ipc message", "group", group, "sequence", seq, "error", err, "cause", "ack_failure")
+					// NAK so NATS redelivers promptly rather than waiting for AckWait
+					// expiry. The message was already sent on ch, so the current session
+					// has acted on it; the NAK ensures the message is redelivered to the
+					// next subscriber rather than silently dropped.
+					if nakErr := jmsg.Nak(); nakErr != nil {
+						b.logger.Error("nak after ack failure", "group", group, "sequence", seq, "error", nakErr)
+					}
 					return
 				}
 			case <-ctx.Done():

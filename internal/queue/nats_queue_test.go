@@ -640,6 +640,68 @@ func TestNATSQueueStreamCorruptionRecovery(t *testing.T) {
 	}
 }
 
+// TestNATSQueueMultiGroupIsolation verifies that per-group streams are
+// isolated: enqueuing messages for two different groupJIDs on the same
+// NATSQueue must not cause cross-delivery. Each group's Dequeue returns
+// only its own message.
+func TestNATSQueueMultiGroupIsolation(t *testing.T) {
+	q, _ := setupNATSQueue(t)
+	ctx := context.Background()
+
+	groupA := "iso-queue-a@g.us"
+	groupB := "iso-queue-b@g.us"
+
+	msgA := &QueueMessage{
+		GroupJID:  groupA,
+		Content:   "group-a-msg",
+		Sender:    "userA",
+		Timestamp: time.Now().Truncate(time.Millisecond),
+	}
+	msgB := &QueueMessage{
+		GroupJID:  groupB,
+		Content:   "group-b-msg",
+		Sender:    "userB",
+		Timestamp: time.Now().Truncate(time.Millisecond),
+	}
+
+	if err := q.Enqueue(ctx, groupA, msgA); err != nil {
+		t.Fatalf("Enqueue groupA: %v", err)
+	}
+	if err := q.Enqueue(ctx, groupB, msgB); err != nil {
+		t.Fatalf("Enqueue groupB: %v", err)
+	}
+
+	gotA, err := q.Dequeue(ctx, groupA)
+	if err != nil {
+		t.Fatalf("Dequeue groupA: %v", err)
+	}
+	if gotA == nil {
+		t.Fatal("Dequeue groupA returned nil")
+	}
+	if gotA.Content != "group-a-msg" {
+		t.Errorf("groupA Content = %q, want %q (cross-delivery?)", gotA.Content, "group-a-msg")
+	}
+
+	gotB, err := q.Dequeue(ctx, groupB)
+	if err != nil {
+		t.Fatalf("Dequeue groupB: %v", err)
+	}
+	if gotB == nil {
+		t.Fatal("Dequeue groupB returned nil")
+	}
+	if gotB.Content != "group-b-msg" {
+		t.Errorf("groupB Content = %q, want %q (cross-delivery?)", gotB.Content, "group-b-msg")
+	}
+
+	// Both queues should now be empty.
+	if n, _ := q.Len(ctx, groupA); n != 0 {
+		t.Errorf("groupA Len after Dequeue = %d, want 0", n)
+	}
+	if n, _ := q.Len(ctx, groupB); n != 0 {
+		t.Errorf("groupB Len after Dequeue = %d, want 0", n)
+	}
+}
+
 // TestNATSQueueDequeueContextCancellation verifies that Dequeue honours
 // context cancellation: a pre-cancelled context returns promptly, and a
 // Dequeue blocked on an empty queue returns when its context is cancelled.
