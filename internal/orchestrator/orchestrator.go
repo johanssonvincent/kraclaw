@@ -1116,7 +1116,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						return
 					case <-time.After(delay):
 					}
-					newCh, err := o.ipc.SubscribeOutput(ctx, chatJID)
+					newCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
 					if err == nil {
 						ch = newCh
 						reconnected = true

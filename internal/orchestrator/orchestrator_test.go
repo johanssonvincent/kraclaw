@@ -2682,3 +2682,42 @@ func TestHandleSandboxEvent_UntrackedSandbox_StillMarksInactive(t *testing.T) {
 		t.Error("tui:test-untracked should be inactive — untracked sandbox means safety-net should fire")
 	}
 }
+
+func TestWatchGroupOutput_ReconnectUsesGroupFolder(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	b := &mockIPCBroker{}
+	o := newTestOrchestrator(s, q, b)
+
+	// JID and Folder are deliberately different — this is the normal production case
+	// where Folder is a sanitized filesystem path, not the raw group JID.
+	group := store.Group{
+		JID:    "group1@g.us",
+		Folder: "test-group-folder",
+		IsMain: true,
+	}
+	o.registeredGroups["group1@g.us"] = group
+	q.active["group1@g.us"] = true
+
+	// Capture the group argument passed to SubscribeOutput on reconnect.
+	var reconnectGroup string
+	b.subscribeOutputFn = func(ctx context.Context, grp string) (<-chan *ipc.IPCMessage, error) {
+		reconnectGroup = grp
+		// Return a channel with an agent shutdown message so watchGroupOutput terminates cleanly.
+		ch := make(chan *ipc.IPCMessage, 1)
+		ch <- &ipc.IPCMessage{Type: ipc.IPCShutdown}
+		return ch, nil
+	}
+
+	// A closed initial channel triggers the reconnect path immediately.
+	// Before the fix, reconnect called SubscribeOutput with chatJID instead of
+	// group.Folder, subscribing to a stream keyed on the wrong SHA-256 hash.
+	initialCh := make(chan *ipc.IPCMessage)
+	close(initialCh)
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", initialCh)
+
+	if reconnectGroup != group.Folder {
+		t.Errorf("SubscribeOutput reconnect arg = %q, want group.Folder %q (was chatJID %q before fix)", reconnectGroup, group.Folder, group.JID)
+	}
+}

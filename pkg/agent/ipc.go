@@ -265,8 +265,8 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 						"group", c.groupJID,
 						"agent_id", c.agentID,
 						"sequence", seq,
-						"error", err,
-						"cause", "ack_failure")
+						"error", err)
+					errCh <- fmt.Errorf("ack ipc message: %w", err)
 					return
 				}
 			case <-ctx.Done():
