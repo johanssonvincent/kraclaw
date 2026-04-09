@@ -12,7 +12,7 @@ import (
 type Config struct {
 	Server    ServerConfig
 	MySQL     MySQLConfig
-	Redis     RedisConfig
+	NATS      NATSConfig
 	K8s       K8sConfig
 	Proxy     ProxyConfig
 	Queue     QueueConfig
@@ -40,21 +40,20 @@ type MySQLConfig struct {
 	ConnMaxLifetime time.Duration `envconfig:"MYSQL_CONN_MAX_LIFETIME" default:"5m"`
 }
 
-type RedisConfig struct {
-	URL string `envconfig:"REDIS_URL" default:"redis://localhost:6379"`
+type NATSConfig struct {
+	URL string `envconfig:"NATS_URL" default:"nats://localhost:4222"`
 }
 
 type K8sConfig struct {
-	Namespace              string        `envconfig:"K8S_NAMESPACE" default:"kraclaw"`
-	AgentImage             string        `envconfig:"AGENT_IMAGE"`
-	AgentImageAnthropic    string        `envconfig:"AGENT_IMAGE_ANTHROPIC"`
-	AgentImageOpenAI       string        `envconfig:"AGENT_IMAGE_OPENAI"`
-	InCluster              bool          `envconfig:"K8S_IN_CLUSTER" default:"true"`
-	SessionsPVC            string        `envconfig:"K8S_SESSIONS_PVC" default:"kraclaw-sessions"`
-	GroupsPVC              string        `envconfig:"K8S_GROUPS_PVC" default:"kraclaw-groups"`
-	DataPVC                string        `envconfig:"K8S_DATA_PVC" default:"kraclaw-data"`
-	SandboxStartupTimeout  time.Duration `envconfig:"SANDBOX_STARTUP_TIMEOUT" default:"5m"`
-	SandboxProxyURL        string        `envconfig:"SANDBOX_PROXY_URL" default:"http://kraclaw-credproxy:3001"`
+	Namespace             string        `envconfig:"K8S_NAMESPACE" default:"kraclaw"`
+	AgentImageAnthropic   string        `envconfig:"AGENT_IMAGE_ANTHROPIC"`
+	AgentImageOpenAI      string        `envconfig:"AGENT_IMAGE_OPENAI"`
+	InCluster             bool          `envconfig:"K8S_IN_CLUSTER" default:"true"`
+	SessionsPVC           string        `envconfig:"K8S_SESSIONS_PVC" default:"kraclaw-sessions"`
+	GroupsPVC             string        `envconfig:"K8S_GROUPS_PVC" default:"kraclaw-groups"`
+	DataPVC               string        `envconfig:"K8S_DATA_PVC" default:"kraclaw-data"`
+	SandboxStartupTimeout time.Duration `envconfig:"SANDBOX_STARTUP_TIMEOUT" default:"5m"`
+	SandboxProxyURL       string        `envconfig:"SANDBOX_PROXY_URL" default:"http://kraclaw-credproxy:3001"`
 }
 
 type ProxyConfig struct {
@@ -144,8 +143,14 @@ func (c *Config) Validate() error {
 	if c.Queue.MaxConcurrent <= 0 {
 		return fmt.Errorf("MAX_CONCURRENT must be positive, got %d", c.Queue.MaxConcurrent)
 	}
-	if c.K8s.AgentImage == "" && c.K8s.AgentImageAnthropic == "" && c.K8s.AgentImageOpenAI == "" {
-		return fmt.Errorf("at least one agent image must be set (AGENT_IMAGE, AGENT_IMAGE_ANTHROPIC, or AGENT_IMAGE_OPENAI)")
+	if c.K8s.AgentImageAnthropic == "" && c.K8s.AgentImageOpenAI == "" {
+		return fmt.Errorf("at least one agent image must be set (AGENT_IMAGE_ANTHROPIC or AGENT_IMAGE_OPENAI)")
+	}
+	if c.Proxy.AnthropicAPIKey != "" && c.K8s.AgentImageAnthropic == "" {
+		return fmt.Errorf("AGENT_IMAGE_ANTHROPIC is required when ANTHROPIC_API_KEY is configured (legacy AGENT_IMAGE fallback is not supported with NATS)")
+	}
+	if c.Proxy.OpenAIAPIKey != "" && c.K8s.AgentImageOpenAI == "" {
+		return fmt.Errorf("AGENT_IMAGE_OPENAI is required when OPENAI_API_KEY is configured")
 	}
 	if c.Proxy.CredentialEncryptionKey != "" {
 		if len(c.Proxy.CredentialEncryptionKey) != 64 {

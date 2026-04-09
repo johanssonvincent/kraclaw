@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
@@ -37,7 +36,6 @@ type Server struct {
 	events       *eventHub
 	sandbox      *sandbox.Controller
 	db           *sql.DB
-	rdb          *redis.Client
 	log          *slog.Logger
 }
 
@@ -59,7 +57,6 @@ type Config struct {
 	Sandbox               *sandbox.Controller
 	Kubernetes            kubernetes.Interface
 	DB                    *sql.DB
-	Redis                 *redis.Client
 	TUIChannel            *tui.TUI
 	Channels              []channel.Channel
 	Log                   *slog.Logger
@@ -113,7 +110,7 @@ func New(cfg Config) (*Server, error) {
 	// REST gateway with health and metrics
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler())
-	mux.HandleFunc("/readyz", readyzHandler(cfg.DB, cfg.Redis))
+	mux.HandleFunc("/readyz", readyzHandler(cfg.DB))
 	if cfg.MetricsPath != "" {
 		mux.Handle(cfg.MetricsPath, promhttp.Handler())
 	}
@@ -135,7 +132,6 @@ func New(cfg Config) (*Server, error) {
 		events:       events,
 		sandbox:      cfg.Sandbox,
 		db:           cfg.DB,
-		rdb:          cfg.Redis,
 		log:          cfg.Log,
 	}, nil
 }
@@ -230,7 +226,7 @@ func healthzHandler() http.HandlerFunc {
 	}
 }
 
-func readyzHandler(db *sql.DB, rdb *redis.Client) http.HandlerFunc {
+func readyzHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
@@ -238,12 +234,6 @@ func readyzHandler(db *sql.DB, rdb *redis.Client) http.HandlerFunc {
 		// Check MySQL
 		if err := db.PingContext(ctx); err != nil {
 			http.Error(w, fmt.Sprintf("mysql: %v", err), http.StatusServiceUnavailable)
-			return
-		}
-
-		// Check Redis
-		if err := rdb.Ping(ctx).Err(); err != nil {
-			http.Error(w, fmt.Sprintf("redis: %v", err), http.StatusServiceUnavailable)
 			return
 		}
 

@@ -3,218 +3,631 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
+	natserver "github.com/nats-io/nats-server/v2/server"
+	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
+func startTestNATS(t *testing.T) *nats.Conn {
+	t.Helper()
+	opts := &natserver.Options{
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		Port:      -1,
+		NoLog:     true,
+		NoSigs:    true,
+	}
+	s, err := natserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("new nats server: %v", err)
+	}
+	go s.Start()
+	if !s.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats server not ready")
+	}
+	t.Cleanup(s.Shutdown)
+	nc, err := nats.Connect(s.ClientURL())
+	if err != nil {
+		t.Fatalf("nats connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	return nc
+}
+
 func TestIPCClient_SendOutput(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-
-	client, err := NewIPCClient(rdb, "testgroup")
+	nc := startTestNATS(t)
+	groupJID := "send-test@g.us"
+	client, err := NewIPCClient(nc, groupJID, "main", nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("NewIPCClient: %v", err)
 	}
 
-	msg := &OutboundMessage{
-		Type: "message",
-		Text: "Hello from agent",
-	}
-
-	if err := client.SendOutput(context.Background(), msg); err != nil {
-		t.Fatalf("send output: %v", err)
-	}
-
-	entries, err := rdb.XRange(context.Background(), "kraclaw:ipc:testgroup:output", "-", "+").Result()
+	ctx := context.Background()
+	// Create the stream first (as the server normally would).
+	js, _ := jetstream.New(nc)
+	sanitized := sanitizeGroupID(groupJID)
+	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    time.Hour,
+	})
 	if err != nil {
-		t.Fatalf("xrange: %v", err)
+		t.Fatalf("create stream: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(entries))
+
+	if err := client.SendOutput(ctx, &OutboundMessage{Type: "message", Text: "hello"}); err != nil {
+		t.Fatalf("SendOutput: %v", err)
 	}
 }
 
 func TestIPCClient_ReadInput(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-
-	client, err := NewIPCClient(rdb, "testgroup")
+	nc := startTestNATS(t)
+	groupJID := "read-test@g.us"
+	client, err := NewIPCClient(nc, groupJID, "main", nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("NewIPCClient: %v", err)
 	}
 
-	payload, _ := json.Marshal(map[string]string{"messages": "Hello"})
-	data, _ := json.Marshal(map[string]interface{}{
-		"group":   "testgroup",
-		"type":    "message",
-		"payload": json.RawMessage(payload),
-	})
-	rdb.XAdd(context.Background(), &redis.XAddArgs{
-		Stream: "kraclaw:ipc:testgroup:input",
-		Values: map[string]interface{}{"data": string(data)},
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	ch, _, err := client.ReadInput(ctx)
+	// Create the stream and publish an input message (as the server normally would).
+	js, _ := jetstream.New(nc)
+	sanitized := sanitizeGroupID(groupJID)
+	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    time.Hour,
+	})
 	if err != nil {
-		t.Fatalf("read input: %v", err)
+		t.Fatalf("create stream: %v", err)
+	}
+
+	inputSubject := "kraclaw.ipc." + sanitized + ".main.input"
+
+	// Create the consumer (ReadInput), then publish.
+	ch, errCh, err := client.ReadInput(ctx)
+	if err != nil {
+		t.Fatalf("ReadInput: %v", err)
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{
+		"group":   groupJID,
+		"type":    "message",
+		"payload": json.RawMessage(`{"text":"hi"}`),
+	})
+	if _, err := js.Publish(ctx, inputSubject, payload); err != nil {
+		t.Fatalf("publish input: %v", err)
 	}
 
 	select {
 	case msg := <-ch:
 		if msg.Type != "message" {
-			t.Fatalf("expected type message, got %s", msg.Type)
+			t.Errorf("type = %q, want %q", msg.Type, "message")
 		}
+	case err := <-errCh:
+		t.Fatalf("ipc error: %v", err)
 	case <-ctx.Done():
-		t.Fatal("timed out waiting for message")
+		t.Fatal("timed out waiting for input message")
 	}
 }
 
-func TestIPCClient_CheckCloseSignal(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-
-	client, err := NewIPCClient(rdb, "testgroup")
+// TestIPCClient_ReadInput_ContextCancel verifies that cancelling the context
+// passed to ReadInput causes both the message channel and the error channel to
+// close (gap 11).
+func TestIPCClient_ReadInput_ContextCancel(t *testing.T) {
+	nc := startTestNATS(t)
+	groupJID := "ctx-cancel-readinput@g.us"
+	client, err := NewIPCClient(nc, groupJID, "main", nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("NewIPCClient: %v", err)
 	}
 
-	closed, err := client.CheckCloseSignal(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if closed {
-		t.Fatal("expected not closed")
-	}
-
-	rdb.Set(context.Background(), "kraclaw:ipc:testgroup:close", "1", 60*time.Second)
-
-	closed, err = client.CheckCloseSignal(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !closed {
-		t.Fatal("expected closed")
-	}
-}
-
-func TestIPCClient_SendOutput_MessageContent(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-
-	client, err := NewIPCClient(rdb, "testgroup")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	msg := &OutboundMessage{Type: "message", Text: "Hello from agent"}
-	if err := client.SendOutput(context.Background(), msg); err != nil {
-		t.Fatalf("send output: %v", err)
-	}
-
-	entries, err := rdb.XRange(context.Background(), "kraclaw:ipc:testgroup:output", "-", "+").Result()
-	if err != nil {
-		t.Fatalf("xrange: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(entries))
-	}
-
-	raw, ok := entries[0].Values["data"].(string)
-	if !ok {
-		t.Fatal("expected data field to be a string")
-	}
-	var ipcMsg struct {
-		Group   string          `json:"group"`
-		Type    string          `json:"type"`
-		Payload json.RawMessage `json:"payload"`
-	}
-	if err := json.Unmarshal([]byte(raw), &ipcMsg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if ipcMsg.Group != "testgroup" {
-		t.Fatalf("expected group testgroup, got %q", ipcMsg.Group)
-	}
-	if ipcMsg.Type != "message" {
-		t.Fatalf("expected type message, got %q", ipcMsg.Type)
-	}
-	var payload struct{ Text string `json:"text"` }
-	if err := json.Unmarshal(ipcMsg.Payload, &payload); err != nil {
-		t.Fatalf("unmarshal payload: %v", err)
-	}
-	if payload.Text != "Hello from agent" {
-		t.Fatalf("expected 'Hello from agent', got %q", payload.Text)
-	}
-}
-
-func TestReadInput_StopsAfterConsecutiveErrors(t *testing.T) {
-	mr := miniredis.RunT(t)
-	// Use short dial/read timeouts so each failed attempt resolves quickly.
-	rdb := redis.NewClient(&redis.Options{
-		Addr:         mr.Addr(),
-		DialTimeout:  50 * time.Millisecond,
-		ReadTimeout:  50 * time.Millisecond,
-		MaxRetries:   0,
-	})
-	defer func() { _ = rdb.Close() }()
-
-	client, err := NewIPCClient(rdb, "error-limit-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	ch, errCh, err := client.ReadInput(ctx)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ReadInput: %v", err)
 	}
 
-	// Close miniredis to cause persistent errors.
-	mr.Close()
+	cancel()
 
-	// Channel should close when consecutive error limit is reached.
-	select {
-	case _, ok := <-ch:
-		if ok {
-			t.Fatal("expected channel to close, got a message")
+	timeout := time.After(5 * time.Second)
+	chClosed, errChClosed := false, false
+	for !chClosed || !errChClosed {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				chClosed = true
+			}
+		case _, ok := <-errCh:
+			if !ok {
+				errChClosed = true
+			}
+		case <-timeout:
+			t.Errorf("timed out: ch closed=%v, errCh closed=%v", chClosed, errChClosed)
+			return
 		}
-		// Channel closed — correct behavior.
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for channel to close after persistent errors")
-	}
-
-	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatal("expected non-nil error from errCh")
-		}
-	default:
-		t.Fatal("expected error on errCh")
 	}
 }
 
-func TestNewIPCClient_Validation(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-
-	_, err := NewIPCClient(nil, "group")
-	if err == nil {
-		t.Fatal("expected error for nil rdb")
+func TestIPCClient_EnsureStreamError_Wrapped(t *testing.T) {
+	nc := startTestNATS(t)
+	client, err := NewIPCClient(nc, "ensure-wrap@g.us", "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
 	}
-	_, err = NewIPCClient(rdb, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = client.ensureStream(ctx)
 	if err == nil {
-		t.Fatal("expected error for empty group")
+		t.Fatal("ensureStream() error = nil, want wrapped context error")
+	}
+	if !strings.Contains(err.Error(), "ensure ipc stream") {
+		t.Fatalf("error = %q, want context %q", err.Error(), "ensure ipc stream")
+	}
+}
+
+func TestIPCClient_SendOutput_EnsureStreamError_Wrapped(t *testing.T) {
+	nc := startTestNATS(t)
+	client, err := NewIPCClient(nc, "send-ensure-wrap@g.us", "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = client.SendOutput(ctx, &OutboundMessage{Type: "message", Text: "hello"})
+	if err == nil {
+		t.Fatal("SendOutput() error = nil, want ensure stream error")
+	}
+	if !strings.Contains(err.Error(), "ensure ipc stream") {
+		t.Fatalf("error = %q, want context %q", err.Error(), "ensure ipc stream")
+	}
+}
+
+// TestIPCClientSyncOnce verifies the behavioral idempotency contract of
+// ReadInput: concurrent callers must receive the SAME channel references so
+// that only a single consumer is created (preventing message loss or
+// duplication from multiple consumer instances).
+func TestIPCClientSyncOnce(t *testing.T) {
+	nc := startTestNATS(t)
+	groupJID := "sync-once@g.us"
+	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Pre-create the stream.
+	js, _ := jetstream.New(nc)
+	sanitized := sanitizeGroupID(groupJID)
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    time.Hour,
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	type result struct {
+		msgCh <-chan *InboundMessage
+		errCh <-chan error
+		err   error
+	}
+
+	var wg sync.WaitGroup
+	results := make([]result, 2)
+	for i := range results {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			msgCh, errCh, err := client.ReadInput(ctx)
+			results[idx] = result{msgCh: msgCh, errCh: errCh, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	for i, r := range results {
+		if r.err != nil {
+			t.Fatalf("ReadInput call %d: %v", i, r.err)
+		}
+	}
+
+	// Both goroutines must observe the same channel references — proof that
+	// sync.Once ran the initializer exactly once.
+	if results[0].msgCh != results[1].msgCh {
+		t.Errorf("ReadInput returned different msgCh pointers: %p vs %p", results[0].msgCh, results[1].msgCh)
+	}
+	if results[0].errCh != results[1].errCh {
+		t.Errorf("ReadInput returned different errCh pointers: %p vs %p", results[0].errCh, results[1].errCh)
+	}
+}
+
+// startTestNATSServer is a variant of startTestNATS that also returns the
+// underlying server handle so tests can forcibly shut it down to simulate
+// connection-loss iterator errors.
+func startTestNATSServer(t *testing.T) (*nats.Conn, *natserver.Server) {
+	t.Helper()
+	opts := &natserver.Options{
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		Port:      -1,
+		NoLog:     true,
+		NoSigs:    true,
+	}
+	s, err := natserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("new nats server: %v", err)
+	}
+	go s.Start()
+	if !s.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats server not ready")
+	}
+	t.Cleanup(func() {
+		if s.Running() {
+			s.Shutdown()
+		}
+	})
+	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
+	if err != nil {
+		t.Fatalf("nats connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	return nc, s
+}
+
+// TestIPCClient_ReadInput_IteratorError verifies that when the underlying
+// NATS connection/iterator fails with a non-context error, ReadInput
+// surfaces the error on errCh and closes both channels so callers unblock.
+func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
+	nc, server := startTestNATSServer(t)
+	groupJID := "iterator-error@g.us"
+	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Pre-create the stream.
+	js, _ := jetstream.New(nc)
+	sanitized := sanitizeGroupID(groupJID)
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    time.Hour,
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	msgCh, errCh, err := client.ReadInput(ctx)
+	if err != nil {
+		t.Fatalf("ReadInput: %v", err)
+	}
+
+	// Kill the server underneath the consumer to force a non-context
+	// iterator error.
+	server.Shutdown()
+
+	// Expect an error on errCh and subsequent closure of both channels.
+	timeout := time.After(10 * time.Second)
+	gotErr := false
+	msgChClosed := false
+	errChClosed := false
+
+	for !gotErr || !msgChClosed || !errChClosed {
+		select {
+		case _, ok := <-msgCh:
+			if !ok {
+				msgChClosed = true
+			}
+		case e, ok := <-errCh:
+			if !ok {
+				errChClosed = true
+				continue
+			}
+			if e == nil {
+				continue
+			}
+			// Any non-nil, non-context error is a valid iterator error for
+			// this test. Context errors would indicate the test itself
+			// timed out waiting, not the code under test.
+			if strings.Contains(e.Error(), "context") {
+				t.Fatalf("got context error, expected non-context iterator error: %v", e)
+			}
+			gotErr = true
+		case <-timeout:
+			t.Fatalf("timed out: gotErr=%v msgChClosed=%v errChClosed=%v",
+				gotErr, msgChClosed, errChClosed)
+		}
+	}
+}
+
+// TestIPCClient_ReadInput_MultiGroupIsolation verifies that two IPCClients
+// bound to different groupJIDs do not cross-deliver input messages, even when
+// they share a single NATS connection.
+func TestIPCClient_ReadInput_MultiGroupIsolation(t *testing.T) {
+	nc := startTestNATS(t)
+
+	groupA := "iso-group-a@g.us"
+	groupB := "iso-group-b@g.us"
+
+	clientA, err := NewIPCClient(nc, groupA, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient A: %v", err)
+	}
+	clientB, err := NewIPCClient(nc, groupB, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient B: %v", err)
+	}
+
+	ctxA, cancelA := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelA()
+	ctxB, cancelB := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelB()
+
+	// Pre-create both streams (as the server normally would).
+	js, _ := jetstream.New(nc)
+	for _, g := range []string{groupA, groupB} {
+		sanitized := sanitizeGroupID(g)
+		if _, err := js.CreateOrUpdateStream(ctxA, jetstream.StreamConfig{
+			Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+			Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+			Retention: jetstream.LimitsPolicy,
+			MaxAge:    time.Hour,
+		}); err != nil {
+			t.Fatalf("create stream %s: %v", g, err)
+		}
+	}
+
+	// Subscribe both clients first so their consumers exist before publishing.
+	chA, errChA, err := clientA.ReadInput(ctxA)
+	if err != nil {
+		t.Fatalf("ReadInput A: %v", err)
+	}
+	chB, errChB, err := clientB.ReadInput(ctxB)
+	if err != nil {
+		t.Fatalf("ReadInput B: %v", err)
+	}
+
+	// Publish an input message to group A only.
+	sanitizedA := sanitizeGroupID(groupA)
+	inputSubjectA := "kraclaw.ipc." + sanitizedA + ".main.input"
+	payload, _ := json.Marshal(map[string]interface{}{
+		"group":   groupA,
+		"type":    "message",
+		"payload": json.RawMessage(`{"text":"for-A"}`),
+	})
+	if _, err := js.Publish(ctxA, inputSubjectA, payload); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	// Group A must receive the message.
+	select {
+	case msg, ok := <-chA:
+		if !ok {
+			t.Fatal("group A channel closed unexpectedly")
+		}
+		if msg.Type != "message" {
+			t.Errorf("group A msg.Type = %q, want %q", msg.Type, "message")
+		}
+	case err := <-errChA:
+		t.Fatalf("group A error: %v", err)
+	case <-ctxA.Done():
+		t.Fatal("timed out waiting for group A delivery")
+	}
+
+	// Group B must NOT receive it. Wait for B's short-lived context to expire
+	// and verify no message arrived in the meantime.
+	select {
+	case msg, ok := <-chB:
+		if ok {
+			t.Fatalf("group B received cross-delivered message: %+v", msg)
+		}
+		// Channel closed due to ctxB expiring is acceptable.
+	case err, ok := <-errChB:
+		if ok && err != nil {
+			// Context-cancel errors are acceptable here; only surface unexpected errors.
+			if !strings.Contains(err.Error(), "context") {
+				t.Fatalf("group B error: %v", err)
+			}
+		}
+	case <-ctxB.Done():
+		// ctxB expired with no cross-delivered message — the isolation invariant holds.
+	}
+}
+
+// TestIPCClient_ReadInput_MalformedMessage verifies that malformed (non-JSON)
+// input messages are ACK'd and skipped without panicking or breaking the
+// subscription.
+func TestIPCClient_ReadInput_MalformedMessage(t *testing.T) {
+	nc := startTestNATS(t)
+
+	groupJID := "malformed-input@g.us"
+	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Pre-create the stream.
+	js, _ := jetstream.New(nc)
+	sanitized := sanitizeGroupID(groupJID)
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    time.Hour,
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	// Subscribe first so the consumer exists before the malformed publish.
+	ch, errCh, err := client.ReadInput(ctx)
+	if err != nil {
+		t.Fatalf("ReadInput: %v", err)
+	}
+
+	inputSubject := "kraclaw.ipc." + sanitized + ".main.input"
+	if _, err := js.Publish(ctx, inputSubject, []byte("not-json")); err != nil {
+		t.Fatalf("publish malformed: %v", err)
+	}
+
+	// Now publish a valid message; if the malformed message was correctly ACK'd
+	// and skipped, the consume loop should still deliver this one.
+	validPayload, _ := json.Marshal(map[string]interface{}{
+		"group":   groupJID,
+		"type":    "message",
+		"payload": json.RawMessage(`{"text":"after-malformed"}`),
+	})
+	if _, err := js.Publish(ctx, inputSubject, validPayload); err != nil {
+		t.Fatalf("publish valid: %v", err)
+	}
+
+	select {
+	case msg, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed before valid message delivered")
+		}
+		if msg.Type != "message" {
+			t.Errorf("msg.Type = %q, want %q", msg.Type, "message")
+		}
+	case err := <-errCh:
+		t.Fatalf("ipc error: %v", err)
+	case <-ctx.Done():
+		t.Fatal("timed out: malformed message may have broken subscription")
+	}
+}
+
+// mockAckFailMsg is a jetstream.Msg whose Ack always returns an error.
+// Used to test the Ack-failure error-propagation path in ReadInput.
+type mockAckFailMsg struct {
+	data []byte
+}
+
+func (m *mockAckFailMsg) Metadata() (*jetstream.MsgMetadata, error) { return nil, nil }
+func (m *mockAckFailMsg) Data() []byte                              { return m.data }
+func (m *mockAckFailMsg) Headers() nats.Header                     { return nil }
+func (m *mockAckFailMsg) Subject() string                          { return "" }
+func (m *mockAckFailMsg) Reply() string                            { return "" }
+func (m *mockAckFailMsg) Ack() error                               { return errors.New("simulated ack failure") }
+func (m *mockAckFailMsg) DoubleAck(context.Context) error          { return nil }
+func (m *mockAckFailMsg) Nak() error                               { return nil }
+func (m *mockAckFailMsg) NakWithDelay(time.Duration) error         { return nil }
+func (m *mockAckFailMsg) InProgress() error                        { return nil }
+func (m *mockAckFailMsg) Term() error                              { return nil }
+func (m *mockAckFailMsg) TermWithReason(string) error              { return nil }
+
+// mockMessagesCtx delivers one message then blocks until Stop/Drain is called.
+type mockMessagesCtx struct {
+	msg  jetstream.Msg
+	sent bool
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *mockMessagesCtx) Next(...jetstream.NextOpt) (jetstream.Msg, error) {
+	if !c.sent {
+		c.sent = true
+		return c.msg, nil
+	}
+	<-c.done
+	return nil, jetstream.ErrMsgIteratorClosed
+}
+
+func (c *mockMessagesCtx) Stop()  { c.once.Do(func() { close(c.done) }) }
+func (c *mockMessagesCtx) Drain() { c.once.Do(func() { close(c.done) }) }
+
+// mockAckFailConsumer embeds jetstream.Consumer and overrides only Messages.
+type mockAckFailConsumer struct {
+	jetstream.Consumer
+	iter *mockMessagesCtx
+}
+
+func (c *mockAckFailConsumer) Messages(...jetstream.PullMessagesOpt) (jetstream.MessagesContext, error) {
+	return c.iter, nil
+}
+
+// mockAckFailJS embeds jetstream.JetStream and overrides only the methods used
+// by ReadInput (CreateOrUpdateStream and CreateOrUpdateConsumer).
+type mockAckFailJS struct {
+	jetstream.JetStream
+	consumer *mockAckFailConsumer
+}
+
+func (js *mockAckFailJS) CreateOrUpdateStream(_ context.Context, _ jetstream.StreamConfig) (jetstream.Stream, error) {
+	return nil, nil
+}
+
+func (js *mockAckFailJS) CreateOrUpdateConsumer(_ context.Context, _ string, _ jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	return js.consumer, nil
+}
+
+func TestIPCClient_ReadInput_AckFailurePropagatesError(t *testing.T) {
+	// Inject a mock JetStream that delivers one message whose Ack always fails.
+	// Before the fix the goroutine returned silently without writing to errCh,
+	// making the failure indistinguishable from clean shutdown.
+	msg := &mockAckFailMsg{data: []byte(`{"type":"message","payload":{}}`)}
+	iter := &mockMessagesCtx{msg: msg, done: make(chan struct{})}
+	consumer := &mockAckFailConsumer{iter: iter}
+	js := &mockAckFailJS{consumer: consumer}
+
+	c := &IPCClient{
+		groupJID: "ack-fail-test@g.us",
+		agentID:  "main",
+		logger:   slog.Default(),
+		js:       js,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch, errCh, err := c.ReadInput(ctx)
+	if err != nil {
+		t.Fatalf("ReadInput: %v", err)
+	}
+
+	select {
+	case _, ok := <-ch:
+		if !ok {
+			t.Fatal("message channel closed before delivery")
+		}
+	case err := <-errCh:
+		t.Fatalf("unexpected errCh before delivery: %v", err)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for message delivery")
+	}
+
+	// Ack failure must propagate to errCh rather than silently swallowing the error.
+	select {
+	case err, ok := <-errCh:
+		if !ok || err == nil {
+			t.Fatal("errCh closed without an error; Ack failure was not propagated")
+		}
+		if !strings.Contains(err.Error(), "ack ipc message") {
+			t.Errorf("errCh error = %v, want error containing 'ack ipc message'", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out: Ack failure was not propagated to errCh")
 	}
 }

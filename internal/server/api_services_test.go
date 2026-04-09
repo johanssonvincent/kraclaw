@@ -45,7 +45,8 @@ func createTestSandboxController() *sandbox.Controller {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
-	ctrl, _ := sandbox.New(fake.NewClientset(), ctrlClient, nil, "default", "agent:latest", nil, "redis://localhost:6379", "http://localhost:3001")
+	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
+	ctrl, _ := sandbox.New(fake.NewClientset(), ctrlClient, nil, "default", agentImages, "nats://localhost:4222", "http://localhost:3001")
 	return ctrl
 }
 
@@ -203,7 +204,7 @@ func TestPipeSandboxInput_Valid(t *testing.T) {
 }
 
 func TestPipeSandboxInput_SendError(t *testing.T) {
-	broker := &mockIPCBroker{sendErr: fmt.Errorf("redis down")}
+	broker := &mockIPCBroker{sendErr: fmt.Errorf("ipc unavailable")}
 	svc := &sandboxService{ipc: broker, log: testLogger()}
 	_, err := svc.PipeSandboxInput(context.Background(), &kraclawv1.PipeSandboxInputRequest{
 		GroupFolder: "mygroup",
@@ -368,20 +369,20 @@ type mockIPCBroker struct {
 	outputCh   chan *ipc.IPCMessage
 }
 
-func (m *mockIPCBroker) PublishOutput(ctx context.Context, group string, msg *ipc.IPCMessage) error {
+func (m *mockIPCBroker) PublishOutput(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {
 	return nil
 }
 
-func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, error) {
+func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, <-chan error, error) {
 	if m.outputCh != nil {
-		return m.outputCh, nil
+		return m.outputCh, make(chan error), nil
 	}
 	ch := make(chan *ipc.IPCMessage)
 	close(ch)
-	return ch, nil
+	return ch, make(chan error), nil
 }
 
-func (m *mockIPCBroker) SendInput(ctx context.Context, group string, msg *ipc.IPCMessage) error {
+func (m *mockIPCBroker) SendInput(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {
 	if m.sendErr != nil {
 		return m.sendErr
 	}
@@ -389,16 +390,12 @@ func (m *mockIPCBroker) SendInput(ctx context.Context, group string, msg *ipc.IP
 	return nil
 }
 
-func (m *mockIPCBroker) ReadInput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, error) {
+func (m *mockIPCBroker) ReadInput(ctx context.Context, group, agentID string) (<-chan *ipc.IPCMessage, error) {
 	ch := make(chan *ipc.IPCMessage)
 	close(ch)
 	return ch, nil
 }
 
-func (m *mockIPCBroker) SetCloseSignal(ctx context.Context, group string) error { return nil }
-func (m *mockIPCBroker) CheckCloseSignal(ctx context.Context, group string) (bool, error) {
-	return false, nil
-}
 func (m *mockIPCBroker) DeleteStreams(ctx context.Context, group string) error { return nil }
 func (m *mockIPCBroker) Close() error                                          { return nil }
 
@@ -462,9 +459,9 @@ func (m *mockGroupStore) GetNewMessages(context.Context, []string, time.Time, in
 func (m *mockGroupStore) GetMessagesSince(context.Context, string, time.Time, int) ([]store.Message, error) {
 	return nil, nil
 }
-func (m *mockGroupStore) UpsertChat(context.Context, *store.Chat) error          { return nil }
-func (m *mockGroupStore) GetChat(context.Context, string) (*store.Chat, error)   { return nil, nil }
-func (m *mockGroupStore) ListChats(context.Context) ([]store.Chat, error)        { return nil, nil }
+func (m *mockGroupStore) UpsertChat(context.Context, *store.Chat) error        { return nil }
+func (m *mockGroupStore) GetChat(context.Context, string) (*store.Chat, error) { return nil, nil }
+func (m *mockGroupStore) ListChats(context.Context) ([]store.Chat, error)      { return nil, nil }
 func (m *mockGroupStore) CreateTask(_ context.Context, task *store.ScheduledTask) error {
 	if m.createTaskErr != nil {
 		return m.createTaskErr
@@ -515,6 +512,12 @@ func (m *mockGroupStore) UpsertAllowlistEntry(context.Context, *store.SenderAllo
 }
 func (m *mockGroupStore) DeleteAllowlistEntry(context.Context, int64) error { return nil }
 func (m *mockGroupStore) Close() error                                      { return nil }
+
+func (m *mockGroupStore) MarkGroupActive(context.Context, string) error       { return nil }
+func (m *mockGroupStore) MarkGroupInactive(context.Context, string) error     { return nil }
+func (m *mockGroupStore) IsGroupActive(context.Context, string) (bool, error) { return false, nil }
+func (m *mockGroupStore) ActiveGroupCount(context.Context) (int64, error)     { return 0, nil }
+func (m *mockGroupStore) ActiveGroupJIDs(context.Context) ([]string, error)   { return nil, nil }
 
 // --- RegisterGroup tests ---
 

@@ -2,16 +2,10 @@ package integration_test
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"log/slog"
 	"testing"
 	"time"
 
-	"github.com/johanssonvincent/kraclaw/internal/ipc"
-	"github.com/johanssonvincent/kraclaw/internal/queue"
 	"github.com/johanssonvincent/kraclaw/internal/store"
-	"github.com/redis/go-redis/v9"
 )
 
 func TestIntegrationMySQLStoreRoundTrip(t *testing.T) {
@@ -102,88 +96,5 @@ func TestIntegrationMySQLStoreRoundTrip(t *testing.T) {
 }
 
 func TestIntegrationRedisQueueAndIPCBroker(t *testing.T) {
-	env := requireIntegrationEnv(t)
-
-	rdb := redis.NewClient(&redis.Options{Addr: env.redisAddr})
-	t.Cleanup(func() {
-		_ = rdb.Close()
-	})
-
-	q := queue.NewRedisQueue(rdb, slog.Default())
-	t.Cleanup(func() {
-		_ = q.Close()
-	})
-
-	b := ipc.NewRedisBroker(rdb, slog.Default())
-	t.Cleanup(func() {
-		_ = b.Close()
-	})
-
-	group := fmt.Sprintf("integration-group-%d", time.Now().UnixNano())
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	qmsg := &queue.QueueMessage{
-		GroupJID:  group,
-		Content:   "queued payload",
-		Sender:    "integration-user",
-		Timestamp: time.Now().UTC().Truncate(time.Millisecond),
-	}
-	if err := q.Enqueue(ctx, group, qmsg); err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-
-	deq, err := q.Dequeue(ctx, group)
-	if err != nil {
-		t.Fatalf("dequeue: %v", err)
-	}
-	if deq == nil || deq.Content != qmsg.Content {
-		t.Fatalf("dequeued message mismatch: %+v", deq)
-	}
-
-	out, err := b.SubscribeOutput(ctx, group)
-	if err != nil {
-		t.Fatalf("subscribe output: %v", err)
-	}
-
-	ipcMessage := &ipc.IPCMessage{
-		Group:   group,
-		Type:    ipc.IPCMessageText,
-		Payload: json.RawMessage(`{"text":"hello from integration"}`),
-	}
-	if err := b.PublishOutput(ctx, group, ipcMessage); err != nil {
-		t.Fatalf("publish output: %v", err)
-	}
-
-	select {
-	case got := <-out:
-		if got == nil {
-			t.Fatal("expected output message, got nil")
-		}
-		if got.Type != ipc.IPCMessageText {
-			t.Fatalf("output type = %q, want %q", got.Type, ipc.IPCMessageText)
-		}
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for output message")
-	}
-
-	closed, err := b.CheckCloseSignal(ctx, group)
-	if err != nil {
-		t.Fatalf("check close signal: %v", err)
-	}
-	if closed {
-		t.Fatal("close signal should be false before set")
-	}
-
-	if err := b.SetCloseSignal(ctx, group); err != nil {
-		t.Fatalf("set close signal: %v", err)
-	}
-
-	closed, err = b.CheckCloseSignal(ctx, group)
-	if err != nil {
-		t.Fatalf("check close signal after set: %v", err)
-	}
-	if !closed {
-		t.Fatal("close signal should be true after set")
-	}
+	t.Skip("replaced by unit tests with embedded NATS server in internal/ipc and internal/queue packages")
 }

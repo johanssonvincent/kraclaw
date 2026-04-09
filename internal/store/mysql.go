@@ -224,8 +224,15 @@ func (s *MySQLStore) UpsertGroup(ctx context.Context, g *Group) error {
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`REPLACE INTO `+"`groups`"+` (jid, name, folder, trigger_pattern, is_main, requires_trigger, container_config, added_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO `+"`groups`"+` (jid, name, folder, trigger_pattern, is_main, requires_trigger, container_config, added_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON DUPLICATE KEY UPDATE
+		   name             = VALUES(name),
+		   folder           = VALUES(folder),
+		   trigger_pattern  = VALUES(trigger_pattern),
+		   is_main          = VALUES(is_main),
+		   requires_trigger = VALUES(requires_trigger),
+		   container_config = VALUES(container_config)`,
 		g.JID, g.Name, g.Folder, g.TriggerPattern, g.IsMain, g.RequiresTrigger, ccJSON, g.AddedAt,
 	)
 	if err != nil {
@@ -733,6 +740,117 @@ func (s *MySQLStore) DeleteAllowlistEntry(ctx context.Context, id int64) error {
 		return fmt.Errorf("delete allowlist entry: %w", err)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// GroupActiveStore
+// ---------------------------------------------------------------------------
+
+// MarkGroupActive sets is_active = TRUE and last_active_at = NOW() for the group.
+// Returns ErrGroupNotFound when no row with the given jid exists.
+//
+// MySQL (without CLIENT_FOUND_ROWS) reports RowsAffected = 0 both when the JID
+// is missing and when the row data is unchanged (already active + same second).
+// To distinguish the two cases we fall back to an existence check on zero.
+func (s *MySQLStore) MarkGroupActive(ctx context.Context, jid string) error {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE `groups` SET is_active = TRUE, last_active_at = NOW() WHERE jid = ?", jid)
+	if err != nil {
+		return fmt.Errorf("mark group active: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark group active rows affected: %w", err)
+	}
+	if n == 0 {
+		return s.requireGroupExists(ctx, jid, "mark group active")
+	}
+	return nil
+}
+
+// MarkGroupInactive sets is_active = FALSE for the group.
+// Returns ErrGroupNotFound when no row with the given jid exists.
+func (s *MySQLStore) MarkGroupInactive(ctx context.Context, jid string) error {
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE `groups` SET is_active = FALSE WHERE jid = ?", jid)
+	if err != nil {
+		return fmt.Errorf("mark group inactive: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark group inactive rows affected: %w", err)
+	}
+	if n == 0 {
+		return s.requireGroupExists(ctx, jid, "mark group inactive")
+	}
+	return nil
+}
+
+// requireGroupExists returns ErrGroupNotFound (wrapped with op prefix) when the
+// group JID is absent from the database, or nil when the group exists.
+// Used as a tie-breaker after RowsAffected returns 0 on an UPDATE.
+func (s *MySQLStore) requireGroupExists(ctx context.Context, jid, op string) error {
+	var exists bool
+	err := s.db.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM `groups` WHERE jid = ?)", jid).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("%s check existence: %w", op, err)
+	}
+	if !exists {
+		return fmt.Errorf("%s: %w", op, ErrGroupNotFound)
+	}
+	return nil
+}
+
+// IsGroupActive returns true if the group has is_active = TRUE.
+func (s *MySQLStore) IsGroupActive(ctx context.Context, jid string) (bool, error) {
+	var active bool
+	err := s.db.QueryRowContext(ctx,
+		"SELECT is_active FROM `groups` WHERE jid = ?", jid).Scan(&active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("is group active: %w", err)
+	}
+	return active, nil
+}
+
+// ActiveGroupCount returns the number of groups with is_active = TRUE.
+func (s *MySQLStore) ActiveGroupCount(ctx context.Context) (int64, error) {
+	var count int64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM `groups` WHERE is_active = TRUE").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("active group count: %w", err)
+	}
+	return count, nil
+}
+
+// ActiveGroupJIDs returns the JIDs of all groups with is_active = TRUE.
+func (s *MySQLStore) ActiveGroupJIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT jid FROM `groups` WHERE is_active = TRUE")
+	if err != nil {
+		return nil, fmt.Errorf("active group jids: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			slog.Default().Warn("active group jids: close rows", "error", cerr)
+		}
+	}()
+	var jids []string
+	for rows.Next() {
+		var jid string
+		if err := rows.Scan(&jid); err != nil {
+			return nil, fmt.Errorf("scan active jid: %w", err)
+		}
+		jids = append(jids, jid)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("active group jids rows: %w", err)
+	}
+	return jids, nil
 }
 
 // Ensure MySQLStore implements Store at compile time.

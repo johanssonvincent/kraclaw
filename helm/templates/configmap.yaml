@@ -15,11 +15,10 @@ data:
   GRPC_TLS_CLIENT_CA_FILE: {{ .Values.server.grpcTlsClientCAFile | quote }}
   GRPC_ALLOWED_CIDRS: {{ .Values.server.grpcAllowedCidrs | quote }}
   GRPC_REFLECTION_ENABLED: {{ .Values.server.grpcReflectionEnabled | quote }}
-  # Redis
-  REDIS_URL: {{ .Values.redis.url | quote }}
+  # NATS
+  NATS_URL: {{ .Values.nats.url | quote }}
   # Kubernetes / sandbox
   K8S_NAMESPACE: {{ .Release.Namespace | quote }}
-  AGENT_IMAGE: {{ .Values.k8s.agentImage | quote }}
   {{- if .Values.k8s.agentImageAnthropic }}
   AGENT_IMAGE_ANTHROPIC: {{ .Values.k8s.agentImageAnthropic | quote }}
   {{- end }}

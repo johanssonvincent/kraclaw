@@ -3,11 +3,16 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/robfig/cron/v3"
 )
+
+// ErrGroupNotFound is returned when an operation targets a group JID that does
+// not exist in the database.
+var ErrGroupNotFound = errors.New("group not found")
 
 // ContainerConfig holds per-group container settings.
 type ContainerConfig struct {
@@ -243,6 +248,15 @@ type AllowlistStore interface {
 	DeleteAllowlistEntry(ctx context.Context, id int64) error
 }
 
+// GroupActiveStore tracks which groups currently have a running agent Job.
+type GroupActiveStore interface {
+	MarkGroupActive(ctx context.Context, jid string) error
+	MarkGroupInactive(ctx context.Context, jid string) error
+	IsGroupActive(ctx context.Context, jid string) (bool, error)
+	ActiveGroupCount(ctx context.Context) (int64, error)
+	ActiveGroupJIDs(ctx context.Context) ([]string, error)
+}
+
 // Store combines all store interfaces.
 type Store interface {
 	GroupStore
@@ -253,6 +267,7 @@ type Store interface {
 	SessionStore
 	RouterStateStore
 	AllowlistStore
+	GroupActiveStore
 	Close() error
 }
 

@@ -2,14 +2,11 @@ package ipc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"log/slog"
-	"sync"
+	"regexp"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
 // IPCMessageType represents the type of an IPC message.
@@ -23,268 +20,67 @@ const (
 	IPCTaskDelete    IPCMessageType = "task_delete"
 	IPCSetModel      IPCMessageType = "set_model"
 	IPCShutdown      IPCMessageType = "shutdown"
+
+	// DefaultAgentID is the well-known agent identifier used for the primary
+	// agent in each group. All call sites must reference this constant instead
+	// of the bare string "main".
+	DefaultAgentID = "main"
 )
+
+// StreamMaxAge is the max age for IPC JetStream streams. Exported so pkg/agent
+// and internal/ipc can share it without duplication. Set to 1 hour to limit
+// historical message retention and prevent unbounded stream growth.
+const (
+	StreamMaxAge = time.Hour
+)
+
+// SanitizeGroupID returns the first 16 bytes of the SHA-256 hex digest of the
+// group JID (32 hex characters). Exported so pkg/agent can reuse it without
+// duplication.
+func SanitizeGroupID(groupJID string) string {
+	h := sha256.Sum256([]byte(groupJID))
+	return hex.EncodeToString(h[:16])
+}
+
+// agentIDUnsafeRe matches any character that is not alphanumeric, dash, or underscore.
+// Compiled once at package init for performance.
+var agentIDUnsafeRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+// SanitizeAgentID replaces any character not in [a-zA-Z0-9_-] with "_" and
+// truncates the result to 32 characters. Safe IDs (e.g. "main") are returned
+// unchanged. This prevents NATS subject and durable-name injection when an
+// agentID contains dots, slashes, spaces, or wildcards.
+func SanitizeAgentID(agentID string) string {
+	safe := agentIDUnsafeRe.ReplaceAllString(agentID, "_")
+	if len(safe) > 32 {
+		safe = safe[:32]
+	}
+	return safe
+}
 
 // IPCMessage represents a message exchanged between agent and server.
 type IPCMessage struct {
 	Group   string          `json:"group"`
+	AgentID string          `json:"agent_id"`
 	Type    IPCMessageType  `json:"type"`
 	Payload json.RawMessage `json:"payload"`
-	ID      string          `json:"id"` // Stream entry ID
+	ID      string          `json:"id"` // Message ID set by broker on receive
 }
 
-// IPCBroker defines the interface for IPC communication.
+// IPCBroker defines the interface for IPC communication between server and agents.
 type IPCBroker interface {
-	PublishOutput(ctx context.Context, group string, msg *IPCMessage) error
-	SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, error)
-	SendInput(ctx context.Context, group string, msg *IPCMessage) error
-	ReadInput(ctx context.Context, group string) (<-chan *IPCMessage, error)
-	SetCloseSignal(ctx context.Context, group string) error
-	CheckCloseSignal(ctx context.Context, group string) (bool, error)
+	// SendInput sends a message from the server to a specific agent in a group.
+	SendInput(ctx context.Context, group, agentID string, msg *IPCMessage) error
+	// PublishOutput sends a message from an agent to the server.
+	PublishOutput(ctx context.Context, group, agentID string, msg *IPCMessage) error
+	// SubscribeOutput returns a channel receiving output from all agents in a group (wildcard).
+	// The second return value is an error channel that receives the terminal error when the
+	// consume goroutine exits due to an iterator failure; callers should drain it when the
+	// message channel closes to obtain the root cause before reconnecting.
+	SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, <-chan error, error)
+	// ReadInput returns a channel receiving input messages for a specific agent.
+	ReadInput(ctx context.Context, group, agentID string) (<-chan *IPCMessage, error)
+	// DeleteStreams removes all IPC data for a group (all agents).
 	DeleteStreams(ctx context.Context, group string) error
 	Close() error
-}
-
-const (
-	consumerGroup = "kraclaw-server"
-	// Keep the blocking read short so broker shutdown does not stall waiting
-	// for Redis to return from XREADGROUP.
-	readTimeout = 500 * time.Millisecond
-	closeTTL    = 60 * time.Second
-)
-
-func outputKey(group string) string { return fmt.Sprintf("kraclaw:ipc:%s:output", group) }
-func inputKey(group string) string  { return fmt.Sprintf("kraclaw:ipc:%s:input", group) }
-func closeKey(group string) string  { return fmt.Sprintf("kraclaw:ipc:%s:close", group) }
-func notifyChannel() string         { return "kraclaw:ipc:notify" }
-
-// RedisBroker implements IPCBroker using Redis streams and pub/sub.
-type RedisBroker struct {
-	rdb    redis.Cmdable
-	logger *slog.Logger
-
-	mu       sync.Mutex
-	cancels  map[uint64]context.CancelFunc
-	nextID   uint64
-	closed   bool
-	closedCh chan struct{}
-}
-
-// NewRedisBroker creates a new Redis-backed IPC broker.
-func NewRedisBroker(rdb redis.Cmdable, logger *slog.Logger) *RedisBroker {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &RedisBroker{
-		rdb:      rdb,
-		logger:   logger,
-		cancels:  make(map[uint64]context.CancelFunc),
-		closedCh: make(chan struct{}),
-	}
-}
-
-// ensureConsumerGroup creates the consumer group if it doesn't exist.
-func (b *RedisBroker) ensureConsumerGroup(ctx context.Context, stream string) error {
-	err := b.rdb.XGroupCreateMkStream(ctx, stream, consumerGroup, "0").Err()
-	if err != nil && !isConsumerGroupExistsErr(err) {
-		return fmt.Errorf("create consumer group: %w", err)
-	}
-	return nil
-}
-
-func isConsumerGroupExistsErr(err error) bool {
-	return err != nil && err.Error() == "BUSYGROUP Consumer Group name already exists"
-}
-
-// PublishOutput adds a message to the output stream (agent -> server).
-func (b *RedisBroker) PublishOutput(ctx context.Context, group string, msg *IPCMessage) error {
-	stream := outputKey(group)
-	if err := b.ensureConsumerGroup(ctx, stream); err != nil {
-		return err
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal message: %w", err)
-	}
-
-	result := b.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: stream,
-		Values: map[string]interface{}{"data": string(data)},
-	})
-	if result.Err() != nil {
-		return fmt.Errorf("xadd: %w", result.Err())
-	}
-
-	// Publish notification for faster pickup.
-	if err := b.rdb.Publish(ctx, notifyChannel(), group).Err(); err != nil {
-		b.logger.Warn("failed to publish output notification", "group", group, "error", err)
-	}
-	return nil
-}
-
-// SubscribeOutput returns a channel that receives messages from the output stream.
-func (b *RedisBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, error) {
-	stream := outputKey(group)
-	if err := b.ensureConsumerGroup(ctx, stream); err != nil {
-		return nil, err
-	}
-	return b.readStream(ctx, stream, "output-reader"), nil
-}
-
-// SendInput adds a message to the input stream (server -> agent).
-func (b *RedisBroker) SendInput(ctx context.Context, group string, msg *IPCMessage) error {
-	stream := inputKey(group)
-	if err := b.ensureConsumerGroup(ctx, stream); err != nil {
-		return err
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal message: %w", err)
-	}
-
-	result := b.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: stream,
-		Values: map[string]interface{}{"data": string(data)},
-	})
-	if result.Err() != nil {
-		return fmt.Errorf("xadd: %w", result.Err())
-	}
-
-	if err := b.rdb.Publish(ctx, notifyChannel(), group).Err(); err != nil {
-		b.logger.Warn("failed to publish input notification", "group", group, "error", err)
-	}
-	return nil
-}
-
-// ReadInput returns a channel that receives messages from the input stream.
-func (b *RedisBroker) ReadInput(ctx context.Context, group string) (<-chan *IPCMessage, error) {
-	stream := inputKey(group)
-	if err := b.ensureConsumerGroup(ctx, stream); err != nil {
-		return nil, err
-	}
-	return b.readStream(ctx, stream, "input-reader"), nil
-}
-
-// SetCloseSignal sets the close sentinel with a TTL.
-func (b *RedisBroker) SetCloseSignal(ctx context.Context, group string) error {
-	return b.rdb.Set(ctx, closeKey(group), "1", closeTTL).Err()
-}
-
-// CheckCloseSignal checks whether the close sentinel is set.
-func (b *RedisBroker) CheckCloseSignal(ctx context.Context, group string) (bool, error) {
-	n, err := b.rdb.Exists(ctx, closeKey(group)).Result()
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
-
-// DeleteStreams removes the input, output, and close keys for a group.
-func (b *RedisBroker) DeleteStreams(ctx context.Context, group string) error {
-	keys := []string{outputKey(group), inputKey(group), closeKey(group)}
-	if err := b.rdb.Del(ctx, keys...).Err(); err != nil {
-		return fmt.Errorf("delete ipc streams for %s: %w", group, err)
-	}
-	return nil
-}
-
-// Close stops all background goroutines.
-func (b *RedisBroker) Close() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.closed {
-		return nil
-	}
-	b.closed = true
-	for _, cancel := range b.cancels {
-		cancel()
-	}
-	b.cancels = nil
-	close(b.closedCh)
-	return nil
-}
-
-// readStream runs a blocking XREADGROUP loop in a goroutine, sending parsed messages to the channel.
-func (b *RedisBroker) readStream(ctx context.Context, stream, consumer string) <-chan *IPCMessage {
-	ch := make(chan *IPCMessage, 64)
-
-	ctx, cancel := context.WithCancel(ctx)
-	b.mu.Lock()
-	id := b.nextID
-	b.nextID++
-	b.cancels[id] = cancel
-	b.mu.Unlock()
-
-	go func() {
-		defer close(ch)
-		defer func() {
-			b.mu.Lock()
-			delete(b.cancels, id)
-			b.mu.Unlock()
-			cancel()
-		}()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-b.closedCh:
-				return
-			default:
-			}
-
-			results, err := b.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
-				Group:    consumerGroup,
-				Consumer: consumer,
-				Streams:  []string{stream, ">"},
-				Count:    10,
-				Block:    readTimeout,
-			}).Result()
-
-			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return
-				}
-				if errors.Is(err, redis.Nil) {
-					continue
-				}
-				b.logger.Warn("xreadgroup error", "stream", stream, "error", err)
-				continue
-			}
-
-			for _, s := range results {
-				for _, entry := range s.Messages {
-					raw, ok := entry.Values["data"].(string)
-					if !ok {
-						b.logger.Error("stream entry missing data field", "stream", stream, "entry_id", entry.ID)
-						continue
-					}
-					var msg IPCMessage
-					if err := json.Unmarshal([]byte(raw), &msg); err != nil {
-						b.logger.Warn("unmarshal stream message", "stream", stream, "error", err)
-						continue
-					}
-					msg.ID = entry.ID
-
-					// Send to subscriber channel BEFORE acknowledging.
-					select {
-					case ch <- &msg:
-					case <-ctx.Done():
-						return
-					case <-b.closedCh:
-						return
-					}
-
-					// ACK the message only after successful delivery.
-					if err := b.rdb.XAck(ctx, stream, consumerGroup, entry.ID).Err(); err != nil {
-						b.logger.Error("failed to ack stream entry", "stream", stream, "entry_id", entry.ID, "error", err)
-					}
-				}
-			}
-		}
-	}()
-
-	return ch
 }

@@ -42,19 +42,18 @@ mysql:
   # secretName: name of pre-existing Secret containing key "MYSQL_DSN" (required before helm install)
   secretName: "kraclaw-mysql-url"
 
-# Redis
-redis:
-  url: "redis://redis.databases.svc.cluster.local:6379"  # REDIS_URL
+# NATS
+nats:
+  url: "nats://nats.nats.svc.cluster.local:4222"  # NATS_URL
 
 # NOTE: PVC names below assume release name "kraclaw". If using a different release name,
 # override k8s.sessionsPvc, k8s.groupsPvc, k8s.dataPvc, and sandbox.sessionsPvc, sandbox.groupsPvc,
 # sandbox.dataPvc to match the PVC names rendered by the fullname helper: {releaseName}-{chartName}-{type}
 # Example: helm install myrelease ./helm --set k8s.sessionsPvc=myrelease-kraclaw-sessions ...
 #
-# Kubernetes / sandbox configuration
+# Kubernetes / sandbox configuration — AGENT_IMAGE_ANTHROPIC and AGENT_IMAGE_OPENAI are required before helm install
 k8s:
-  agentImage: ""                        # AGENT_IMAGE — legacy fallback; set at least one image before helm install
-  agentImageAnthropic: ""              # AGENT_IMAGE_ANTHROPIC — Go-based Anthropic agent
+  agentImageAnthropic: ""              # AGENT_IMAGE_ANTHROPIC — Go-based Anthropic agent (REQUIRED)
   agentImageOpenAI: ""                 # AGENT_IMAGE_OPENAI — Go-based OpenAI agent
   inCluster: true                       # K8S_IN_CLUSTER
   sessionsPvc: ""                        # K8S_SESSIONS_PVC — auto-computed from fullname if empty
@@ -139,10 +138,6 @@ secrets:
 sandbox:
   enabled: true
 
-  # Agent container image — REQUIRED: set to full image name before helm install
-  # Example: ghcr.io/johanssonvincent/kraclaw-agent:v1.0
-  agentImage: ""
-
   # Init container image for per-group directory setup
   initImage: "busybox:latest"
 
@@ -153,7 +148,7 @@ sandbox:
   runAsUser: 1000
 
   # In-cluster service URLs — use FQDN to work across namespaces
-  redisUrl: "redis://redis.databases.svc.cluster.local:6379"
+  natsUrl: "nats://nats.nats.svc.cluster.local:4222"
   proxyUrl: "http://kraclaw-credproxy:3001"
 
   # PVC names — must match PVCs created by helm/templates/pvc-*.yaml

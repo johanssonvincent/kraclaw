@@ -74,6 +74,13 @@ type Orchestrator struct {
 	notify chan struct{} // buffered signal to trigger immediate poll
 	mu     sync.Mutex
 	log    *slog.Logger
+
+	marshalInitialInput func(v any) ([]byte, error)
+
+	// ipcReconnectDelays controls the backoff schedule used by watchGroupOutput
+	// when the IPC output channel closes unexpectedly. Exposed as a field so
+	// tests can shrink the delays.
+	ipcReconnectDelays []time.Duration
 }
 
 // New creates a new Orchestrator.
@@ -126,6 +133,8 @@ func New(
 		rateLimiters:           make(map[string]*TokenBucket),
 		notify:                 make(chan struct{}, 1),
 		log:                    log.With("component", "orchestrator"),
+		marshalInitialInput:    json.Marshal,
+		ipcReconnectDelays:     []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second},
 	}, nil
 }
 
@@ -186,10 +195,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}
 	}()
 
-	// 5. Start IPC watcher in goroutine.
-	go o.ipcWatcher(ctx)
-
-	// 5.5. Clean up orphaned sandboxes from previous runs.
+	// 5. Clean up orphaned sandboxes from previous runs.
 	if o.sandbox != nil {
 		if err := o.sandbox.CleanupOrphans(ctx); err != nil {
 			o.log.Error("orphan cleanup at startup failed", "error", err)
@@ -197,13 +203,13 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}
 	}
 
-	// 5.55. Reconcile the Redis active set against actual K8s state.
+	// 6. Reconcile the active group set against actual K8s state.
 	// Sandboxes that completed or were deleted while the server was down leave
-	// stale entries in kraclaw:active.  If enough accumulate they exceed
+	// stale entries in the active group store.  If enough accumulate they exceed
 	// MaxConcurrent and prevent any new sandbox from starting.
 	o.reconcileActiveSet(ctx)
 
-	// 5.6. Start periodic orphan cleanup.
+	// 7. Start periodic orphan cleanup.
 	if o.sandbox != nil {
 		go func() {
 			ticker := time.NewTicker(10 * time.Minute)
@@ -221,18 +227,18 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}()
 	}
 
-	// 5.7. Start sandbox watcher with reconnect loop.
+	// 8. Start sandbox watcher with reconnect loop.
 	if o.sandbox != nil {
 		go o.sandboxWatcher(ctx)
 	}
 
-	// 6. Start message loop in goroutine.
+	// 9. Start message loop in goroutine.
 	go o.messageLoop(ctx)
 
-	// 7. Recover pending messages.
+	// 10. Recover pending messages.
 	o.recoverPendingMessages(ctx)
 
-	// 8. Block on ctx.Done().
+	// 11. Block on ctx.Done().
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -603,7 +609,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 				o.log.Error("failed to marshal message payload", "group", group.Name, "error", err)
 				continue
 			}
-			if err := o.ipc.SendInput(ctx, group.Folder, &ipc.IPCMessage{
+			if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
 				Group:   group.Folder,
 				Type:    ipc.IPCMessageText,
 				Payload: payload,
@@ -706,18 +712,10 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		modelName = group.ContainerConfig.Model
 	}
 
-	// Send initial messages via IPC so the agent can read them on startup.
-	payload, err := json.Marshal(map[string]string{"messages": formatted})
+	// Marshal initial input payload.
+	payload, err := o.marshalInitialInput(map[string]string{"messages": formatted})
 	if err != nil {
-		o.log.Error("failed to marshal initial input", "group", group.Name, "error", err)
-	} else {
-		if err := o.ipc.SendInput(ctx, group.Folder, &ipc.IPCMessage{
-			Group:   group.Folder,
-			Type:    ipc.IPCMessageText,
-			Payload: payload,
-		}); err != nil {
-			o.log.Error("failed to send initial input", "group", group.Name, "error", err)
-		}
+		return fmt.Errorf("marshal initial input: %w", err)
 	}
 
 	// Create sandbox.
@@ -779,6 +777,60 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		return fmt.Errorf("mark active: %w", err)
 	}
 
+	// Subscribe to IPC output BEFORE spawning the watcher goroutine and BEFORE
+	// SendInput, so we cannot miss the agent's first output (race fix).
+	outputCh, outputErrCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
+	if err != nil {
+		o.log.Error("failed to subscribe to IPC output, tearing down sandbox", "group", group.Name, "error", err)
+		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
+			o.log.Error("failed to stop sandbox after SubscribeOutput failure", "group", group.Name, "job", status.Name, "error", cleanupErr)
+		}
+		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
+			o.log.Error("failed to mark group inactive after SubscribeOutput failure", "group", group.Name, "error", markErr)
+		}
+		o.mu.Lock()
+		delete(o.activeSandboxes, chatJID)
+		o.lastAgentTimestamp[chatJID] = previousCursor
+		o.mu.Unlock()
+		if saveErr := o.saveState(ctx); saveErr != nil {
+			o.log.Error("failed to save state after SubscribeOutput failure", "group", group.Name, "error", saveErr)
+		}
+		return fmt.Errorf("subscribe output: %w", err)
+	}
+
+	// Spawn watchGroupOutput directly to listen for agent output (no event channel)
+	go func(jid string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
+		defer func() {
+			if r := recover(); r != nil {
+				o.log.Error("panic in watchGroupOutput", "group_jid", jid, "panic", r)
+			}
+		}()
+		o.watchGroupOutput(ctx, jid, ch, errCh)
+	}(chatJID, outputCh, outputErrCh)
+
+	// Send initial messages via IPC so the agent can read them on startup.
+	if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
+		Group:   group.Folder,
+		Type:    ipc.IPCMessageText,
+		Payload: payload,
+	}); err != nil {
+		o.log.Error("failed to send initial input to agent, tearing down sandbox", "group", group.Name, "error", err)
+		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
+			o.log.Error("failed to stop sandbox after SendInput failure", "group", group.Name, "job", status.Name, "error", cleanupErr)
+		}
+		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
+			o.log.Error("failed to mark group inactive after SendInput failure", "group", group.Name, "error", markErr)
+		}
+		o.mu.Lock()
+		delete(o.activeSandboxes, chatJID)
+		o.lastAgentTimestamp[chatJID] = previousCursor
+		o.mu.Unlock()
+		if saveErr := o.saveState(ctx); saveErr != nil {
+			o.log.Error("failed to save state after SendInput failure", "group", group.Name, "error", saveErr)
+		}
+		return fmt.Errorf("send initial input: %w", err)
+	}
+
 	// Mark initial messages as confirmed since they're pre-populated in the IPC stream
 	// and the new agent will read them on startup.
 	o.mu.Lock()
@@ -787,24 +839,6 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 
 	o.log.Info("sandbox created", "group", group.Name, "job", status.Name)
 	return nil
-}
-
-// ipcWatcher subscribes to IPC output streams and processes agent results.
-// It retries on subscribe failure to avoid a permanent goroutine leak.
-func (o *Orchestrator) ipcWatcher(ctx context.Context) {
-	for {
-		if err := o.runIPCWatcher(ctx); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			o.log.Error("IPC watcher failed, retrying in 5s", "error", err)
-			select {
-			case <-time.After(5 * time.Second):
-			case <-ctx.Done():
-				return
-			}
-		}
-	}
 }
 
 // sandboxWatcher runs a self-healing loop that subscribes to Sandbox lifecycle events.
@@ -945,54 +979,15 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 	}
 }
 
-func (o *Orchestrator) runIPCWatcher(ctx context.Context) error {
-	o.log.Info("IPC watcher started")
-
-	events, err := o.queue.Subscribe(ctx)
-	if err != nil {
-		return fmt.Errorf("subscribe to queue events: %w", err)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			o.log.Info("IPC watcher stopped")
-			return nil
-		case event, ok := <-events:
-			if !ok {
-				return fmt.Errorf("queue event channel closed")
-			}
-			if event.Type == queue.EventActive {
-				go func(jid string) {
-					defer func() {
-						if r := recover(); r != nil {
-							o.log.Error("panic in watchGroupOutput", "group_jid", jid, "panic", r)
-						}
-					}()
-					o.watchGroupOutput(ctx, jid)
-				}(event.GroupJID)
-			}
-		}
-	}
-}
-
 // watchGroupOutput subscribes to IPC output for a single group and processes messages.
 // It also periodically checks that the agent Job still exists to avoid getting stuck
 // if the agent dies without sending a shutdown message.
-func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string) {
+func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
 	o.mu.Lock()
 	group, ok := o.registeredGroups[chatJID]
 	o.mu.Unlock()
 	if !ok {
-		return
-	}
-
-	ch, err := o.ipc.SubscribeOutput(ctx, group.Folder)
-	if err != nil {
-		o.log.Error("failed to subscribe to IPC output, deactivating group", "group", group.Name, "error", err)
-		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
-			o.log.Error("failed to mark group inactive after subscribe failure", "group", group.Name, "error", markErr)
-		}
+		o.log.Warn("watchGroupOutput: group not found in registeredGroups, skipping", "group_jid", chatJID)
 		return
 	}
 
@@ -1035,25 +1030,51 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string) {
 		}
 		o.mu.Unlock()
 		if err := o.saveState(ctx); err != nil {
-			o.log.Error("failed to save state after deactivation", "group", group.Name, "error", err)
+			o.log.Error("failed to save state after deactivation — cursor rollback is in-memory only; messages may be re-sent or lost on restart",
+				"group", group.Name, "error", err)
 		}
 
-		// Check MySQL for pending messages (not just the Redis queue).
+		// Check MySQL for pending messages (not just the NATS queue).
 		o.mu.Lock()
 		agentTs := o.lastAgentTimestamp[chatJID]
 		o.mu.Unlock()
 		pending, err := o.store.GetMessagesSince(ctx, chatJID, agentTs, 1)
+		pendingCheckFailed := false
 		if err != nil {
-			o.log.Error("failed to check pending messages", "group", group.Name, "error", err)
+			o.log.Error("failed to check pending messages; triggering recovery defensively", "group", group.Name, "error", err)
+			pendingCheckFailed = true
 		}
-		// Also drain the Redis queue for scheduled tasks.
-		qMsg, err := o.queue.Dequeue(ctx, chatJID)
-		if err != nil {
-			o.log.Error("failed to dequeue message", "group", group.Name, "error", err)
+		// Also drain the NATS queue for scheduled tasks.
+		// Dequeue returns nil,nil for both an empty queue and a malformed-message
+		// that was ACK'd and skipped. Loop a few times so that skipped malformed
+		// messages do not mask valid queued tasks.
+		const maxMalformedRetries = 5
+		var qMsg *queue.QueueMessage
+		skipped := 0
+		for range maxMalformedRetries {
+			msg, deqErr := o.queue.Dequeue(ctx, chatJID)
+			if deqErr != nil {
+				o.log.Error("failed to dequeue message", "group", group.Name, "error", deqErr)
+				break
+			}
+			if msg != nil {
+				qMsg = msg
+				break
+			}
+			skipped++
+		}
+		if skipped == maxMalformedRetries {
+			o.log.Error("dequeue exhausted malformed-message retries: all messages were nil or malformed",
+				"group", group.Name, "retries", maxMalformedRetries)
 		}
 
-		if len(pending) > 0 || qMsg != nil {
+		if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						o.log.Error("panic in post-deactivate processGroupMessages", "group", group.Name, "panic", r)
+					}
+				}()
 				if err := o.processGroupMessages(ctx, chatJID); err != nil {
 					o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
 				}
@@ -1088,8 +1109,44 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string) {
 			}
 		case msg, ok := <-ch:
 			if !ok {
-				deactivate()
-				return
+				if ctx.Err() != nil {
+					return
+				}
+				// Drain the error channel to capture the root cause of the iterator failure.
+				var rootCause error
+				select {
+				case rootCause = <-errCh:
+				default:
+				}
+				// Reconnect with exponential backoff before giving up.
+				var reconnected bool
+				var lastErr error
+				for _, delay := range o.ipcReconnectDelays {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(delay):
+					}
+					newCh, newErrCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
+					if err == nil {
+						ch = newCh
+						errCh = newErrCh
+						reconnected = true
+						o.log.Info("reconnected to IPC output after iterator error", "group", group.Name)
+						break
+					}
+					lastErr = err
+					o.log.Warn("IPC reconnect failed, retrying", "group", group.Name, "error", err, "delay", delay)
+				}
+				if !reconnected {
+					o.log.Error("IPC reconnect exhausted, deactivating group",
+						"group", group.Name,
+						"root_cause", rootCause,
+						"last_error", lastErr)
+					deactivate()
+					return
+				}
+				continue
 			}
 			agentConnected = true
 			if o.handleIPCMessage(ctx, chatJID, group, msg) {
@@ -1114,7 +1171,13 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 			return false
 		}
 		if err := o.router.RouteOutbound(ctx, chatJID, payload.Text); err != nil {
-			o.log.Error("failed to route outbound message", "group", group.Name, "error", err)
+			// Outbound routing failed — do NOT advance the confirmed cursor
+			// so the message remains eligible for retry on the next agent
+			// invocation. Skip storing the bot reply as well, since delivery
+			// was not confirmed.
+			o.log.Error("failed to route outbound message; leaving cursor unadvanced for retry",
+				"group", group.Name, "error", err)
+			return false
 		}
 
 		// Store bot reply so FormatMessagesForAgent attributes it as an assistant turn.
@@ -1245,11 +1308,11 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 	return o.queue.Enqueue(ctx, task.ChatJID, qMsg)
 }
 
-// reconcileActiveSet removes stale entries from the Redis kraclaw:active set.
+// reconcileActiveSet removes stale entries from the active group store.
 // On server restart, sandbox processes that completed while the server was down
-// leave their group JIDs permanently in the set.  If enough accumulate they
+// leave their group JIDs permanently in the store.  If enough accumulate they
 // inflate ActiveCount past MaxConcurrent, silently blocking new sandbox creation.
-// This method enumerates the active set and calls MarkInactive for any JID that
+// This method enumerates the active store and calls MarkInactive for any JID that
 // has no corresponding running or pending K8s sandbox.
 func (o *Orchestrator) reconcileActiveSet(ctx context.Context) {
 	activeJIDs, err := o.queue.ActiveJIDs(ctx)

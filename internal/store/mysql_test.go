@@ -2,14 +2,127 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/ory/dockertest/v3"
+	"github.com/ory/dockertest/v3/docker"
 )
+
+// ---------------------------------------------------------------------------
+// Real-MySQL helpers (dockertest)
+// ---------------------------------------------------------------------------
+
+var (
+	realStoreOnce sync.Once
+	realStoreDSN  string
+	realStoreErr  error
+	realStorePool *dockertest.Pool
+	realStoreRes  *dockertest.Resource
+)
+
+func requireTestStore(t *testing.T) *MySQLStore {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping integration test in -short mode")
+	}
+
+	realStoreOnce.Do(func() {
+		pool, err := dockertest.NewPool("")
+		if err != nil {
+			realStoreErr = fmt.Errorf("create docker pool: %w", err)
+			return
+		}
+		pool.MaxWait = 2 * time.Minute
+		realStorePool = pool
+
+		res, err := pool.RunWithOptions(&dockertest.RunOptions{
+			Repository: "mysql",
+			Tag:        "8.0",
+			Env: []string{
+				"MYSQL_ROOT_PASSWORD=kraclaw",
+				"MYSQL_DATABASE=kraclaw_test",
+			},
+		}, func(hc *docker.HostConfig) {
+			hc.AutoRemove = true
+			hc.RestartPolicy = docker.RestartPolicy{Name: "no"}
+		})
+		if err != nil {
+			realStoreErr = fmt.Errorf("start mysql container: %w", err)
+			return
+		}
+		realStoreRes = res
+
+		port := res.GetPort("3306/tcp")
+		dsn := fmt.Sprintf("root:kraclaw@tcp(localhost:%s)/kraclaw_test?parseTime=true", port)
+
+		if err := pool.Retry(func() error {
+			db, err := sql.Open("mysql", dsn)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+			return db.Ping()
+		}); err != nil {
+			realStoreErr = fmt.Errorf("wait for mysql: %w", err)
+			_ = pool.Purge(res)
+			return
+		}
+
+		realStoreDSN = dsn
+	})
+
+	if realStoreErr != nil {
+		t.Skipf("skipping: docker MySQL unavailable: %v", realStoreErr)
+	}
+
+	s, err := NewMySQLStore(realStoreDSN, 5, 5, time.Minute)
+	if err != nil {
+		t.Fatalf("NewMySQLStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// TestRunMigrations_DirtyReturnsError verifies that the runMigrations function
+// contains fail-fast behavior for dirty migration state rather than auto-reset.
+// Because runMigrations opens its own DB connection from a DSN, it cannot be
+// unit-tested with sqlmock. Instead we verify the source code contains the
+// expected error path and does NOT contain the dangerous auto-reset pattern.
+func TestRunMigrations_DirtyReturnsError(t *testing.T) {
+	src, err := os.ReadFile("mysql.go")
+	if err != nil {
+		t.Fatalf("read mysql.go: %v", err)
+	}
+	source := string(src)
+
+	// Must contain the fail-fast error message.
+	if !strings.Contains(source, "dirty migration state detected at startup") {
+		t.Fatal("mysql.go missing fail-fast error message for dirty migration state")
+	}
+
+	// Must use errors.Is for ErrNoChange comparison.
+	if !strings.Contains(source, "errors.Is(err, migrate.ErrNoChange)") {
+		t.Fatal("mysql.go should use errors.Is for ErrNoChange comparison")
+	}
+
+	// Must NOT contain the dangerous auto-reset pattern.
+	if strings.Contains(source, "m.Force(-1)") {
+		t.Fatal("mysql.go still contains m.Force(-1) — dirty migration auto-reset must be removed")
+	}
+	if strings.Contains(source, "forcing version reset and retrying") {
+		t.Fatal("mysql.go still contains old auto-reset log message")
+	}
+}
+
 
 func TestRetryWithBackoff(t *testing.T) {
 	tests := []struct {
@@ -129,6 +242,7 @@ func TestPingRetryOnTransientError(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
 
 func newTestStore(t *testing.T) (*MySQLStore, sqlmock.Sqlmock) {
 	t.Helper()
@@ -257,7 +371,7 @@ func TestListGroups(t *testing.T) {
 func TestUpsertGroup(t *testing.T) {
 	store, mock := newTestStore(t)
 
-	mock.ExpectExec("REPLACE INTO").
+	mock.ExpectExec("INSERT INTO `groups`.*ON DUPLICATE KEY UPDATE").
 		WithArgs("g1@g.us", "Test", "test", "!bot", false, true, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -274,6 +388,38 @@ func TestUpsertGroup(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestUpsertGroupPreservesActiveState verifies that the UpsertGroup SQL does not
+// include is_active or last_active_at in the ON DUPLICATE KEY UPDATE clause,
+// ensuring those columns are never clobbered on update.
+func TestUpsertGroupPreservesActiveState(t *testing.T) {
+	src, err := os.ReadFile("mysql.go")
+	if err != nil {
+		t.Fatalf("read mysql.go: %v", err)
+	}
+	source := string(src)
+
+	// Must use INSERT ... ON DUPLICATE KEY UPDATE (not REPLACE INTO).
+	if strings.Contains(source, "REPLACE INTO `groups`") {
+		t.Fatal("UpsertGroup still uses REPLACE INTO — must use INSERT ... ON DUPLICATE KEY UPDATE")
+	}
+
+	// Must contain the new upsert pattern.
+	if !strings.Contains(source, "ON DUPLICATE KEY UPDATE") {
+		t.Fatal("UpsertGroup missing ON DUPLICATE KEY UPDATE")
+	}
+
+	// The UPDATE clause must NOT mention is_active or last_active_at.
+	// We verify by checking these strings do not appear in an UPDATE context.
+	// A simple presence check is sufficient because those columns should only
+	// appear in MarkGroupActive / MarkGroupInactive.
+	if strings.Contains(source, "is_active = VALUES") {
+		t.Fatal("UpsertGroup UPDATE clause must not include is_active — managed by MarkGroupActive/Inactive")
+	}
+	if strings.Contains(source, "last_active_at = VALUES") {
+		t.Fatal("UpsertGroup UPDATE clause must not include last_active_at — managed by MarkGroupActive/Inactive")
 	}
 }
 
@@ -1006,4 +1152,137 @@ func TestDeleteAllowlistEntry(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// GroupActiveStore (real MySQL via dockertest)
+// ---------------------------------------------------------------------------
+
+func TestGroupActiveStore(t *testing.T) {
+	s := requireTestStore(t)
+
+	ctx := context.Background()
+	jid := "active-test@g.us"
+
+	// Insert a group so the JID exists.
+	err := s.UpsertGroup(ctx, &Group{
+		JID:     jid,
+		Name:    "Active Test",
+		Folder:  "active-test",
+		AddedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("upsert group: %v", err)
+	}
+
+	// Initially not active.
+	active, err := s.IsGroupActive(ctx, jid)
+	if err != nil {
+		t.Fatalf("IsGroupActive: %v", err)
+	}
+	if active {
+		t.Error("expected not active initially")
+	}
+
+	count, err := s.ActiveGroupCount(ctx)
+	if err != nil {
+		t.Fatalf("ActiveGroupCount: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("ActiveGroupCount = %d, want 0", count)
+	}
+
+	// Mark active.
+	if err := s.MarkGroupActive(ctx, jid); err != nil {
+		t.Fatalf("MarkGroupActive: %v", err)
+	}
+
+	active, err = s.IsGroupActive(ctx, jid)
+	if err != nil {
+		t.Fatalf("IsGroupActive after mark: %v", err)
+	}
+	if !active {
+		t.Error("expected active after MarkGroupActive")
+	}
+
+	count, err = s.ActiveGroupCount(ctx)
+	if err != nil {
+		t.Fatalf("ActiveGroupCount: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("ActiveGroupCount = %d, want 1", count)
+	}
+
+	jids, err := s.ActiveGroupJIDs(ctx)
+	if err != nil {
+		t.Fatalf("ActiveGroupJIDs: %v", err)
+	}
+	if len(jids) != 1 || jids[0] != jid {
+		t.Errorf("ActiveGroupJIDs = %v, want [%q]", jids, jid)
+	}
+
+	// Idempotent mark active.
+	if err := s.MarkGroupActive(ctx, jid); err != nil {
+		t.Fatalf("MarkGroupActive idempotent: %v", err)
+	}
+	count, _ = s.ActiveGroupCount(ctx)
+	if count != 1 {
+		t.Errorf("ActiveGroupCount after second mark = %d, want 1", count)
+	}
+
+	// Mark inactive.
+	if err := s.MarkGroupInactive(ctx, jid); err != nil {
+		t.Fatalf("MarkGroupInactive: %v", err)
+	}
+	active, _ = s.IsGroupActive(ctx, jid)
+	if active {
+		t.Error("expected not active after MarkGroupInactive")
+	}
+}
+
+// TestMySQLStore_MarkGroupActive_UnknownJID verifies that MarkGroupActive and
+// MarkGroupInactive return errors.Is(err, ErrGroupNotFound) when called with a
+// JID that does not exist in the database (gap 10).
+// Uses sqlmock so it runs without Docker.
+func TestMySQLStore_MarkGroupActive_UnknownJID(t *testing.T) {
+	ctx := context.Background()
+	const jid = "nonexistent@g.us"
+
+	t.Run("MarkGroupActive", func(t *testing.T) {
+		s, mock := newTestStore(t)
+		// UPDATE returns 0 rows affected (JID missing).
+		mock.ExpectExec("UPDATE `groups` SET is_active = TRUE").
+			WithArgs(jid).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		// Existence check returns false.
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs(jid).
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+		if err := s.MarkGroupActive(ctx, jid); !errors.Is(err, ErrGroupNotFound) {
+			t.Errorf("MarkGroupActive unknown JID: got %v, want errors.Is ErrGroupNotFound", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet expectations: %v", err)
+		}
+	})
+
+	t.Run("MarkGroupInactive", func(t *testing.T) {
+		s, mock := newTestStore(t)
+		// UPDATE returns 0 rows affected (JID missing).
+		mock.ExpectExec("UPDATE `groups` SET is_active = FALSE").
+			WithArgs(jid).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		// Existence check returns false.
+		mock.ExpectQuery("SELECT EXISTS").
+			WithArgs(jid).
+			WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+		if err := s.MarkGroupInactive(ctx, jid); !errors.Is(err, ErrGroupNotFound) {
+			t.Errorf("MarkGroupInactive unknown JID: got %v, want errors.Is ErrGroupNotFound", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet expectations: %v", err)
+		}
+	})
 }

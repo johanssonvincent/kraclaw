@@ -54,8 +54,8 @@ spec:
           env:
             - name: GROUP_FOLDER
               value: "placeholder"
-            - name: REDIS_URL
-              value: {{ .Values.sandbox.redisUrl | quote }}
+            - name: NATS_URL
+              value: {{ .Values.sandbox.natsUrl | quote }}
             - name: ANTHROPIC_BASE_URL
               value: {{ .Values.sandbox.proxyUrl | quote }}
             - name: HOME

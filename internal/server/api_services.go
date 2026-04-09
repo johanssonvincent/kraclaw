@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -33,7 +32,6 @@ type adminService struct {
 	version   string
 	startedAt time.Time
 	db        *sql.DB
-	rdb       *redis.Client
 	k8s       kubernetes.Interface
 	store     store.Store
 	sandbox   *sandbox.Controller
@@ -71,7 +69,6 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 		version:   cfg.Version,
 		startedAt: cfg.StartedAt,
 		db:        cfg.DB,
-		rdb:       cfg.Redis,
 		k8s:       cfg.Kubernetes,
 		store:     cfg.Store,
 		sandbox:   cfg.Sandbox,
@@ -111,7 +108,6 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 
 func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequest) (*kraclawv1.ServerStatus, error) {
 	mysqlConnected := s.pingMySQL(ctx)
-	redisConnected := s.pingRedis(ctx)
 	k8sConnected := s.pingKubernetes(ctx)
 
 	activeSandboxes := int32(0)
@@ -155,7 +151,10 @@ func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequ
 		ActiveTasks:       activeTasks,
 		UptimeSince:       timestamppb.New(s.startedAt),
 		MysqlConnected:    mysqlConnected,
-		RedisConnected:    redisConnected,
+		// TODO: remove RedisConnected from proto and TUI — field is vestigial after
+		// NATS migration in PR #23. Requires proto regeneration (make proto) and
+		// TUI update to remove the "Redis:" status line.
+		RedisConnected: false,
 		K8SConnected:      k8sConnected,
 	}, nil
 }
@@ -489,7 +488,7 @@ func (s *sandboxService) CreateSandbox(ctx context.Context, req *kraclawv1.Creat
 			Type:    ipc.IPCMessageText,
 			Payload: payload,
 		}
-		if err := s.ipc.SendInput(ctx, req.GroupFolder, msg); err != nil {
+		if err := s.ipc.SendInput(ctx, req.GroupFolder, ipc.DefaultAgentID, msg); err != nil {
 			s.log.Warn("failed to send initial prompt via IPC", "group", req.GroupFolder, "error", err)
 		}
 	}
@@ -525,7 +524,7 @@ func (s *sandboxService) PipeSandboxInput(ctx context.Context, req *kraclawv1.Pi
 		Type:    ipc.IPCMessageText,
 		Payload: payload,
 	}
-	if err := s.ipc.SendInput(ctx, req.GroupFolder, msg); err != nil {
+	if err := s.ipc.SendInput(ctx, req.GroupFolder, ipc.DefaultAgentID, msg); err != nil {
 		return nil, status.Errorf(codes.Internal, "send input: %v", err)
 	}
 
@@ -537,7 +536,7 @@ func (s *sandboxService) StreamSandboxOutput(req *kraclawv1.StreamOutputRequest,
 		return status.Error(codes.Unavailable, "IPC broker not configured")
 	}
 
-	ch, err := s.ipc.SubscribeOutput(stream.Context(), req.GroupFolder)
+	ch, _, err := s.ipc.SubscribeOutput(stream.Context(), req.GroupFolder)
 	if err != nil {
 		return status.Errorf(codes.Internal, "subscribe output: %v", err)
 	}
@@ -583,15 +582,6 @@ func (s *adminService) pingMySQL(ctx context.Context) bool {
 	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	return s.db.PingContext(pingCtx) == nil
-}
-
-func (s *adminService) pingRedis(ctx context.Context) bool {
-	if s.rdb == nil {
-		return false
-	}
-	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	return s.rdb.Ping(pingCtx).Err() == nil
 }
 
 func (s *adminService) pingKubernetes(ctx context.Context) bool {

@@ -2,21 +2,17 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
+	_ "github.com/go-sql-driver/mysql"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"database/sql"
-
-	_ "github.com/go-sql-driver/mysql"
 )
 
 // --- Health endpoint tests ---
@@ -37,25 +33,11 @@ func TestHealthzHandler_Returns200(t *testing.T) {
 }
 
 func TestReadyzHandler_HealthyDeps(t *testing.T) {
-	mr := miniredis.RunT(t)
-
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-
-	// Use a real miniredis for Redis; for DB we need a mock that passes Ping.
-	// sql.Open with a driver but no real server won't Ping successfully,
-	// so we use a wrapper approach: test the Redis-only failure path instead.
-	// For a full healthy test, we'd need a real DB or sqlmock with Ping support.
-	// Instead, test the handler logic by testing the failure paths below.
+	// Full healthy test requires a real MySQL connection; covered by failure-path tests.
 	t.Skip("full healthy test requires a real MySQL connection; covered by failure-path tests")
 }
 
 func TestReadyzHandler_DBDown(t *testing.T) {
-	mr := miniredis.RunT(t)
-
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-
 	// Open a DB connection that will fail on Ping (invalid DSN, no server).
 	db, err := sql.Open("mysql", "invalid:invalid@tcp(127.0.0.1:1)/nonexistent")
 	if err != nil {
@@ -63,43 +45,12 @@ func TestReadyzHandler_DBDown(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	handler := readyzHandler(db, rdb)
+	handler := readyzHandler(db)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
 
 	handler(w, req)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("readyz status = %d, want %d", w.Code, http.StatusServiceUnavailable)
-	}
-}
-
-func TestReadyzHandler_RedisDown(t *testing.T) {
-	// Start and immediately close miniredis to get a dead address.
-	mr := miniredis.RunT(t)
-	addr := mr.Addr()
-	mr.Close()
-
-	rdb := redis.NewClient(&redis.Options{Addr: addr})
-	t.Cleanup(func() { _ = rdb.Close() })
-
-	// Open a DB connection that will also fail, but Redis is checked second,
-	// so DB failure will be hit first. We need DB to succeed for the Redis check.
-	// Since we can't easily mock sql.DB.Ping, we test that the handler returns 503
-	// when either dependency is down.
-	db, err := sql.Open("mysql", "invalid:invalid@tcp(127.0.0.1:1)/nonexistent")
-	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	handler := readyzHandler(db, rdb)
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
-	w := httptest.NewRecorder()
-
-	handler(w, req)
-
-	// DB check comes first and will fail, returning 503.
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("readyz status = %d, want %d", w.Code, http.StatusServiceUnavailable)
 	}
