@@ -40,6 +40,7 @@ type NATSQueue struct {
 
 	mu        sync.Mutex
 	closed    bool
+	streams   sync.Map // sanitized groupID -> struct{} (stream existence cache)
 	consumers sync.Map // sanitized groupID -> jetstream.Consumer
 }
 
@@ -68,6 +69,14 @@ func NewNATSQueue(nc *nats.Conn, gas groupActiveStore, logger *slog.Logger) (*NA
 
 func (q *NATSQueue) ensureStream(ctx context.Context, groupJID string) (string, jetstream.Stream, error) {
 	sanitized := sanitizeQueueGroupID(groupJID)
+	if _, ok := q.streams.Load(sanitized); ok {
+		stream, err := q.js.Stream(ctx, queueStreamName(sanitized))
+		if err == nil {
+			return sanitized, stream, nil
+		}
+		// Stream no longer exists in NATS; remove the stale cache entry and recreate.
+		q.streams.Delete(sanitized)
+	}
 	name := queueStreamName(sanitized)
 	stream, err := q.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      name,
@@ -80,6 +89,7 @@ func (q *NATSQueue) ensureStream(ctx context.Context, groupJID string) (string, 
 	if err != nil {
 		return "", nil, fmt.Errorf("ensure queue stream %s: %w", name, err)
 	}
+	q.streams.Store(sanitized, struct{}{})
 	return sanitized, stream, nil
 }
 
@@ -127,10 +137,11 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 		// Only evict the cached consumer on fatal errors that indicate the
 		// consumer no longer exists server-side. Transient errors (timeouts,
 		// connection hiccups) should not trigger eviction, as that would
-		// cascade into unnecessary consumer re-creation. Stream-level errors
-		// are handled by ensureStream on the next call.
+		// cascade into unnecessary consumer re-creation. ErrStreamNotFound is
+		// included because a deleted+recreated stream invalidates all of its consumers.
 		if errors.Is(err, jetstream.ErrConsumerNotFound) ||
-			errors.Is(err, jetstream.ErrConsumerDeleted) {
+			errors.Is(err, jetstream.ErrConsumerDeleted) ||
+			errors.Is(err, jetstream.ErrStreamNotFound) {
 			q.consumers.Delete(sanitized)
 		}
 		return nil, fmt.Errorf("fetch queue message: %w", err)
@@ -160,6 +171,15 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 		return &qm, nil
 	}
 	if err := msgs.Error(); err != nil && !errors.Is(err, jetstream.ErrMsgIteratorClosed) {
+		// Evict the cached consumer for the same fatal errors as the Fetch path.
+		// ErrNoResponders is included because NATS v1.x returns it (rather than
+		// ErrConsumerNotFound) when Fetch is called on a deleted consumer.
+		if errors.Is(err, jetstream.ErrConsumerNotFound) ||
+			errors.Is(err, jetstream.ErrConsumerDeleted) ||
+			errors.Is(err, jetstream.ErrStreamNotFound) ||
+			errors.Is(err, nats.ErrNoResponders) {
+			q.consumers.Delete(sanitized)
+		}
 		// Timeout and no-messages are expected for empty queue — don't error.
 		if !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, jetstream.ErrNoMessages) {
 			return nil, fmt.Errorf("fetch error: %w", err)

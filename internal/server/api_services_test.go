@@ -373,13 +373,13 @@ func (m *mockIPCBroker) PublishOutput(ctx context.Context, group, agentID string
 	return nil
 }
 
-func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, error) {
+func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, <-chan error, error) {
 	if m.outputCh != nil {
-		return m.outputCh, nil
+		return m.outputCh, make(chan error), nil
 	}
 	ch := make(chan *ipc.IPCMessage)
 	close(ch)
-	return ch, nil
+	return ch, make(chan error), nil
 }
 
 func (m *mockIPCBroker) SendInput(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {

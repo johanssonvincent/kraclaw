@@ -150,6 +150,11 @@ func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error 
 // goroutine: if that ctx is already cancelled when the first call arrives,
 // startReadInput returns immediately and all subsequent callers see a closed
 // channel with no error.
+//
+// The returned errCh (capacity 1) receives the terminal error when the reader
+// goroutine exits due to an ACK failure or iterator error.  After receiving an
+// error the caller should create a new IPCClient and call ReadInput again —
+// sync.Once prevents re-initialising the reader on the same client instance.
 func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-chan error, error) {
 	c.readOnce.Do(func() {
 		c.msgCh = make(chan *InboundMessage, 64)

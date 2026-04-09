@@ -779,7 +779,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 
 	// Subscribe to IPC output BEFORE spawning the watcher goroutine and BEFORE
 	// SendInput, so we cannot miss the agent's first output (race fix).
-	outputCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
+	outputCh, outputErrCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
 	if err != nil {
 		o.log.Error("failed to subscribe to IPC output, tearing down sandbox", "group", group.Name, "error", err)
 		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
@@ -799,14 +799,14 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	}
 
 	// Spawn watchGroupOutput directly to listen for agent output (no event channel)
-	go func(jid string, ch <-chan *ipc.IPCMessage) {
+	go func(jid string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
 		defer func() {
 			if r := recover(); r != nil {
 				o.log.Error("panic in watchGroupOutput", "group_jid", jid, "panic", r)
 			}
 		}()
-		o.watchGroupOutput(ctx, jid, ch)
-	}(chatJID, outputCh)
+		o.watchGroupOutput(ctx, jid, ch, errCh)
+	}(chatJID, outputCh, outputErrCh)
 
 	// Send initial messages via IPC so the agent can read them on startup.
 	if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
@@ -982,7 +982,7 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 // watchGroupOutput subscribes to IPC output for a single group and processes messages.
 // It also periodically checks that the agent Job still exists to avoid getting stuck
 // if the agent dies without sending a shutdown message.
-func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch <-chan *ipc.IPCMessage) {
+func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
 	o.mu.Lock()
 	group, ok := o.registeredGroups[chatJID]
 	o.mu.Unlock()
@@ -1070,6 +1070,11 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 
 		if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						o.log.Error("panic in post-deactivate processGroupMessages", "group", group.Name, "panic", r)
+					}
+				}()
 				if err := o.processGroupMessages(ctx, chatJID); err != nil {
 					o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
 				}
@@ -1107,6 +1112,12 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				if ctx.Err() != nil {
 					return
 				}
+				// Drain the error channel to capture the root cause of the iterator failure.
+				var rootCause error
+				select {
+				case rootCause = <-errCh:
+				default:
+				}
 				// Reconnect with exponential backoff before giving up.
 				var reconnected bool
 				var lastErr error
@@ -1116,9 +1127,10 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						return
 					case <-time.After(delay):
 					}
-					newCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
+					newCh, newErrCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
 					if err == nil {
 						ch = newCh
+						errCh = newErrCh
 						reconnected = true
 						o.log.Info("reconnected to IPC output after iterator error", "group", group.Name)
 						break
@@ -1129,6 +1141,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				if !reconnected {
 					o.log.Error("IPC reconnect exhausted, deactivating group",
 						"group", group.Name,
+						"root_cause", rootCause,
 						"last_error", lastErr)
 					deactivate()
 					return

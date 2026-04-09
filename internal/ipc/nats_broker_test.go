@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -87,7 +88,7 @@ func TestNATSPublishAndSubscribeOutput(t *testing.T) {
 	defer cancel()
 
 	group := "test-group@g.us"
-	ch, err := broker.SubscribeOutput(ctx, group)
+	ch, _, err := broker.SubscribeOutput(ctx, group)
 	if err != nil {
 		t.Fatalf("SubscribeOutput: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestNATSWildcardConsumerReceivesMultipleAgents(t *testing.T) {
 	defer cancel()
 
 	group := "multi-agent-group@g.us"
-	ch, err := broker.SubscribeOutput(ctx, group)
+	ch, _, err := broker.SubscribeOutput(ctx, group)
 	if err != nil {
 		t.Fatalf("SubscribeOutput: %v", err)
 	}
@@ -241,7 +242,7 @@ func TestNATSCloseStopsSubscription(t *testing.T) {
 	defer cancel()
 
 	group := "close-test@g.us"
-	ch, err := broker.SubscribeOutput(ctx, group)
+	ch, _, err := broker.SubscribeOutput(ctx, group)
 	if err != nil {
 		t.Fatalf("SubscribeOutput: %v", err)
 	}
@@ -264,7 +265,7 @@ func TestNATSBrokerSubscribeOutput_AfterClose_ReturnsError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	_, err := broker.SubscribeOutput(context.Background(), "closed-subscribe@g.us")
+	_, _, err := broker.SubscribeOutput(context.Background(), "closed-subscribe@g.us")
 	if err == nil {
 		t.Fatal("SubscribeOutput() error = nil, want closed broker error")
 	}
@@ -312,7 +313,7 @@ func TestNATSContextCancelClosesOutputChannel(t *testing.T) {
 
 		subCtx, subCancel := context.WithCancel(context.Background())
 
-		ch, err := broker.SubscribeOutput(subCtx, "ctx-cancel-output@g.us")
+		ch, _, err := broker.SubscribeOutput(subCtx, "ctx-cancel-output@g.us")
 		if err != nil {
 			t.Fatalf("SubscribeOutput: %v", err)
 		}
@@ -449,7 +450,7 @@ func TestNATSBrokerMalformedMessageSkipped(t *testing.T) {
 	defer cancel()
 
 	group := "malformed-test@g.us"
-	ch, err := broker.SubscribeOutput(ctx, group)
+	ch, _, err := broker.SubscribeOutput(ctx, group)
 	if err != nil {
 		t.Fatalf("SubscribeOutput: %v", err)
 	}
@@ -511,12 +512,12 @@ func TestNATSBrokerMultiGroupIsolation(t *testing.T) {
 	groupBar := "bar@g.us"
 
 	// Subscribe both brokers to their respective groups
-	chFoo, err := broker1.SubscribeOutput(ctx, groupFoo)
+	chFoo, _, err := broker1.SubscribeOutput(ctx, groupFoo)
 	if err != nil {
 		t.Fatalf("SubscribeOutput foo: %v", err)
 	}
 
-	chBar, err := broker2.SubscribeOutput(ctx, groupBar)
+	chBar, _, err := broker2.SubscribeOutput(ctx, groupBar)
 	if err != nil {
 		t.Fatalf("SubscribeOutput bar: %v", err)
 	}
@@ -610,7 +611,7 @@ func TestNATSBrokerContextCancellationDuringConsume(t *testing.T) {
 
 	// Subscribe to output using the cancellable consume context so that
 	// cancelling consumeCancel propagates into the broker's consume goroutine.
-	ch, err := broker.SubscribeOutput(consumeCtx, group)
+	ch, _, err := broker.SubscribeOutput(consumeCtx, group)
 	if err != nil {
 		t.Fatalf("SubscribeOutput: %v", err)
 	}
@@ -675,7 +676,7 @@ loop:
 	}
 
 	// Should be able to receive the final message on a new subscription
-	ch2, err := broker.SubscribeOutput(ctx, group)
+	ch2, _, err := broker.SubscribeOutput(ctx, group)
 	if err != nil {
 		t.Fatalf("second SubscribeOutput: %v", err)
 	}
@@ -700,7 +701,7 @@ func TestNATSBrokerConcurrentAgents(t *testing.T) {
 	numAgents := 5
 
 	// Subscribe to receive all output from all agents
-	ch, err := broker.SubscribeOutput(ctx, group)
+	ch, _, err := broker.SubscribeOutput(ctx, group)
 	if err != nil {
 		t.Fatalf("SubscribeOutput: %v", err)
 	}
@@ -827,7 +828,7 @@ func TestNATSBrokerMessageDeliveryAndRecovery(t *testing.T) {
 			defer cancel()
 
 			group := fmt.Sprintf("ack-test-%s@g.us", tt.scenario)
-			ch, err := broker.SubscribeOutput(ctx, group)
+			ch, _, err := broker.SubscribeOutput(ctx, group)
 			if err != nil {
 				t.Fatalf("SubscribeOutput: %v", err)
 			}
@@ -901,7 +902,7 @@ func TestNATSBrokerSubscribeOutputClosedBroker(t *testing.T) {
 	}
 
 	// Attempt to subscribe after close
-	ch, err := broker.SubscribeOutput(ctx, "test@g.us")
+	ch, _, err := broker.SubscribeOutput(ctx, "test@g.us")
 
 	// Must return nil channel and error (not closed channel and error)
 	if ch != nil {
@@ -983,7 +984,7 @@ func TestNATSBrokerCloseCleanupOrdering(t *testing.T) {
 
 	chans := make([]<-chan *IPCMessage, 0, len(groups))
 	for _, g := range groups {
-		ch, err := broker.SubscribeOutput(ctx, g)
+		ch, _, err := broker.SubscribeOutput(ctx, g)
 		if err != nil {
 			t.Fatalf("SubscribeOutput(%s): %v", g, err)
 		}
@@ -1039,7 +1040,7 @@ func TestNATSBrokerDeleteStreamsWithActiveConsumer(t *testing.T) {
 
 	group := "delete-active-consumer@g.us"
 
-	ch, err := broker.SubscribeOutput(ctx, group)
+	ch, _, err := broker.SubscribeOutput(ctx, group)
 	if err != nil {
 		t.Fatalf("SubscribeOutput: %v", err)
 	}
@@ -1063,6 +1064,75 @@ func TestNATSBrokerDeleteStreamsWithActiveConsumer(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("subscription channel did not close after DeleteStreams")
+		}
+	}
+}
+
+// TestNATSBrokerSubscribeOutputErrCh verifies that when the underlying NATS
+// iterator fails with a non-context error, the errCh returned by SubscribeOutput
+// receives the terminal error and the message channel closes.
+func TestNATSBrokerSubscribeOutputErrCh(t *testing.T) {
+	// Start a NATS server we can shut down manually.
+	opts := &natserver.Options{
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		Port:      -1,
+		NoLog:     true,
+		NoSigs:    true,
+	}
+	s, err := natserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("new nats server: %v", err)
+	}
+	go s.Start()
+	if !s.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats server not ready")
+	}
+	t.Cleanup(s.Shutdown)
+
+	nc, err := nats.Connect(s.ClientURL(), nats.NoReconnect())
+	if err != nil {
+		t.Fatalf("nats connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+
+	broker, err := NewNATSBroker(nc, nil)
+	if err != nil {
+		t.Fatalf("NewNATSBroker: %v", err)
+	}
+	t.Cleanup(func() { _ = broker.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	group := "errch-test@g.us"
+	ch, errCh, err := broker.SubscribeOutput(ctx, group)
+	if err != nil {
+		t.Fatalf("SubscribeOutput: %v", err)
+	}
+
+	// Kill the server to force a non-context iterator error on the consumer.
+	s.Shutdown()
+
+	// Expect an error on errCh and the message channel to close.
+	timeout := time.After(10 * time.Second)
+	gotErr := false
+	chClosed := false
+	for !gotErr || !chClosed {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				chClosed = true
+			}
+		case e, ok := <-errCh:
+			if !ok {
+				continue
+			}
+			if e != nil && !errors.Is(e, context.Canceled) && !errors.Is(e, context.DeadlineExceeded) {
+				gotErr = true
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for errCh: gotErr=%v chClosed=%v", gotErr, chClosed)
 		}
 	}
 }

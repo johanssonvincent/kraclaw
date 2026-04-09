@@ -74,7 +74,10 @@ type IPCBroker interface {
 	// PublishOutput sends a message from an agent to the server.
 	PublishOutput(ctx context.Context, group, agentID string, msg *IPCMessage) error
 	// SubscribeOutput returns a channel receiving output from all agents in a group (wildcard).
-	SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, error)
+	// The second return value is an error channel that receives the terminal error when the
+	// consume goroutine exits due to an iterator failure; callers should drain it when the
+	// message channel closes to obtain the root cause before reconnecting.
+	SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, <-chan error, error)
 	// ReadInput returns a channel receiving input messages for a specific agent.
 	ReadInput(ctx context.Context, group, agentID string) (<-chan *IPCMessage, error)
 	// DeleteStreams removes all IPC data for a group (all agents).

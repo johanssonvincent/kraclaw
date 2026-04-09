@@ -733,3 +733,63 @@ func TestNATSQueueDequeueContextCancellation(t *testing.T) {
 		t.Fatal("Dequeue did not return after context cancellation")
 	}
 }
+
+// TestNATSQueueDequeue_ConsumerEvictionOnDelete verifies that Dequeue self-heals
+// after the durable consumer is deleted server-side: the stale cache entry is
+// evicted on the failing call, and the consumer is recreated on the next call.
+func TestNATSQueueDequeue_ConsumerEvictionOnDelete(t *testing.T) {
+	q, _ := setupNATSQueue(t)
+	ctx := context.Background()
+	group := "eviction-test@g.us"
+
+	// Enqueue and dequeue to warm the consumer cache.
+	msg1 := &QueueMessage{GroupJID: group, Content: "first message", Sender: "user1", Timestamp: time.Now()}
+	if err := q.Enqueue(ctx, group, msg1); err != nil {
+		t.Fatalf("Enqueue #1: %v", err)
+	}
+	got1, err := q.Dequeue(ctx, group)
+	if err != nil {
+		t.Fatalf("first Dequeue: %v", err)
+	}
+	if got1 == nil {
+		t.Fatal("first Dequeue: expected message, got nil")
+	}
+
+	// Enqueue a second message (still in the stream; consumer deletion doesn't remove messages).
+	msg2 := &QueueMessage{GroupJID: group, Content: "second message", Sender: "user1", Timestamp: time.Now()}
+	if err := q.Enqueue(ctx, group, msg2); err != nil {
+		t.Fatalf("Enqueue #2: %v", err)
+	}
+
+	// Delete the server-side consumer directly to simulate an out-of-band deletion.
+	js, err := jetstream.New(q.nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	sanitized := sanitizeQueueGroupID(group)
+	if err := js.DeleteConsumer(ctx, queueStreamName(sanitized), "dequeue-"+sanitized); err != nil {
+		t.Fatalf("DeleteConsumer: %v", err)
+	}
+
+	// Second Dequeue must fail (consumer deleted) and evict the stale cache entry.
+	if _, err := q.Dequeue(ctx, group); err == nil {
+		t.Fatal("expected error on Dequeue after consumer deletion, got nil")
+	}
+
+	// Verify the cache was evicted.
+	if _, ok := q.consumers.Load(sanitized); ok {
+		t.Error("consumer cache entry still present after eviction")
+	}
+
+	// Third Dequeue must succeed — consumer cache is empty, consumer is recreated.
+	got2, err := q.Dequeue(ctx, group)
+	if err != nil {
+		t.Fatalf("Dequeue after eviction: %v", err)
+	}
+	if got2 == nil {
+		t.Fatal("Dequeue after eviction: expected message, got nil")
+	}
+	if got2.Content != msg2.Content {
+		t.Errorf("Content = %q, want %q", got2.Content, msg2.Content)
+	}
+}

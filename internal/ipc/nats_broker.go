@@ -143,11 +143,14 @@ func (b *NATSBroker) SendInput(ctx context.Context, group, agentID string, msg *
 }
 
 // SubscribeOutput returns a channel that receives output from all agents in
-// the group via a durable wildcard pull consumer.
-func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, error) {
+// the group via a durable wildcard pull consumer. The second return value is
+// an error channel that receives the terminal error when the goroutine exits
+// due to an iterator failure; callers should drain it when the message channel
+// closes to obtain the root cause.
+func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, <-chan error, error) {
 	sanitized, err := b.ensureStream(ctx, group)
 	if err != nil {
-		return nil, fmt.Errorf("subscribe output: %w", err)
+		return nil, nil, fmt.Errorf("subscribe output: %w", err)
 	}
 	streamName := ipcStreamName(sanitized)
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
@@ -159,13 +162,13 @@ func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan 
 	// The durable consumer is keyed by name so it won't accumulate even if
 	// consume() fails; a subsequent call will reuse the same server-side consumer.
 	if err != nil {
-		return nil, fmt.Errorf("create output consumer: %w", err)
+		return nil, nil, fmt.Errorf("create output consumer: %w", err)
 	}
-	ch, err := b.consume(ctx, cons, group)
+	ch, errCh, err := b.consume(ctx, cons, group)
 	if err != nil {
-		return nil, fmt.Errorf("consume output: %w", err)
+		return nil, nil, fmt.Errorf("consume output: %w", err)
 	}
-	return ch, nil
+	return ch, errCh, nil
 }
 
 // ReadInput returns a channel that receives input messages for a specific agent.
@@ -186,7 +189,7 @@ func (b *NATSBroker) ReadInput(ctx context.Context, group, agentID string) (<-ch
 	if err != nil {
 		return nil, fmt.Errorf("create input consumer: %w", err)
 	}
-	ch, err := b.consume(ctx, cons, group)
+	ch, _, err := b.consume(ctx, cons, group)
 	if err != nil {
 		return nil, fmt.Errorf("consume input: %w", err)
 	}
@@ -231,15 +234,18 @@ func (b *NATSBroker) Close() error {
 }
 
 // consume creates a goroutine that drains a JetStream consumer into a channel.
-func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group string) (<-chan *IPCMessage, error) {
+// errCh receives the terminal error when the goroutine exits due to an iterator
+// failure. It is buffered (capacity 1) so the send never blocks.
+func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group string) (<-chan *IPCMessage, <-chan error, error) {
 	ch := make(chan *IPCMessage, 64)
+	errCh := make(chan error, 1)
 
 	ctx, cancel := context.WithCancel(ctx)
 
 	iter, err := cons.Messages()
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("create message iterator for group %s: %w", group, err)
+		return nil, nil, fmt.Errorf("create message iterator for group %s: %w", group, err)
 	}
 
 	b.mu.Lock()
@@ -247,7 +253,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 		b.mu.Unlock()
 		iter.Stop()
 		cancel()
-		return nil, fmt.Errorf("consume: broker closed")
+		return nil, nil, fmt.Errorf("consume: broker closed")
 	}
 	id := b.nextID
 	b.nextID++
@@ -293,10 +299,11 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 
 			jmsg, err := iter.Next()
 			if err != nil {
-				if ctx.Err() != nil {
+				if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return
 				}
 				b.logger.Error("ipc message iterator error", "group", group, "error", err, "error_type", fmt.Sprintf("%T", err))
+				errCh <- err
 				return
 			}
 
@@ -357,5 +364,5 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 		}
 	}()
 
-	return ch, nil
+	return ch, errCh, nil
 }

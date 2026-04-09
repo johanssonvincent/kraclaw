@@ -96,7 +96,7 @@ func TestNATSIPCAndQueueRoundTrip(t *testing.T) {
 
 		group := "integration-ipc-output"
 		// SubscribeOutput BEFORE PublishOutput — required by LimitsPolicy with DeliverAllPolicy.
-		ch, err := broker.SubscribeOutput(ctx, group)
+		ch, _, err := broker.SubscribeOutput(ctx, group)
 		if err != nil {
 			t.Fatalf("SubscribeOutput: %v", err)
 		}
@@ -175,7 +175,7 @@ func TestNATSIPCAndQueueRoundTrip(t *testing.T) {
 
 		group := "integration-regression-guard"
 		// Subscribe FIRST — creates the durable consumer so messages are not lost.
-		ch, err := broker.SubscribeOutput(ctx, group)
+		ch, _, err := broker.SubscribeOutput(ctx, group)
 		if err != nil {
 			t.Fatalf("SubscribeOutput: %v", err)
 		}

@@ -19,7 +19,6 @@ data:
   NATS_URL: {{ .Values.nats.url | quote }}
   # Kubernetes / sandbox
   K8S_NAMESPACE: {{ .Release.Namespace | quote }}
-  AGENT_IMAGE: {{ .Values.k8s.agentImage | quote }}
   {{- if .Values.k8s.agentImageAnthropic }}
   AGENT_IMAGE_ANTHROPIC: {{ .Values.k8s.agentImageAnthropic | quote }}
   {{- end }}

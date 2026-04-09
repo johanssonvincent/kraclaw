@@ -262,14 +262,14 @@ type mockIPCBroker struct {
 	deleteStreamsCalled int
 	deleteStreamsGroup  string
 	sendInputFn         func(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error
-	subscribeOutputFn   func(ctx context.Context, group string) (<-chan *ipc.IPCMessage, error)
+	subscribeOutputFn   func(ctx context.Context, group string) (<-chan *ipc.IPCMessage, <-chan error, error)
 }
 
 func (m *mockIPCBroker) PublishOutput(_ context.Context, _ string, _ string, msg *ipc.IPCMessage) error {
 	m.published = append(m.published, msg)
 	return nil
 }
-func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, error) {
+func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, <-chan error, error) {
 	m.subscribeCount++
 	if m.subscribeOutputFn != nil {
 		return m.subscribeOutputFn(ctx, group)
@@ -279,12 +279,12 @@ func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-ch
 		// (e.g. from the watchGroupOutput reconnect path) fail so tests that
 		// pre-close subscribeCh don't loop forever.
 		if m.subscribeCount > 1 {
-			return nil, errors.New("mockIPCBroker: subscribeCh already consumed")
+			return nil, nil, errors.New("mockIPCBroker: subscribeCh already consumed")
 		}
-		return m.subscribeCh, nil
+		return m.subscribeCh, make(chan error), nil
 	}
 	ch := make(chan *ipc.IPCMessage)
-	return ch, nil
+	return ch, make(chan error), nil
 }
 func (m *mockIPCBroker) SendInput(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {
 	if m.sendInputFn != nil {
@@ -1337,7 +1337,7 @@ func TestDeactivate_RollsBackCursorToConfirmed(t *testing.T) {
 	close(ipcCh)
 	b.subscribeCh = ipcCh
 
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 
 	// Agent cursor should be rolled back to confirmed.
 	o.mu.Lock()
@@ -1410,7 +1410,7 @@ func TestDeactivate_PendingMessagesTriggersReprocessing(t *testing.T) {
 	close(ipcCh)
 	b.subscribeCh = ipcCh
 
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 
 	// Wait for processGroupMessages goroutine to start (it calls GetMessagesSince).
 	<-processStarted
@@ -1472,7 +1472,7 @@ func TestDeactivate_PendingCheckFailedTriggersReprocessing(t *testing.T) {
 	close(ipcCh)
 	b.subscribeCh = ipcCh
 
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 
 	// processGroupMessages must have been triggered even though the pending check failed.
 	select {
@@ -1510,7 +1510,7 @@ func TestDeactivate_NoRollbackWhenCursorsMatch(t *testing.T) {
 	close(ipcCh)
 	b.subscribeCh = ipcCh
 
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 
 	// Cursor should remain unchanged.
 	agent := o.lastAgentTimestamp["group1@g.us"]
@@ -1621,7 +1621,7 @@ func TestWatchGroupOutput_StartupTimeoutDeactivatesGroupWhenPodNeverStarts(t *te
 	b.subscribeCh = ipcCh
 
 	// watchGroupOutput should block until the startup timeout fires, then deactivate.
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 
 	// Group should be deactivated.
 	if q.active["group1@g.us"] {
@@ -1669,7 +1669,7 @@ func TestWatchGroupOutput_StartupTimeoutNotFiredWhenAgentConnects(t *testing.T) 
 	close(ipcCh)
 	b.subscribeCh = ipcCh
 
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 
 	// Group should be deactivated by normal agent shutdown, not by startup timeout.
 	// The cursor should NOT be rolled back because confirmedTs == agentTs.
@@ -1960,7 +1960,7 @@ func TestWatchGroupOutput_NilSandboxNoPanic(t *testing.T) {
 	}()
 
 	// This must not panic even though o.sandbox is nil.
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh)
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 }
 
 // --- BUG-03: DeleteStreams on shutdown test ---
@@ -2444,9 +2444,9 @@ func TestWatchGroupOutput_ReconnectSuccess(t *testing.T) {
 	channel2 := make(chan *ipc.IPCMessage, 1)
 
 	var subCalls int
-	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, error) {
+	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, <-chan error, error) {
 		subCalls++
-		return channel2, nil
+		return channel2, make(chan error), nil
 	}
 
 	o := newTestOrchestrator(s, q, b)
@@ -2481,7 +2481,7 @@ func TestWatchGroupOutput_ReconnectSuccess(t *testing.T) {
 		close(channel2)
 	}()
 
-	o.watchGroupOutput(context.Background(), "group1@g.us", channel1)
+	o.watchGroupOutput(context.Background(), "group1@g.us", channel1, make(chan error))
 
 	// SubscribeOutput must have been called exactly once — the reconnect call.
 	if subCalls != 1 {
@@ -2515,8 +2515,8 @@ func TestWatchGroupOutput_ReconnectExhaustedLogsLastError(t *testing.T) {
 	// Every SubscribeOutput call returns an error, simulating a persistently
 	// broken IPC connection during the reconnect phase.
 	reconnectErr := errors.New("ipc: connection refused")
-	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, error) {
-		return nil, reconnectErr
+	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, <-chan error, error) {
+		return nil, nil, reconnectErr
 	}
 
 	o := newTestOrchestrator(s, q, b)
@@ -2534,7 +2534,7 @@ func TestWatchGroupOutput_ReconnectExhaustedLogsLastError(t *testing.T) {
 	channel1 := make(chan *ipc.IPCMessage)
 	close(channel1)
 
-	o.watchGroupOutput(context.Background(), "group1@g.us", channel1)
+	o.watchGroupOutput(context.Background(), "group1@g.us", channel1, make(chan error))
 
 	// After all reconnect delays are exhausted, the group must be deactivated.
 	if q.active["group1@g.us"] {
@@ -2542,6 +2542,11 @@ func TestWatchGroupOutput_ReconnectExhaustedLogsLastError(t *testing.T) {
 	}
 	if _, exists := o.activeSandboxes["group1@g.us"]; exists {
 		t.Error("activeSandboxes entry still present after reconnect exhaustion; expected it to be removed")
+	}
+	// SubscribeOutput must be called exactly once per reconnect delay — no more, no less.
+	wantCalls := len(o.ipcReconnectDelays)
+	if b.subscribeCount != wantCalls {
+		t.Errorf("SubscribeOutput called %d times, want %d (one per reconnect delay)", b.subscribeCount, wantCalls)
 	}
 }
 

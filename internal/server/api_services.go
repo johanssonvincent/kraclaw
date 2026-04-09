@@ -536,7 +536,7 @@ func (s *sandboxService) StreamSandboxOutput(req *kraclawv1.StreamOutputRequest,
 		return status.Error(codes.Unavailable, "IPC broker not configured")
 	}
 
-	ch, err := s.ipc.SubscribeOutput(stream.Context(), req.GroupFolder)
+	ch, _, err := s.ipc.SubscribeOutput(stream.Context(), req.GroupFolder)
 	if err != nil {
 		return status.Errorf(codes.Internal, "subscribe output: %v", err)
 	}
