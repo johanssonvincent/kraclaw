@@ -1391,7 +1391,7 @@ func TestDeactivate_PendingMessagesTriggersReprocessing(t *testing.T) {
 	// The first call comes from deactivate() (pending check) — let it pass.
 	// The second call comes from processGroupMessages goroutine — signal and block.
 	var callCount atomic.Int32
-	processStarted := make(chan struct{})
+	processStarted := make(chan struct{}, 1)
 	processBlock := make(chan struct{})
 	s.getMessagesSinceHook = func() {
 		n := callCount.Add(1)
@@ -1453,7 +1453,7 @@ func TestDeactivate_PendingCheckFailedTriggersReprocessing(t *testing.T) {
 	// triggering pendingCheckFailed = true. The hook clears the error on the second
 	// call so processGroupMessages can proceed without panicking.
 	var callCount atomic.Int32
-	processStarted := make(chan struct{})
+	processStarted := make(chan struct{}, 1)
 	processBlock := make(chan struct{})
 	s.getMessagesSinceErr = errors.New("store unavailable")
 	s.getMessagesSinceHook = func() {
