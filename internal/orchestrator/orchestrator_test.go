@@ -2706,12 +2706,12 @@ func TestWatchGroupOutput_ReconnectUsesGroupFolder(t *testing.T) {
 
 	// Capture the group argument passed to SubscribeOutput on reconnect.
 	var reconnectGroup string
-	b.subscribeOutputFn = func(ctx context.Context, grp string) (<-chan *ipc.IPCMessage, error) {
+	b.subscribeOutputFn = func(ctx context.Context, grp string) (<-chan *ipc.IPCMessage, <-chan error, error) {
 		reconnectGroup = grp
 		// Return a channel with an agent shutdown message so watchGroupOutput terminates cleanly.
 		ch := make(chan *ipc.IPCMessage, 1)
 		ch <- &ipc.IPCMessage{Type: ipc.IPCShutdown}
-		return ch, nil
+		return ch, make(chan error), nil
 	}
 
 	// A closed initial channel triggers the reconnect path immediately.
@@ -2720,7 +2720,7 @@ func TestWatchGroupOutput_ReconnectUsesGroupFolder(t *testing.T) {
 	initialCh := make(chan *ipc.IPCMessage)
 	close(initialCh)
 
-	o.watchGroupOutput(context.Background(), "group1@g.us", initialCh)
+	o.watchGroupOutput(context.Background(), "group1@g.us", initialCh, make(chan error))
 
 	if reconnectGroup != group.Folder {
 		t.Errorf("SubscribeOutput reconnect arg = %q, want group.Folder %q (was chatJID %q before fix)", reconnectGroup, group.Folder, group.JID)
