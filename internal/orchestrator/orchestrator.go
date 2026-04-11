@@ -61,6 +61,12 @@ type Orchestrator struct {
 	registeredGroups       map[string]store.Group // JID -> Group
 	activeSandboxes        map[string]string      // chatJID -> current sandbox name
 
+	// inflightSandboxes tracks groups with an in-progress processGroupMessages
+	// goroutine. Claims are inserted atomically before spawning and released in
+	// the goroutine's defer. Guards against the double-sandbox TOCTOU between
+	// IsActive()/ActiveCount() and MarkActive().
+	inflightSandboxes sync.Map // map[string]struct{} — keyed on chatJID
+
 	rateLimiters   map[string]*TokenBucket
 	rateLimitersMu sync.Mutex
 
@@ -628,8 +634,16 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 				o.log.Error("failed to save state", "error", err)
 			}
 		} else {
-			// Create a new sandbox for this group.
-			go func(jid string, g store.Group) {
+			// Atomically claim an in-flight slot before spawning. If another
+			// goroutine already holds it, skip this poll cycle — the in-flight
+			// work will handle any pending messages for this group.
+			release, ok := o.claimSandboxSlot(chatJID)
+			if !ok {
+				o.log.Debug("sandbox spawn skipped: already in-flight", "group", group.Name)
+				continue
+			}
+			go func(jid string, g store.Group, release func()) {
+				defer release()
 				defer func() {
 					if r := recover(); r != nil {
 						o.log.Error("panic in processGroupMessages", "group", g.Name, "panic", r)
@@ -638,9 +652,20 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 				if err := o.processGroupMessages(ctx, jid); err != nil {
 					o.log.Error("failed to process group messages", "group", g.Name, "error", err)
 				}
-			}(chatJID, group)
+			}(chatJID, group, release)
 		}
 	}
+}
+
+// claimSandboxSlot atomically reserves an in-flight slot for chatJID.
+// Returns (release, true) if the caller won the claim; returns (nil, false)
+// if another goroutine already holds it. Callers MUST invoke release()
+// exactly once — typically via defer — when done.
+func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
+	if _, loaded := o.inflightSandboxes.LoadOrStore(chatJID, struct{}{}); loaded {
+		return nil, false
+	}
+	return func() { o.inflightSandboxes.Delete(chatJID) }, true
 }
 
 // processGroupMessages fetches pending messages for a group and creates a sandbox.
@@ -679,10 +704,18 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	if err != nil {
 		return fmt.Errorf("check active count: %w", err)
 	}
-	if activeCount >= int64(o.cfg.Queue.MaxConcurrent) {
+	inflight := 0
+	o.inflightSandboxes.Range(func(_, _ any) bool {
+		inflight++
+		return true
+	})
+	// `inflight` includes this goroutine's own claim, so subtract 1 to count
+	// only OTHER in-flight spawns racing alongside us.
+	if activeCount+int64(inflight-1) >= int64(o.cfg.Queue.MaxConcurrent) {
 		o.log.Debug("sandbox creation deferred: MAX_CONCURRENT reached",
 			"group", group.Name,
 			"active", activeCount,
+			"inflight", inflight-1,
 			"max", o.cfg.Queue.MaxConcurrent)
 		return nil // Message stays queued; retried on next poll.
 	}
@@ -1069,16 +1102,23 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 		}
 
 		if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						o.log.Error("panic in post-deactivate processGroupMessages", "group", group.Name, "panic", r)
+			release, ok := o.claimSandboxSlot(chatJID)
+			if !ok {
+				o.log.Debug("post-deactivate recovery skipped: sandbox already in-flight",
+					"group", group.Name)
+			} else {
+				go func(release func()) {
+					defer release()
+					defer func() {
+						if r := recover(); r != nil {
+							o.log.Error("panic in post-deactivate processGroupMessages", "group", group.Name, "panic", r)
+						}
+					}()
+					if err := o.processGroupMessages(ctx, chatJID); err != nil {
+						o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
 					}
-				}()
-				if err := o.processGroupMessages(ctx, chatJID); err != nil {
-					o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
-				}
-			}()
+				}(release)
+			}
 		}
 	}
 

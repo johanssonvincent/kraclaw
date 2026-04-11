@@ -713,6 +713,14 @@ func TestMaxConcurrent_AtLimit_SkipsCreateSandbox(t *testing.T) {
 		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
 	}
 
+	// claimSandboxSlot must be held before entering processGroupMessages, matching
+	// the production calling convention (pollMessages always claims first).
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("failed to claim sandbox slot for test group")
+	}
+	defer release()
+
 	err = o.processGroupMessages(context.Background(), "group1@g.us")
 	if err != nil {
 		t.Fatalf("processGroupMessages() error = %v, want nil", err)
@@ -2724,5 +2732,281 @@ func TestWatchGroupOutput_ReconnectUsesGroupFolder(t *testing.T) {
 
 	if reconnectGroup != group.Folder {
 		t.Errorf("SubscribeOutput reconnect arg = %q, want group.Folder %q (was chatJID %q before fix)", reconnectGroup, group.Folder, group.JID)
+	}
+}
+
+// --- Double-Sandbox TOCTOU Fix Tests ---
+
+// TestClaimSandboxSlot_AtomicClaimAndRelease is a unit test for the
+// claimSandboxSlot helper. It verifies atomic claim semantics: one winner per
+// chatJID, no collisions across different JIDs, and release restores availability.
+func TestClaimSandboxSlot_AtomicClaimAndRelease(t *testing.T) {
+	o := &Orchestrator{}
+
+	// First claim wins.
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("first claimSandboxSlot() = false, want true")
+	}
+	if release == nil {
+		t.Fatal("first claimSandboxSlot() release = nil, want non-nil")
+	}
+
+	// Second claim for same JID must be rejected.
+	_, ok2 := o.claimSandboxSlot("group1@g.us")
+	if ok2 {
+		t.Error("second claimSandboxSlot() = true, want false (slot already held)")
+	}
+
+	// Different JID must not collide with the held slot.
+	release2, ok3 := o.claimSandboxSlot("group2@g.us")
+	if !ok3 {
+		t.Error("claimSandboxSlot() for different JID = false, want true")
+	}
+	if release2 != nil {
+		release2()
+	}
+
+	// After release, the same JID is claimable again.
+	release()
+	release3, ok4 := o.claimSandboxSlot("group1@g.us")
+	if !ok4 {
+		t.Error("claimSandboxSlot() after release = false, want true")
+	}
+	if release3 != nil {
+		release3()
+	}
+}
+
+// mockSandboxWithGate is a sandbox mock that supports an atomic call counter and
+// a synchronisation gate so concurrent spawn tests can inspect in-progress state.
+type mockSandboxWithGate struct {
+	createCount atomic.Int32
+	createErr   error
+	// If createStarted is non-nil, it is signalled before createGate is waited on.
+	createStarted chan struct{}
+	// If createGate is non-nil, CreateSandbox blocks until the gate is closed.
+	createGate chan struct{}
+}
+
+func (m *mockSandboxWithGate) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
+	m.createCount.Add(1)
+	if m.createStarted != nil {
+		select {
+		case m.createStarted <- struct{}{}:
+		default:
+		}
+	}
+	if m.createGate != nil {
+		<-m.createGate
+	}
+	if m.createErr != nil {
+		return nil, m.createErr
+	}
+	return &sandbox.SandboxStatus{Name: "test-sandbox", State: sandbox.StatePending}, nil
+}
+func (m *mockSandboxWithGate) StopSandbox(_ context.Context, _ string) error       { return nil }
+func (m *mockSandboxWithGate) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (m *mockSandboxWithGate) CleanupOrphans(_ context.Context) error { return nil }
+func (m *mockSandboxWithGate) WatchSandboxes(_ context.Context) (<-chan sandbox.SandboxEvent, error) {
+	return make(chan sandbox.SandboxEvent), nil
+}
+
+// TestPollMessages_ConcurrentSpawn_SingleSandbox is the primary regression test
+// for the double-sandbox TOCTOU. It verifies that two concurrent pollMessages
+// calls for the same group result in exactly one CreateSandbox call, even when
+// the first goroutine is still inside processGroupMessages when the second poll
+// fires.
+func TestPollMessages_ConcurrentSpawn_SingleSandbox(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueWithActiveCount{
+		mockQueue:   mockQueue{active: make(map[string]bool)},
+		activeCount: 0,
+	}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+
+	createStarted := make(chan struct{}, 1)
+	createGate := make(chan struct{})
+	sb := &mockSandboxWithGate{
+		createStarted: createStarted,
+		createGate:    createGate,
+	}
+
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = sb
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	// Seed both the store (for refreshGroups) and the in-memory map.
+	s.groups = append(s.groups, group)
+	o.registeredGroups["group1@g.us"] = group
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	// First pollMessages: wins the claim, spawns a goroutine that blocks in CreateSandbox.
+	o.pollMessages(context.Background())
+
+	// Wait until the first goroutine has entered CreateSandbox (slot is still held).
+	select {
+	case <-createStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first goroutine to reach CreateSandbox")
+	}
+
+	// Second pollMessages: the in-flight slot is already held — must skip.
+	o.pollMessages(context.Background())
+
+	// Unblock the first goroutine.
+	close(createGate)
+
+	// Wait for the in-flight slot to be released (indicates first goroutine finished).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, held := o.inflightSandboxes.Load("group1@g.us")
+		if !held {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	_, stillHeld := o.inflightSandboxes.Load("group1@g.us")
+	if stillHeld {
+		t.Error("in-flight slot was not released after goroutine finished")
+	}
+
+	if got := sb.createCount.Load(); got != 1 {
+		t.Errorf("CreateSandbox called %d times, want 1", got)
+	}
+}
+
+// TestMaxConcurrent_IncludesInflight verifies that in-flight spawns for OTHER
+// groups count toward the MaxConcurrent limit, closing the cross-group TOCTOU
+// between ActiveCount() and MarkActive().
+func TestMaxConcurrent_IncludesInflight(t *testing.T) {
+	s := newMockStore()
+	// One group is already committed-active.
+	mq := &mockQueueWithActiveCount{
+		mockQueue:   mockQueue{active: make(map[string]bool)},
+		activeCount: 1,
+	}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{}
+
+	const maxConcurrent = 3
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: maxConcurrent},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = sb
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	o.registeredGroups["group1@g.us"] = store.Group{
+		JID: "group1@g.us", Folder: "test-group", IsMain: true,
+	}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+	// processGroupMessages is called directly; no need to seed s.groups.
+
+	// Pre-seed inflightSandboxes with (maxConcurrent - 1) OTHER groups so that
+	// activeCount(1) + inflight(maxConcurrent-1) == maxConcurrent.
+	// processGroupMessages for "group1@g.us" should see itself as the only
+	// in-flight entry (inflight-1 == maxConcurrent-1) plus activeCount(1),
+	// which totals maxConcurrent → must skip CreateSandbox.
+	for i := range maxConcurrent - 1 {
+		o.inflightSandboxes.Store(fmt.Sprintf("other%d@g.us", i), struct{}{})
+	}
+	// Also claim the slot for the group under test (as pollMessages would do).
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("failed to claim sandbox slot for test group")
+	}
+	defer release()
+
+	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	if err != nil {
+		t.Fatalf("processGroupMessages() error = %v, want nil", err)
+	}
+	if sb.createCalled {
+		t.Error("CreateSandbox was called, want skipped: activeCount+inflight >= MaxConcurrent")
+	}
+}
+
+// TestDeactivateRecovery_ClaimsInflightSlot verifies that when the
+// watchGroupOutput recovery goroutine tries to spawn a processGroupMessages call
+// but the in-flight slot is already held, it skips rather than spawning a second
+// concurrent goroutine for the same group.
+func TestDeactivateRecovery_ClaimsInflightSlot(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+	q.active["group1@g.us"] = true
+
+	// Seed a pending message so the recovery path would normally fire.
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "pending", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	// Track whether processGroupMessages was entered (second GetMessagesSince call).
+	var callCount atomic.Int32
+	recoveryEntered := make(chan struct{}, 1)
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) < 2 {
+			return // first call is deactivate()'s own pending check
+		}
+		select {
+		case recoveryEntered <- struct{}{}:
+		default:
+		}
+	}
+
+	// Pre-claim the slot BEFORE watchGroupOutput can claim it.
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("failed to pre-claim sandbox slot")
+	}
+	defer release()
+
+	// Close IPC channel to trigger deactivate + recovery path.
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	// Recovery goroutine must have been skipped — no second GetMessagesSince call.
+	select {
+	case <-recoveryEntered:
+		t.Error("recovery goroutine was spawned despite pre-held in-flight slot")
+	case <-time.After(100 * time.Millisecond):
+		// Good: no second call observed within the window.
 	}
 }
