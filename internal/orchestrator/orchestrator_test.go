@@ -2569,10 +2569,10 @@ func TestWatchGroupOutput_ReconnectExhaustedLogsLastError(t *testing.T) {
 // mockQueueRecording wraps mockQueue and records Enqueue calls for assertion.
 type mockQueueRecording struct {
 	*mockQueue
-	mu           sync.Mutex
-	enqueued     []string            // groupJIDs passed to Enqueue
-	enqueueErr   error
-	dequeueOnce  *queue.QueueMessage // if non-nil, returned once then cleared
+	mu          sync.Mutex
+	enqueued    []string // groupJIDs passed to Enqueue
+	enqueueErr  error
+	dequeueOnce *queue.QueueMessage // if non-nil, returned once then cleared
 }
 
 func (m *mockQueueRecording) Enqueue(_ context.Context, groupJID string, _ *queue.QueueMessage) error {
@@ -2860,8 +2860,7 @@ type mockSandboxWithGate struct {
 
 func (m *mockSandboxWithGate) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
 	if m.createDone != nil {
-		var once sync.Once
-		defer once.Do(func() { close(m.createDone) })
+		defer close(m.createDone)
 	}
 	m.createCount.Add(1)
 	if m.createStarted != nil {
@@ -2878,7 +2877,7 @@ func (m *mockSandboxWithGate) CreateSandbox(_ context.Context, _ sandbox.Sandbox
 	}
 	return &sandbox.SandboxStatus{Name: "test-sandbox", State: sandbox.StatePending}, nil
 }
-func (m *mockSandboxWithGate) StopSandbox(_ context.Context, _ string) error       { return nil }
+func (m *mockSandboxWithGate) StopSandbox(_ context.Context, _ string) error { return nil }
 func (m *mockSandboxWithGate) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
@@ -2949,14 +2948,15 @@ func TestPollMessages_ConcurrentSpawn_SingleSandbox(t *testing.T) {
 	// Unblock the first goroutine.
 	close(createGate)
 
-	// Wait for CreateSandbox to return (indicates the first goroutine is past the
-	// sandbox call and about to run its deferred release).
+	// Wait for CreateSandbox to return. Note: defer release() fires only after
+	// processGroupMessages returns entirely (MarkActive, SubscribeOutput, etc.
+	// still run after CreateSandbox). waitSlotReleased polls until the slot is
+	// gone rather than assuming release() is immediate after createDone.
 	select {
 	case <-createDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for first goroutine to finish CreateSandbox")
 	}
-	// Give the deferred release() a brief moment to run after CreateSandbox returns.
 	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
 
 	if got := sb.createCount.Load(); got != 1 {

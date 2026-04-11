@@ -119,7 +119,7 @@ func New(
 	if log == nil {
 		return nil, fmt.Errorf("orchestrator: logger is required")
 	}
-	// Note: ctrl (sandbox controller) can be nil — Phase 1 already added a nil guard for this.
+	// ctrl may be nil (no K8s sandbox controller in test/local mode).
 	// Store as interface only when non-nil to preserve interface nil semantics for nil checks.
 	var sc sandboxController
 	if ctrl != nil {
@@ -641,7 +641,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 			// work will handle any pending messages for this group.
 			release, ok := o.claimSandboxSlot(chatJID)
 			if !ok {
-				o.log.Debug("sandbox spawn skipped: already in-flight", "group", group.Name)
+				o.log.Info("sandbox spawn skipped: already in-flight", "group", group.Name)
 				continue
 			}
 			go func(jid string, g store.Group, release func()) {
@@ -649,8 +649,8 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 				defer func() {
 					if r := recover(); r != nil {
 						o.log.Error("panic in processGroupMessages",
-						"group", g.Name, "panic", r,
-						"stack", string(debug.Stack()))
+							"group", g.Name, "panic", r,
+							"stack", string(debug.Stack()))
 					}
 				}()
 				if err := o.processGroupMessages(ctx, jid); err != nil {
@@ -711,7 +711,10 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	// pre-flight throttle: under a sufficiently large burst of concurrent spawn
 	// attempts across distinct groups, up to N extra sandboxes can be admitted
 	// past MaxConcurrent, where N is the number of goroutines racing through
-	// this check before any of them calls MarkActive. Not a hard invariant.
+	// this check before any of them calls MarkActive. In practice the window
+	// is narrow: claimSandboxSlot is called before this function, so two goroutines
+	// for the same group cannot both reach this check concurrently; only goroutines
+	// for distinct groups can collide. Not a hard invariant.
 	activeCount, err := o.queue.ActiveCount(ctx)
 	if err != nil {
 		return fmt.Errorf("check active count: %w", err)
@@ -1127,7 +1130,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				if qMsg != nil {
 					if reqErr := o.queue.Enqueue(ctx, chatJID, qMsg); reqErr != nil {
 						o.log.Error("post-deactivate: failed to re-enqueue message after slot claim failure; message lost",
-							"group", group.Name, "error", reqErr)
+							"group", group.Name, "is_task", qMsg.IsTask, "error", reqErr)
 					}
 				}
 				if pendingCheckFailed {
