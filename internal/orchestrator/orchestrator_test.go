@@ -2569,9 +2569,10 @@ func TestWatchGroupOutput_ReconnectExhaustedLogsLastError(t *testing.T) {
 // mockQueueRecording wraps mockQueue and records Enqueue calls for assertion.
 type mockQueueRecording struct {
 	*mockQueue
-	mu         sync.Mutex
-	enqueued   []string // groupJIDs passed to Enqueue
-	enqueueErr error
+	mu           sync.Mutex
+	enqueued     []string            // groupJIDs passed to Enqueue
+	enqueueErr   error
+	dequeueOnce  *queue.QueueMessage // if non-nil, returned once then cleared
 }
 
 func (m *mockQueueRecording) Enqueue(_ context.Context, groupJID string, _ *queue.QueueMessage) error {
@@ -2579,6 +2580,17 @@ func (m *mockQueueRecording) Enqueue(_ context.Context, groupJID string, _ *queu
 	defer m.mu.Unlock()
 	m.enqueued = append(m.enqueued, groupJID)
 	return m.enqueueErr
+}
+
+func (m *mockQueueRecording) Dequeue(_ context.Context, _ string) (*queue.QueueMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dequeueOnce != nil {
+		msg := m.dequeueOnce
+		m.dequeueOnce = nil
+		return msg, nil
+	}
+	return nil, nil
 }
 
 func (m *mockQueueRecording) count() int {
@@ -3120,6 +3132,117 @@ func TestDeactivateRecovery_ClaimsInflightSlot(t *testing.T) {
 		t.Errorf("GetMessagesSince called %d times, want 1 (recovery goroutine must have been skipped)", got)
 	}
 	// Drain recoveryEntered in case of a latent send from a scheduler-paused goroutine.
+	select {
+	case <-recoveryEntered:
+		t.Error("recovery goroutine was spawned despite pre-held in-flight slot")
+	default:
+	}
+}
+
+// TestDeactivateRecovery_ReenqueuesDequeuedMsgWhenSlotHeld verifies that when
+// the in-flight slot is already held and a non-nil qMsg was dequeued, the
+// message is re-enqueued so it is not silently lost.
+func TestDeactivateRecovery_ReenqueuesDequeuedMsgWhenSlotHeld(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueRecording{mockQueue: newMockQueue()}
+	mq.active["group1@g.us"] = true
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	// Build the orchestrator with the base mock, then replace queue with the recording wrapper.
+	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
+	o.queue = mq
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+
+	// Arrange for Dequeue to return a non-nil message once.
+	mq.dequeueOnce = &queue.QueueMessage{GroupJID: "group1@g.us", Content: "task payload", IsTask: true}
+
+	// Track processGroupMessages spawns (second GetMessagesSince call).
+	var callCount atomic.Int32
+	recoveryEntered := make(chan struct{}, 1)
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) < 2 {
+			return // first call is deactivate()'s own pending check
+		}
+		select {
+		case recoveryEntered <- struct{}{}:
+		default:
+		}
+	}
+
+	// Pre-claim the slot so the recovery goroutine cannot claim it.
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("failed to pre-claim sandbox slot")
+	}
+	defer release()
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	// Enqueue must have been called exactly once (to re-enqueue the dequeued message).
+	if got := mq.count(); got != 1 {
+		t.Errorf("Enqueue called %d times, want 1 (dequeued message must be re-enqueued)", got)
+	}
+	// processGroupMessages must NOT have been spawned.
+	select {
+	case <-recoveryEntered:
+		t.Error("recovery goroutine was spawned despite pre-held in-flight slot")
+	default:
+	}
+}
+
+// TestDeactivateRecovery_ReenqueueErrorLoggedAndMessageLost verifies that when
+// re-enqueueing a dequeued message fails, the error is absorbed (not propagated)
+// and processGroupMessages is still not spawned.
+func TestDeactivateRecovery_ReenqueueErrorLoggedAndMessageLost(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueRecording{
+		mockQueue:  newMockQueue(),
+		enqueueErr: errors.New("enqueue failure"),
+	}
+	mq.active["group1@g.us"] = true
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	// Build the orchestrator with the base mock, then replace queue with the recording wrapper.
+	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
+	o.queue = mq
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+
+	mq.dequeueOnce = &queue.QueueMessage{GroupJID: "group1@g.us", Content: "task payload", IsTask: true}
+
+	var callCount atomic.Int32
+	recoveryEntered := make(chan struct{}, 1)
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) < 2 {
+			return // first call is deactivate()'s own pending check
+		}
+		select {
+		case recoveryEntered <- struct{}{}:
+		default:
+		}
+	}
+
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("failed to pre-claim sandbox slot")
+	}
+	defer release()
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+
+	// Must not deadlock or panic despite Enqueue returning an error.
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	// processGroupMessages must NOT have been spawned.
 	select {
 	case <-recoveryEntered:
 		t.Error("recovery goroutine was spawned despite pre-held in-flight slot")

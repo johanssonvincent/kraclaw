@@ -63,9 +63,10 @@ type Orchestrator struct {
 	activeSandboxes        map[string]string      // chatJID -> current sandbox name
 
 	// inflightSandboxes tracks groups with an in-progress processGroupMessages
-	// goroutine. Claims are inserted atomically before spawning and released in
-	// the goroutine's defer. Guards against the double-sandbox TOCTOU between
-	// IsActive()/ActiveCount() and MarkActive().
+	// goroutine. The claim (via sync.Map.LoadOrStore in claimSandboxSlot) is
+	// atomic; the subsequent goroutine spawn is not, so callers must ensure the
+	// claim is released on every exit path (typically via defer). Guards against
+	// the double-sandbox TOCTOU between IsActive()/ActiveCount() and MarkActive().
 	inflightSandboxes sync.Map // map[string]struct{} — keyed on chatJID
 
 	rateLimiters   map[string]*TokenBucket
@@ -662,8 +663,9 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 
 // claimSandboxSlot atomically reserves an in-flight slot for chatJID.
 // Returns (release, true) if the caller won the claim; returns (nil, false)
-// if another goroutine already holds it. Callers MUST invoke release()
-// exactly once — typically via defer — when done.
+// if another goroutine already holds it. When ok is true, callers MUST
+// invoke release() exactly once — typically via defer — when done. When
+// ok is false, release is nil and must not be called.
 func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 	if _, loaded := o.inflightSandboxes.LoadOrStore(chatJID, struct{}{}); loaded {
 		return nil, false
@@ -705,9 +707,11 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	// Enforce MAX_CONCURRENT limit — reject sandbox creation when at capacity (REL-01).
 	// activeCount is from NATS; others is from the in-flight map. The two reads
 	// are individually consistent but not taken atomically with respect to each
-	// other. Under a burst of concurrent spawn attempts this check can admit one
-	// extra sandbox past MaxConcurrent in the worst case — acceptable for a
-	// pre-flight throttle, not a hard invariant.
+	// other, nor with respect to MarkActive() below. This is a best-effort
+	// pre-flight throttle: under a sufficiently large burst of concurrent spawn
+	// attempts across distinct groups, up to N extra sandboxes can be admitted
+	// past MaxConcurrent, where N is the number of goroutines racing through
+	// this check before any of them calls MarkActive. Not a hard invariant.
 	activeCount, err := o.queue.ActiveCount(ctx)
 	if err != nil {
 		return fmt.Errorf("check active count: %w", err)
@@ -840,14 +844,16 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	}
 
 	// Spawn watchGroupOutput directly to listen for agent output (no event channel)
-	go func(jid string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
+	go func(jid string, g store.Group, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
 		defer func() {
 			if r := recover(); r != nil {
-				o.log.Error("panic in watchGroupOutput", "group_jid", jid, "panic", r)
+				o.log.Error("panic in watchGroupOutput",
+					"group", g.Name, "panic", r,
+					"stack", string(debug.Stack()))
 			}
 		}()
 		o.watchGroupOutput(ctx, jid, ch, errCh)
-	}(chatJID, outputCh, outputErrCh)
+	}(chatJID, group, outputCh, outputErrCh)
 
 	// Send initial messages via IPC so the agent can read them on startup.
 	if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
@@ -1112,10 +1118,12 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 		if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
 			release, ok := o.claimSandboxSlot(chatJID)
 			if !ok {
-				// Re-enqueue the consumed qMsg; the in-flight goroutine's
-				// processGroupMessages reads MySQL, not the queue, so without this
-				// re-enqueue scheduled tasks (see executeScheduledTask) would be
-				// silently dropped.
+				// Re-enqueue the consumed qMsg. processGroupMessages reads pending
+				// work from MySQL (store.GetMessagesSince), not from the NATS queue,
+				// so any message already dequeued here would be permanently lost
+				// unless re-enqueued — the stream has already consumed it. This
+				// matters in particular for scheduled tasks (see executeScheduledTask)
+				// whose payload lives only in the queue, not in MySQL.
 				if qMsg != nil {
 					if reqErr := o.queue.Enqueue(ctx, chatJID, qMsg); reqErr != nil {
 						o.log.Error("post-deactivate: failed to re-enqueue message after slot claim failure; message lost",
@@ -1130,6 +1138,10 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						"group", group.Name)
 				}
 			} else {
+				if pendingCheckFailed {
+					o.log.Info("post-deactivate: spawning defensive recovery after pending-message check failure",
+						"group", group.Name)
+				}
 				go func(release func()) {
 					defer release()
 					defer func() {
