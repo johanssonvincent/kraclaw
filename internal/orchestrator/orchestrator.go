@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -646,7 +647,9 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 				defer release()
 				defer func() {
 					if r := recover(); r != nil {
-						o.log.Error("panic in processGroupMessages", "group", g.Name, "panic", r)
+						o.log.Error("panic in processGroupMessages",
+						"group", g.Name, "panic", r,
+						"stack", string(debug.Stack()))
 					}
 				}()
 				if err := o.processGroupMessages(ctx, jid); err != nil {
@@ -700,6 +703,11 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	}
 
 	// Enforce MAX_CONCURRENT limit — reject sandbox creation when at capacity (REL-01).
+	// activeCount is from NATS; others is from the in-flight map. The two reads
+	// are individually consistent but not taken atomically with respect to each
+	// other. Under a burst of concurrent spawn attempts this check can admit one
+	// extra sandbox past MaxConcurrent in the worst case — acceptable for a
+	// pre-flight throttle, not a hard invariant.
 	activeCount, err := o.queue.ActiveCount(ctx)
 	if err != nil {
 		return fmt.Errorf("check active count: %w", err)
@@ -1104,8 +1112,18 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 		if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
 			release, ok := o.claimSandboxSlot(chatJID)
 			if !ok {
+				// Re-enqueue the consumed qMsg; the in-flight goroutine's
+				// processGroupMessages reads MySQL, not the queue, so without this
+				// re-enqueue scheduled tasks (see executeScheduledTask) would be
+				// silently dropped.
+				if qMsg != nil {
+					if reqErr := o.queue.Enqueue(ctx, chatJID, qMsg); reqErr != nil {
+						o.log.Error("post-deactivate: failed to re-enqueue message after slot claim failure; message lost",
+							"group", group.Name, "error", reqErr)
+					}
+				}
 				if pendingCheckFailed {
-					o.log.Warn("post-deactivate recovery skipped: slot in-flight; pending-message MySQL check also failed — next poll will retry",
+					o.log.Error("post-deactivate recovery skipped: slot in-flight; pending-message MySQL check also failed — next poll will retry",
 						"group", group.Name)
 				} else {
 					o.log.Debug("post-deactivate recovery skipped: sandbox already in-flight",
@@ -1116,7 +1134,9 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 					defer release()
 					defer func() {
 						if r := recover(); r != nil {
-							o.log.Error("panic in post-deactivate processGroupMessages", "group", group.Name, "panic", r)
+							o.log.Error("panic in post-deactivate processGroupMessages",
+								"group", group.Name, "panic", r,
+								"stack", string(debug.Stack()))
 						}
 					}()
 					if err := o.processGroupMessages(ctx, chatJID); err != nil {

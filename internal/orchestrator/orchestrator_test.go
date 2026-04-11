@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2787,6 +2786,27 @@ func TestClaimSandboxSlot_AtomicClaimAndRelease(t *testing.T) {
 	}
 }
 
+// waitSlotReleased polls o.inflightSandboxes until jid is absent or timeout
+// elapses. Uses a ticker to avoid busy-wait under -race.
+func waitSlotReleased(t *testing.T, o *Orchestrator, jid string, timeout time.Duration) {
+	t.Helper()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case <-tick.C:
+			if _, held := o.inflightSandboxes.Load(jid); !held {
+				return
+			}
+		case <-deadline.C:
+			t.Errorf("in-flight slot for %q was not released within %v", jid, timeout)
+			return
+		}
+	}
+}
+
 // TestPollMessages_PanicReleasesSlot verifies that a panic inside
 // processGroupMessages still releases the in-flight slot via the deferred
 // release() in the spawn goroutine's defer stack.
@@ -2810,14 +2830,7 @@ func TestPollMessages_PanicReleasesSlot(t *testing.T) {
 	o.pollMessages(context.Background())
 
 	// Allow the spawned goroutine to run, panic, recover, and release the slot.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, held := o.inflightSandboxes.Load("group1@g.us"); !held {
-			return // success
-		}
-		runtime.Gosched()
-	}
-	t.Error("in-flight slot was not released after panic in processGroupMessages")
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
 }
 
 // mockSandboxWithGate is a sandbox mock that supports an atomic call counter and
@@ -2932,16 +2945,7 @@ func TestPollMessages_ConcurrentSpawn_SingleSandbox(t *testing.T) {
 		t.Fatal("timed out waiting for first goroutine to finish CreateSandbox")
 	}
 	// Give the deferred release() a brief moment to run after CreateSandbox returns.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, held := o.inflightSandboxes.Load("group1@g.us"); !held {
-			break
-		}
-		runtime.Gosched()
-	}
-	if _, stillHeld := o.inflightSandboxes.Load("group1@g.us"); stillHeld {
-		t.Error("in-flight slot was not released after goroutine finished")
-	}
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
 
 	if got := sb.createCount.Load(); got != 1 {
 		t.Errorf("CreateSandbox called %d times, want 1", got)
@@ -3010,6 +3014,58 @@ func TestMaxConcurrent_IncludesInflight(t *testing.T) {
 	}
 }
 
+// TestDeactivateRecovery_TakesSlotWhenFree is the positive companion to
+// TestDeactivateRecovery_ClaimsInflightSlot. It verifies that when the slot is
+// NOT pre-held, the recovery goroutine claims it (inflightSandboxes.Load returns
+// true during processGroupMessages) and releases it after watchGroupOutput returns.
+func TestDeactivateRecovery_TakesSlotWhenFree(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+	q.active["group1@g.us"] = true
+
+	// Seed a pending message so the recovery path fires.
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "pending", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	var slotHeldDuringRecovery atomic.Bool
+	var callCount atomic.Int32
+	recoveryEntered := make(chan struct{}, 1)
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) < 2 {
+			return // first call is deactivate()'s own pending check
+		}
+		if _, held := o.inflightSandboxes.Load("group1@g.us"); held {
+			slotHeldDuringRecovery.Store(true)
+		}
+		select {
+		case recoveryEntered <- struct{}{}:
+		default:
+		}
+	}
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	select {
+	case <-recoveryEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("recovery goroutine was not spawned")
+	}
+	if !slotHeldDuringRecovery.Load() {
+		t.Error("slot was NOT held during recovery goroutine execution")
+	}
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
+}
+
 // TestDeactivateRecovery_ClaimsInflightSlot verifies that when the
 // watchGroupOutput recovery goroutine tries to spawn a processGroupMessages call
 // but the in-flight slot is already held, it skips rather than spawning a second
@@ -3068,5 +3124,68 @@ func TestDeactivateRecovery_ClaimsInflightSlot(t *testing.T) {
 	case <-recoveryEntered:
 		t.Error("recovery goroutine was spawned despite pre-held in-flight slot")
 	default:
+	}
+}
+
+// TestMaxConcurrent_ExcludesOwnJID is a regression guard for the jid != chatJID
+// guard inside the inflightSandboxes.Range call. If that guard were removed,
+// the group under test would count itself among "others" and the total would
+// reach MaxConcurrent, suppressing CreateSandbox. With the guard in place,
+// others == 1 (the foreign JID), 0+1 < 2 == MaxConcurrent, and CreateSandbox
+// IS called.
+func TestMaxConcurrent_ExcludesOwnJID(t *testing.T) {
+	s := newMockStore()
+	// activeCount = 0, MaxConcurrent = 2. One OTHER group is in-flight.
+	// The group under test claims its own slot. With correct own-JID exclusion:
+	//   others = 1, activeCount = 0 → total = 1 < 2 → CreateSandbox called.
+	// Without own-JID exclusion:
+	//   others = 2, activeCount = 0 → total = 2 >= 2 → CreateSandbox skipped.
+	mq := &mockQueueWithActiveCount{
+		mockQueue:   mockQueue{active: make(map[string]bool)},
+		activeCount: 0,
+	}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{}
+
+	const maxConcurrent = 2
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: maxConcurrent},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = sb
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	o.registeredGroups["group1@g.us"] = store.Group{
+		JID: "group1@g.us", Folder: "test-group", IsMain: true,
+	}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	// Pre-seed one OTHER group in inflightSandboxes.
+	o.inflightSandboxes.Store("other1@g.us", struct{}{})
+
+	// Claim the slot for the group under test (as pollMessages would do).
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("failed to claim sandbox slot for test group")
+	}
+	defer release()
+
+	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	if err != nil {
+		t.Fatalf("processGroupMessages() error = %v, want nil", err)
+	}
+	if !sb.createCalled.Load() {
+		t.Error("CreateSandbox was NOT called; own-JID exclusion guard may be broken")
 	}
 }
