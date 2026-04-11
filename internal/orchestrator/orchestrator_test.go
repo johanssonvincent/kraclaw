@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -655,20 +656,20 @@ func (m *mockQueueWithActiveCount) ActiveCount(_ context.Context) (int64, error)
 
 // mockSandboxControllerWithTracking tracks CreateSandbox and StopSandbox calls.
 type mockSandboxControllerWithTracking struct {
-	createCalled bool
+	createCalled atomic.Bool
 	createErr    error
-	stopCalled   bool
+	stopCalled   atomic.Bool
 }
 
 func (m *mockSandboxControllerWithTracking) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
-	m.createCalled = true
+	m.createCalled.Store(true)
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
 	return &sandbox.SandboxStatus{Name: "test-sandbox", State: sandbox.StatePending}, nil
 }
 func (m *mockSandboxControllerWithTracking) StopSandbox(_ context.Context, _ string) error {
-	m.stopCalled = true
+	m.stopCalled.Store(true)
 	return nil
 }
 func (m *mockSandboxControllerWithTracking) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
@@ -725,7 +726,7 @@ func TestMaxConcurrent_AtLimit_SkipsCreateSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processGroupMessages() error = %v, want nil", err)
 	}
-	if sb.createCalled {
+	if sb.createCalled.Load() {
 		t.Error("CreateSandbox was called, want skipped when at MAX_CONCURRENT")
 	}
 }
@@ -763,11 +764,19 @@ func TestMaxConcurrent_BelowLimit_ProceedsToCreateSandbox(t *testing.T) {
 		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
 	}
 
+	// claimSandboxSlot must be held before entering processGroupMessages, matching
+	// the production calling convention (pollMessages always claims first).
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("failed to claim sandbox slot for test group")
+	}
+	defer release()
+
 	err = o.processGroupMessages(context.Background(), "group1@g.us")
 	// CreateSandbox should be called — it will succeed since sb returns a valid status.
 	// But MarkActive will fail because mockQueueWithActiveCount inherits from mockQueue.
 	// We just care that CreateSandbox was reached.
-	if !sb.createCalled {
+	if !sb.createCalled.Load() {
 		t.Error("CreateSandbox was NOT called, want called when below MAX_CONCURRENT")
 	}
 	_ = err // error from MarkActive is acceptable here
@@ -860,10 +869,10 @@ func TestProcessGroupMessages_SendInputFailure_TeardownAndErrors(t *testing.T) {
 	if !strings.Contains(err.Error(), "send initial input") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "send initial input")
 	}
-	if !sb.createCalled {
+	if !sb.createCalled.Load() {
 		t.Error("CreateSandbox must be called before SendInput")
 	}
-	if !sb.stopCalled {
+	if !sb.stopCalled.Load() {
 		t.Error("StopSandbox must be called on SendInput failure")
 	}
 	if q.active["group1@g.us"] {
@@ -917,7 +926,7 @@ func TestProcessGroupMessages_MarkActiveFailure_StopsSandbox(t *testing.T) {
 	if !strings.Contains(err.Error(), "mark active") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "mark active")
 	}
-	if !sb.stopCalled {
+	if !sb.stopCalled.Load() {
 		t.Error("StopSandbox must be called on MarkActive failure")
 	}
 	if q.active["group1@g.us"] {
@@ -1199,7 +1208,7 @@ func TestProcessGroupMessages_MarshalInitialInputFailure_ReturnsEarly(t *testing
 	if !strings.Contains(err.Error(), "marshal initial input") {
 		t.Fatalf("error = %q, want context %q", err.Error(), "marshal initial input")
 	}
-	if sb.createCalled {
+	if sb.createCalled.Load() {
 		t.Fatal("CreateSandbox was called, want processGroupMessages to return early")
 	}
 }
@@ -2778,6 +2787,39 @@ func TestClaimSandboxSlot_AtomicClaimAndRelease(t *testing.T) {
 	}
 }
 
+// TestPollMessages_PanicReleasesSlot verifies that a panic inside
+// processGroupMessages still releases the in-flight slot via the deferred
+// release() in the spawn goroutine's defer stack.
+func TestPollMessages_PanicReleasesSlot(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
+
+	// Inject a panic via store hook — fires inside processGroupMessages.
+	s.getMessagesSinceHook = func() { panic("injected panic for slot-release test") }
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.groups = append(s.groups, group)
+	o.registeredGroups["group1@g.us"] = group
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	o.pollMessages(context.Background())
+
+	// Allow the spawned goroutine to run, panic, recover, and release the slot.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, held := o.inflightSandboxes.Load("group1@g.us"); !held {
+			return // success
+		}
+		runtime.Gosched()
+	}
+	t.Error("in-flight slot was not released after panic in processGroupMessages")
+}
+
 // mockSandboxWithGate is a sandbox mock that supports an atomic call counter and
 // a synchronisation gate so concurrent spawn tests can inspect in-progress state.
 type mockSandboxWithGate struct {
@@ -2787,9 +2829,15 @@ type mockSandboxWithGate struct {
 	createStarted chan struct{}
 	// If createGate is non-nil, CreateSandbox blocks until the gate is closed.
 	createGate chan struct{}
+	// If createDone is non-nil, it is closed when CreateSandbox returns.
+	createDone chan struct{}
 }
 
 func (m *mockSandboxWithGate) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
+	if m.createDone != nil {
+		var once sync.Once
+		defer once.Do(func() { close(m.createDone) })
+	}
 	m.createCount.Add(1)
 	if m.createStarted != nil {
 		select {
@@ -2830,9 +2878,11 @@ func TestPollMessages_ConcurrentSpawn_SingleSandbox(t *testing.T) {
 
 	createStarted := make(chan struct{}, 1)
 	createGate := make(chan struct{})
+	createDone := make(chan struct{})
 	sb := &mockSandboxWithGate{
 		createStarted: createStarted,
 		createGate:    createGate,
+		createDone:    createDone,
 	}
 
 	cfg := &config.Config{
@@ -2874,17 +2924,22 @@ func TestPollMessages_ConcurrentSpawn_SingleSandbox(t *testing.T) {
 	// Unblock the first goroutine.
 	close(createGate)
 
-	// Wait for the in-flight slot to be released (indicates first goroutine finished).
-	deadline := time.Now().Add(5 * time.Second)
+	// Wait for CreateSandbox to return (indicates the first goroutine is past the
+	// sandbox call and about to run its deferred release).
+	select {
+	case <-createDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first goroutine to finish CreateSandbox")
+	}
+	// Give the deferred release() a brief moment to run after CreateSandbox returns.
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		_, held := o.inflightSandboxes.Load("group1@g.us")
-		if !held {
+		if _, held := o.inflightSandboxes.Load("group1@g.us"); !held {
 			break
 		}
-		time.Sleep(time.Millisecond)
+		runtime.Gosched()
 	}
-	_, stillHeld := o.inflightSandboxes.Load("group1@g.us")
-	if stillHeld {
+	if _, stillHeld := o.inflightSandboxes.Load("group1@g.us"); stillHeld {
 		t.Error("in-flight slot was not released after goroutine finished")
 	}
 
@@ -2950,7 +3005,7 @@ func TestMaxConcurrent_IncludesInflight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processGroupMessages() error = %v, want nil", err)
 	}
-	if sb.createCalled {
+	if sb.createCalled.Load() {
 		t.Error("CreateSandbox was called, want skipped: activeCount+inflight >= MaxConcurrent")
 	}
 }
@@ -3003,10 +3058,15 @@ func TestDeactivateRecovery_ClaimsInflightSlot(t *testing.T) {
 	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 
 	// Recovery goroutine must have been skipped — no second GetMessagesSince call.
+	// Since the go func() inside watchGroupOutput was never launched (slot held),
+	// callCount reflects only the synchronous pending check.
+	if got := callCount.Load(); got != 1 {
+		t.Errorf("GetMessagesSince called %d times, want 1 (recovery goroutine must have been skipped)", got)
+	}
+	// Drain recoveryEntered in case of a latent send from a scheduler-paused goroutine.
 	select {
 	case <-recoveryEntered:
 		t.Error("recovery goroutine was spawned despite pre-held in-flight slot")
-	case <-time.After(100 * time.Millisecond):
-		// Good: no second call observed within the window.
+	default:
 	}
 }

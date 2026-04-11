@@ -704,18 +704,18 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	if err != nil {
 		return fmt.Errorf("check active count: %w", err)
 	}
-	inflight := 0
-	o.inflightSandboxes.Range(func(_, _ any) bool {
-		inflight++
+	others := 0
+	o.inflightSandboxes.Range(func(k, _ any) bool {
+		if jid, ok := k.(string); ok && jid != chatJID {
+			others++
+		}
 		return true
 	})
-	// `inflight` includes this goroutine's own claim, so subtract 1 to count
-	// only OTHER in-flight spawns racing alongside us.
-	if activeCount+int64(inflight-1) >= int64(o.cfg.Queue.MaxConcurrent) {
-		o.log.Debug("sandbox creation deferred: MAX_CONCURRENT reached",
+	if activeCount+int64(others) >= int64(o.cfg.Queue.MaxConcurrent) {
+		o.log.Info("sandbox creation deferred: MAX_CONCURRENT reached",
 			"group", group.Name,
 			"active", activeCount,
-			"inflight", inflight-1,
+			"inflight_others", others,
 			"max", o.cfg.Queue.MaxConcurrent)
 		return nil // Message stays queued; retried on next poll.
 	}
@@ -1104,8 +1104,13 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 		if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
 			release, ok := o.claimSandboxSlot(chatJID)
 			if !ok {
-				o.log.Debug("post-deactivate recovery skipped: sandbox already in-flight",
-					"group", group.Name)
+				if pendingCheckFailed {
+					o.log.Warn("post-deactivate recovery skipped: slot in-flight; pending-message MySQL check also failed — next poll will retry",
+						"group", group.Name)
+				} else {
+					o.log.Debug("post-deactivate recovery skipped: sandbox already in-flight",
+						"group", group.Name)
+				}
 			} else {
 				go func(release func()) {
 					defer release()
