@@ -68,6 +68,7 @@ These Secrets must exist before running `helm install`:
 | `mysql.secretName` | `kraclaw-mysql-url` | Secret containing MYSQL_DSN |
 | `credproxy.secretName` | `kraclaw-api-keys` | Secret containing ANTHROPIC_API_KEY |
 | `nats.url` | `nats://nats.nats.svc.cluster.local:4222` | NATS JetStream server URL (NATS_URL) |
+| `sandbox.agentImage` | `""` | REQUIRED: default agent container image for SandboxTemplate |
 | `sandbox.natsUrl` | `nats://nats.nats.svc.cluster.local:4222` | NATS URL injected into agent pods (NATS_URL) |
 | `storage.class` | `longhorn` | StorageClass for PVCs |
 | `storage.groups.size` | `10Gi` | Size of groups PVC |
