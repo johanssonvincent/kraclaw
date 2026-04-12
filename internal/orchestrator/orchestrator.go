@@ -56,11 +56,13 @@ type Orchestrator struct {
 
 	// State loaded from MySQL router_state on startup.
 	lastTimestamp          time.Time
-	lastAgentTimestamp     map[string]time.Time   // chatJID -> cursor (last sent to agent)
-	lastConfirmedTimestamp map[string]time.Time   // chatJID -> cursor (last confirmed by agent response)
-	sessions               map[string]string      // groupFolder -> sessionID
-	registeredGroups       map[string]store.Group // JID -> Group
-	activeSandboxes        map[string]string      // chatJID -> current sandbox name
+	lastAgentTimestamp     map[string]time.Time // chatJID -> cursor (last sent to agent)
+	lastConfirmedTimestamp map[string]time.Time // chatJID -> cursor (last confirmed by agent response)
+
+	// Runtime state — populated from the store or channels after startup.
+	sessions         map[string]string      // groupFolder -> sessionID
+	registeredGroups map[string]store.Group // JID -> Group
+	activeSandboxes  map[string]string      // chatJID -> current sandbox name
 
 	// inflightSandboxes tracks groups with an in-progress processGroupMessages
 	// goroutine. The claim (via sync.Map.LoadOrStore in claimSandboxSlot) is
@@ -74,8 +76,10 @@ type Orchestrator struct {
 	rateLimiters   map[string]*TokenBucket
 	rateLimitersMu sync.Mutex
 
-	// prevLast* fields are written only in saveState which runs in the message loop goroutine.
-	// They track last-saved state values to avoid redundant MySQL writes (PERF-04).
+	// prevLast* fields are a best-effort dedup optimisation: they are compared against
+	// current state before each MySQL write and accessed without mu. A benign race
+	// (redundant or skipped write at worst) is acceptable given the low cost of the
+	// operation they guard. They track last-saved state values to avoid redundant MySQL writes (PERF-04).
 	prevLastTimestampStr string // serialized last_timestamp from last save
 	prevAgentTsJSON      string // JSON-serialized last_agent_timestamp from last save
 	prevConfirmedTsJSON  string // JSON-serialized last_confirmed_timestamp from last save
@@ -655,16 +659,18 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 						o.log.Error("panic in processGroupMessages",
 							"group", g.Name, "panic", r,
 							"stack", string(debug.Stack()))
-						// Force cleanup so a zombie-active group does not wedge future polls.
-						// Use context.Background() — the parent ctx may already be cancelled,
-						// and MarkInactive is idempotent so running it unconditionally is safe.
-						if markErr := o.queue.MarkInactive(context.Background(), jid); markErr != nil {
-							o.log.Error("failed to mark group inactive after panic",
-								"group", g.Name, "error", markErr)
-						}
+						// Guard MarkInactive: if the panic fired before MarkActive (e.g. inside
+						// GetMessagesSince), the group was never made active — skip cleanup.
 						o.mu.Lock()
+						_, wasActive := o.activeSandboxes[jid]
 						delete(o.activeSandboxes, jid)
 						o.mu.Unlock()
+						if wasActive {
+							if markErr := o.queue.MarkInactive(context.Background(), jid); markErr != nil {
+								o.log.Error("failed to mark group inactive after panic",
+									"group", g.Name, "error", markErr)
+							}
+						}
 					}
 				}()
 				if err := o.processGroupMessages(ctx, jid); err != nil {
@@ -1139,7 +1145,8 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			skipped++
 		}
 		if skipped == maxMalformedRetries {
-			o.log.Error("dequeue exhausted malformed-message retries: all messages were nil or malformed",
+			pendingCheckFailed = true
+			o.log.Warn("dequeue retries exhausted: all responses were nil (queue empty or messages malformed)",
 				"group", group.Name, "retries", maxMalformedRetries)
 		}
 
@@ -1155,7 +1162,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				if qMsg != nil {
 					if reqErr := o.queue.Enqueue(ctx, chatJID, qMsg); reqErr != nil {
 						o.log.Error("post-deactivate: failed to re-enqueue message after slot claim failure; message lost",
-							"group", group.Name, "is_task", qMsg.IsTask, "error", reqErr)
+							"group", group.Name, "group_jid", chatJID, "is_task", qMsg.IsTask, "error", reqErr)
 					}
 				}
 				if pendingCheckFailed {
@@ -1177,16 +1184,18 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 							o.log.Error("panic in post-deactivate processGroupMessages",
 								"group", group.Name, "panic", r,
 								"stack", string(debug.Stack()))
-							// Force cleanup so a zombie-active group does not wedge future polls.
-							// Use context.Background() — the parent ctx may already be cancelled,
-							// and MarkInactive is idempotent so running it unconditionally is safe.
-							if markErr := o.queue.MarkInactive(context.Background(), chatJID); markErr != nil {
-								o.log.Error("failed to mark group inactive after panic",
-									"group", group.Name, "error", markErr)
-							}
+							// Guard MarkInactive: if the panic fired before MarkActive (e.g. inside
+							// GetMessagesSince), the group was never made active — skip cleanup.
 							o.mu.Lock()
+							_, wasActive := o.activeSandboxes[chatJID]
 							delete(o.activeSandboxes, chatJID)
 							o.mu.Unlock()
+							if wasActive {
+								if markErr := o.queue.MarkInactive(context.Background(), chatJID); markErr != nil {
+									o.log.Error("failed to mark group inactive after panic",
+										"group", group.Name, "error", markErr)
+								}
+							}
 						}
 					}()
 					if err := o.processGroupMessages(ctx, chatJID); err != nil {

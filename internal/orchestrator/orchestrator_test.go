@@ -2847,6 +2847,16 @@ func TestPollMessages_PanicReleasesSlot(t *testing.T) {
 
 	// Allow the spawned goroutine to run, panic, recover, and release the slot.
 	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
+
+	// The panic fired inside GetMessagesSince — before MarkActive — so the group
+	// was never inserted into activeSandboxes. With F5 applied, the panic handler
+	// skips MarkInactive and must not leave a stale activeSandboxes entry.
+	o.mu.Lock()
+	_, inActive := o.activeSandboxes["group1@g.us"]
+	o.mu.Unlock()
+	if inActive {
+		t.Error("activeSandboxes still contains group1@g.us after pre-MarkActive panic; handler should have skipped cleanup")
+	}
 }
 
 // mockSandboxWithGate is a sandbox mock that supports an atomic call counter and
@@ -3008,9 +3018,8 @@ func TestMaxConcurrent_IncludesInflight(t *testing.T) {
 
 	// Pre-seed inflightSandboxes with (maxConcurrent - 1) OTHER groups so that
 	// activeCount(1) + inflight(maxConcurrent-1) == maxConcurrent.
-	// processGroupMessages for "group1@g.us" should see itself as the only
-	// in-flight entry (inflight-1 == maxConcurrent-1) plus activeCount(1),
-	// which totals maxConcurrent → must skip CreateSandbox.
+	// Range excludes own JID, so others = maxConcurrent-1 = 2.
+	// activeCount(1) + others(2) = maxConcurrent(3) → must skip CreateSandbox.
 	for i := range maxConcurrent - 1 {
 		o.inflightSandboxes.Store(fmt.Sprintf("other%d@g.us", i), struct{}{})
 	}
@@ -3031,7 +3040,7 @@ func TestMaxConcurrent_IncludesInflight(t *testing.T) {
 }
 
 // TestDeactivateRecovery_TakesSlotWhenFree is the positive companion to
-// TestDeactivateRecovery_ClaimsInflightSlot. It verifies that when the slot is
+// TestDeactivateRecovery_SkipsWhenSlotHeld. It verifies that when the slot is
 // NOT pre-held, the recovery goroutine claims it (inflightSandboxes.Load returns
 // true during processGroupMessages) and releases it after watchGroupOutput returns.
 func TestDeactivateRecovery_TakesSlotWhenFree(t *testing.T) {
@@ -3086,7 +3095,7 @@ func TestDeactivateRecovery_TakesSlotWhenFree(t *testing.T) {
 // watchGroupOutput recovery goroutine tries to spawn a processGroupMessages call
 // but the in-flight slot is already held, it skips rather than spawning a second
 // concurrent goroutine for the same group.
-func TestDeactivateRecovery_ClaimsInflightSlot(t *testing.T) {
+func TestDeactivateRecovery_SkipsWhenSlotHeld(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()
 	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
@@ -3367,4 +3376,61 @@ func TestDeactivateRecovery_DequeueErrorTriggersRecovery(t *testing.T) {
 		t.Error("slot was NOT held during recovery goroutine execution")
 	}
 	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
+}
+
+// TestDeactivateRecovery_PendingCheckFailedAndSlotHeld covers the combined path
+// where Dequeue fails (triggering pendingCheckFailed = true) AND the in-flight
+// slot is already held. Expects: no recovery goroutine is spawned (callCount == 1
+// from deactivate()'s own pending-check call), and the recoveryEntered channel
+// remains empty.
+func TestDeactivateRecovery_PendingCheckFailedAndSlotHeld(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueRecording{
+		mockQueue:  newMockQueue(),
+		dequeueErr: errors.New("NATS transient error"),
+	}
+	mq.active["group1@g.us"] = true
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
+	o.queue = mq
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+
+	// Pre-claim the slot so the recovery path sees it as in-flight.
+	preRelease, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("failed to pre-claim sandbox slot")
+	}
+	defer preRelease()
+
+	// Track calls into GetMessagesSince to confirm no second (recovery) call.
+	var callCount atomic.Int32
+	recoveryEntered := make(chan struct{}, 1)
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) >= 2 {
+			select {
+			case recoveryEntered <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	// Give a moment for any unexpected goroutine to surface.
+	select {
+	case <-recoveryEntered:
+		t.Error("recovery goroutine was spawned despite slot being held")
+	case <-time.After(100 * time.Millisecond):
+		// expected: no recovery goroutine
+	}
+
+	if got := callCount.Load(); got != 1 {
+		t.Errorf("GetMessagesSince called %d times, want 1 (only deactivate's own check)", got)
+	}
 }
