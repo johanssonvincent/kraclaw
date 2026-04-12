@@ -3051,7 +3051,9 @@ func TestMaxConcurrent_IncludesInflight(t *testing.T) {
 // TestDeactivateRecovery_TakesSlotWhenFree is the positive companion to
 // TestDeactivateRecovery_SkipsWhenSlotHeld. It verifies that when the slot is
 // NOT pre-held, the recovery goroutine claims it (the slot is present in
-// inflightSandboxes while processGroupMessages is running) and releases it after watchGroupOutput returns.
+// inflightSandboxes while processGroupMessages is running) and releases it when
+// the recovery goroutine exits (after processGroupMessages returns, which is before
+// watchGroupOutput finishes running in the background).
 func TestDeactivateRecovery_TakesSlotWhenFree(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()
@@ -3564,7 +3566,7 @@ func TestDeactivate_MarkInactiveFailureSkipsRecovery(t *testing.T) {
 
 // TestDeactivate_IsActiveErrorProceedsWithCleanup verifies that when IsActive
 // returns an error in deactivate(), MarkInactive is skipped but cursor rollback
-// and recovery still proceed — messages sent to the dead agent are retried.
+// still proceeds (GetMessagesSince is called despite the error).
 func TestDeactivate_IsActiveErrorProceedsWithCleanup(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()

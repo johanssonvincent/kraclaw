@@ -929,6 +929,9 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	o.mu.Lock()
 	o.lastConfirmedTimestamp[chatJID] = o.lastAgentTimestamp[chatJID]
 	o.mu.Unlock()
+	if err := o.saveState(ctx); err != nil {
+		o.log.Error("failed to save confirmed cursor after sandbox creation", "group", group.Name, "error", err)
+	}
 
 	o.log.Info("sandbox created", "group", group.Name, "job", status.Name)
 	return true, nil
@@ -1048,8 +1051,11 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 
 	active, err := o.queue.IsActive(ctx, chatJID)
 	if err != nil {
-		o.log.Warn("sandbox event: failed to check active state",
+		o.log.Error("sandbox event: IsActive check failed; clearing in-memory state to unblock group",
 			"folder", folder, "jid", chatJID, "error", err)
+		o.mu.Lock()
+		delete(o.activeSandboxes, chatJID)
+		o.mu.Unlock()
 		return
 	}
 	if !active {
