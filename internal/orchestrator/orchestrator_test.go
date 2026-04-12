@@ -780,13 +780,13 @@ func TestMaxConcurrent_BelowLimit_ProceedsToCreateSandbox(t *testing.T) {
 	defer release()
 
 	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
-	// CreateSandbox should be called — it will succeed since sb returns a valid status.
-	// But MarkActive will fail because mockQueueWithActiveCount inherits from mockQueue.
+	// CreateSandbox should be called — the full happy path runs through since
+	// mockQueueWithActiveCount inherits mockQueue defaults (no injected errors).
 	// We just care that CreateSandbox was reached.
 	if !sb.createCalled.Load() {
 		t.Error("CreateSandbox was NOT called, want called when below MAX_CONCURRENT")
 	}
-	_ = err // error from MarkActive is acceptable here
+	_ = err
 }
 
 func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
@@ -1002,8 +1002,9 @@ func TestHasTriggerMessage(t *testing.T) {
 
 func TestHasTriggerMessage_MainGroup(t *testing.T) {
 	// Main groups skip trigger check entirely in the caller (pollMessages/processGroupMessages).
-	// hasTriggerMessage itself just checks content — but a main group with IsMain=true
-	// would never call hasTriggerMessage. This test verifies the trigger logic still works
+	// hasTriggerMessage checks the trigger pattern, sender authorization (IsFromMe or
+	// allowlist), but not IsMain — a main group with IsMain=true would never call
+	// hasTriggerMessage in production. This test verifies the trigger logic still works
 	// when called directly with a non-trigger message.
 	s := newMockStore()
 	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"main@g.us": true}}
@@ -1018,7 +1019,7 @@ func TestHasTriggerMessage_MainGroup(t *testing.T) {
 	}
 
 	// Even without trigger, main groups are processed because the caller skips the check.
-	// But hasTriggerMessage itself doesn't know about IsMain — it just checks the pattern.
+	// But hasTriggerMessage itself doesn't know about IsMain — it checks the pattern and sender auth.
 	got, err := o.hasTriggerMessage(context.Background(), "main@g.us", group, []store.Message{
 		{Content: "no trigger here", Sender: "alice", IsFromMe: true},
 	})
@@ -3561,10 +3562,10 @@ func TestDeactivate_MarkInactiveFailureSkipsRecovery(t *testing.T) {
 	}
 }
 
-// TestDeactivate_IsActiveErrorReturnsEarly verifies that deactivate() returns early
-// when IsActive returns an error — MarkInactive must not be called (queue active map
-// entry must survive) and no recovery goroutine must be spawned.
-func TestDeactivate_IsActiveErrorReturnsEarly(t *testing.T) {
+// TestDeactivate_IsActiveErrorProceedsWithCleanup verifies that when IsActive
+// returns an error in deactivate(), MarkInactive is skipped but cursor rollback
+// and recovery still proceed — messages sent to the dead agent are retried.
+func TestDeactivate_IsActiveErrorProceedsWithCleanup(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()
 	q.active["group1@g.us"] = true
@@ -3584,9 +3585,12 @@ func TestDeactivate_IsActiveErrorReturnsEarly(t *testing.T) {
 	b.subscribeCh = ipcCh
 	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 
-	if got := callCount.Load(); got != 0 {
-		t.Errorf("GetMessagesSince called %d times, want 0 (IsActive error skips all cleanup)", got)
+	// GetMessagesSince must be called — cursor rollback and recovery proceed even
+	// when IsActive errors (only MarkInactive is skipped).
+	if got := callCount.Load(); got == 0 {
+		t.Error("GetMessagesSince not called, want called (cursor rollback and recovery proceed on IsActive error)")
 	}
+	// MarkInactive must still be skipped to avoid inconsistent MySQL state.
 	if !q.active["group1@g.us"] {
 		t.Error("MarkInactive was called (active key deleted), want skipped on IsActive error")
 	}

@@ -1095,26 +1095,28 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			// spurious recovery after the main cleanup path has already run.
 			active, activeErr := o.queue.IsActive(ctx, chatJID)
 			if activeErr != nil {
-				o.log.Error("deactivate: IsActive check failed; skipping cleanup — group may remain active until next reconcile",
+				o.log.Error("deactivate: IsActive check failed; proceeding with cleanup but skipping MarkInactive",
 					"group", group.Name, "error", activeErr)
-				return
-			}
-			if !active {
+				// Fall through — still roll back cursor and trigger recovery.
+				// MySQL active count will be corrected by sandbox event or reconcile.
+			} else if !active {
 				o.log.Debug("deactivate: group already inactive, skipping",
 					"group", group.Name)
 				return
-			}
-
-			if err := o.queue.MarkInactive(ctx, chatJID); err != nil {
-				// Do not delete from activeSandboxes: keeping the entry allows
-				// handleSandboxEvent to find the sandbox by name and independently call
-				// MarkInactive when the K8s Job completion event fires.
-				// Spawning recovery on inconsistent MySQL state could inflate
-				// the active count, so we skip it.
-				o.log.Error("failed to mark group inactive; skipping recovery — "+
-					"MySQL active count may be inflated until sandbox event fires",
-					"group", group.Name, "error", err)
-				return
+			} else {
+				// Group is active — mark it inactive.
+				if err := o.queue.MarkInactive(ctx, chatJID); err != nil {
+					// Do not delete from activeSandboxes: keeping the entry allows
+					// handleSandboxEvent to find the sandbox by name and independently call
+					// MarkInactive when the K8s Job completion event fires.
+					// Spawning recovery on inconsistent MySQL state could inflate
+					// the active count, so we skip it.
+					o.log.Error("failed to mark group inactive; skipping recovery — "+
+						"cursor rollback also skipped; messages sent to dead agent may not be retried; "+
+						"MySQL active count will be corrected by sandbox event or next reconcile",
+						"group", group.Name, "error", err)
+					return
+				}
 			}
 
 			o.mu.Lock()
@@ -1225,6 +1227,9 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 									if reqErr := o.queue.Enqueue(context.Background(), chatJID, qMsg); reqErr != nil {
 										o.log.Error("post-deactivate: failed to re-enqueue message after panic; message lost",
 											"group", group.Name, "error", reqErr, "is_task", qMsg.IsTask)
+									} else {
+										o.log.Info("post-deactivate: re-enqueued message after panic",
+											"group", group.Name, "is_task", qMsg.IsTask)
 									}
 								}
 							}
@@ -1327,6 +1332,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						ch = newCh
 						errCh = newErrCh
 						reconnected = true
+						agentConnected = true // IPC recovery proves agent is live
 						o.log.Info("reconnected to IPC output after iterator error", "group", group.Name)
 						break
 					}
@@ -1393,6 +1399,9 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 		o.mu.Lock()
 		o.lastConfirmedTimestamp[chatJID] = o.lastAgentTimestamp[chatJID]
 		o.mu.Unlock()
+		if err := o.saveState(ctx); err != nil {
+			o.log.Error("failed to save confirmed cursor", "group", group.Name, "error", err)
+		}
 
 	case ipc.IPCSessionUpdate:
 		// Agent is reporting a new session ID.
