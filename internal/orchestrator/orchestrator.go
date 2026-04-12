@@ -1086,125 +1086,163 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 	defer startupDeadline.Stop()
 	agentConnected := false // set to true on first IPC message from this agent
 
+	var deactivateOnce sync.Once
 	deactivate := func() {
-		if err := o.queue.MarkInactive(ctx, chatJID); err != nil {
-			o.log.Error("failed to mark group inactive", "group", group.Name, "error", err)
-		}
+		deactivateOnce.Do(func() {
+			// Idempotency guard: bail out if the group was already marked inactive
+			// (e.g., by the SendInput failure teardown path in processGroupMessages)
+			// to prevent an orphaned watchGroupOutput goroutine from spawning a
+			// spurious recovery after the main cleanup path has already run.
+			active, activeErr := o.queue.IsActive(ctx, chatJID)
+			if activeErr != nil {
+				o.log.Error("deactivate: failed to check active state; proceeding with cleanup",
+					"group", group.Name, "error", activeErr)
+			} else if !active {
+				o.log.Debug("deactivate: group already inactive, skipping",
+					"group", group.Name)
+				return
+			}
 
-		o.mu.Lock()
-		delete(o.activeSandboxes, chatJID)
-		o.mu.Unlock()
+			if err := o.queue.MarkInactive(ctx, chatJID); err != nil {
+				// Do not delete from activeSandboxes: keeping the entry allows
+				// handleSandboxEvent to find the sandbox by name and retry
+				// MarkInactive when the K8s Job completion event fires.
+				// Spawning recovery on inconsistent MySQL state could inflate
+				// the active count, so we skip it.
+				o.log.Error("failed to mark group inactive; skipping recovery — "+
+					"MySQL active count may be inflated until sandbox event fires",
+					"group", group.Name, "error", err)
+				return
+			}
 
-		// Roll back agent cursor to last confirmed position so any messages
-		// that were piped to the dead agent but never processed get re-sent.
-		o.mu.Lock()
-		confirmed := o.lastConfirmedTimestamp[chatJID]
-		sent := o.lastAgentTimestamp[chatJID]
-		if confirmed.Before(sent) {
-			o.log.Info("rolling back agent cursor to last confirmed",
-				"group", group.Name,
-				"sent", sent.Format(time.RFC3339Nano),
-				"confirmed", confirmed.Format(time.RFC3339Nano))
-			o.lastAgentTimestamp[chatJID] = confirmed
-		}
-		o.mu.Unlock()
-		if err := o.saveState(ctx); err != nil {
-			o.log.Error("failed to save state after deactivation — cursor rollback is in-memory only; messages may be re-sent or lost on restart",
-				"group", group.Name, "error", err)
-		}
+			o.mu.Lock()
+			delete(o.activeSandboxes, chatJID)
+			o.mu.Unlock()
 
-		// Check MySQL for pending messages (not just the NATS queue).
-		o.mu.Lock()
-		agentTs := o.lastAgentTimestamp[chatJID]
-		o.mu.Unlock()
-		pending, err := o.store.GetMessagesSince(ctx, chatJID, agentTs, 1)
-		pendingCheckFailed := false
-		if err != nil {
-			o.log.Error("failed to check pending messages; triggering recovery defensively", "group", group.Name, "error", err)
-			pendingCheckFailed = true
-		}
-		// Also drain the NATS queue for scheduled tasks.
-		// Dequeue returns nil,nil for both an empty queue and a malformed-message
-		// that was ACK'd and skipped. Loop a few times so that skipped malformed
-		// messages do not mask valid queued tasks.
-		const maxMalformedRetries = 5
-		var qMsg *queue.QueueMessage
-		skipped := 0
-		for range maxMalformedRetries {
-			msg, deqErr := o.queue.Dequeue(ctx, chatJID)
-			if deqErr != nil {
-				o.log.Error("failed to dequeue message; triggering recovery defensively",
-					"group", group.Name, "error", deqErr)
+			// Roll back agent cursor to last confirmed position so any messages
+			// that were piped to the dead agent but never processed get re-sent.
+			o.mu.Lock()
+			confirmed := o.lastConfirmedTimestamp[chatJID]
+			sent := o.lastAgentTimestamp[chatJID]
+			if confirmed.Before(sent) {
+				o.log.Info("rolling back agent cursor to last confirmed",
+					"group", group.Name,
+					"sent", sent.Format(time.RFC3339Nano),
+					"confirmed", confirmed.Format(time.RFC3339Nano))
+				o.lastAgentTimestamp[chatJID] = confirmed
+			}
+			o.mu.Unlock()
+			if err := o.saveState(ctx); err != nil {
+				o.log.Error("failed to save state after deactivation — cursor rollback is in-memory only; messages may be re-sent or lost on restart",
+					"group", group.Name, "error", err)
+			}
+
+			// Check MySQL for pending messages (not just the NATS queue).
+			o.mu.Lock()
+			agentTs := o.lastAgentTimestamp[chatJID]
+			o.mu.Unlock()
+			pending, err := o.store.GetMessagesSince(ctx, chatJID, agentTs, 1)
+			pendingCheckFailed := false
+			if err != nil {
+				o.log.Error("failed to check pending messages; triggering recovery defensively", "group", group.Name, "error", err)
 				pendingCheckFailed = true
-				break
 			}
-			if msg != nil {
-				qMsg = msg
-				break
+			// Also drain the NATS queue for scheduled tasks.
+			// Dequeue returns nil,nil for both an empty queue and a malformed-message
+			// that was ACK'd and skipped. Loop a few times so that skipped malformed
+			// messages do not mask valid queued tasks.
+			const maxMalformedRetries = 5
+			var qMsg *queue.QueueMessage
+			skipped := 0
+			for range maxMalformedRetries {
+				msg, deqErr := o.queue.Dequeue(ctx, chatJID)
+				if deqErr != nil {
+					o.log.Error("failed to dequeue message; triggering recovery defensively",
+						"group", group.Name, "error", deqErr)
+					pendingCheckFailed = true
+					break
+				}
+				if msg != nil {
+					qMsg = msg
+					break
+				}
+				skipped++
 			}
-			skipped++
-		}
-		if skipped == maxMalformedRetries {
-			pendingCheckFailed = true
-			o.log.Warn("dequeue retries exhausted: all responses were nil (queue empty or messages malformed)",
-				"group", group.Name, "retries", maxMalformedRetries)
-		}
+			if skipped == maxMalformedRetries {
+				pendingCheckFailed = true
+				o.log.Warn("dequeue retries exhausted: all responses were nil (queue empty or messages malformed)",
+					"group", group.Name, "retries", maxMalformedRetries)
+			}
 
-		if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
-			release, ok := o.claimSandboxSlot(chatJID)
-			if !ok {
-				// Re-enqueue the consumed qMsg. processGroupMessages reads pending
-				// work from MySQL (store.GetMessagesSince), not from the NATS queue,
-				// so any message already dequeued here would be permanently lost
-				// unless re-enqueued — the stream has already consumed it. This
-				// matters in particular for scheduled tasks (see executeScheduledTask)
-				// whose payload lives only in the queue, not in MySQL.
-				if qMsg != nil {
-					if reqErr := o.queue.Enqueue(ctx, chatJID, qMsg); reqErr != nil {
-						o.log.Error("post-deactivate: failed to re-enqueue message after slot claim failure; message lost",
-							"group", group.Name, "group_jid", chatJID, "is_task", qMsg.IsTask, "error", reqErr)
+			if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
+				release, ok := o.claimSandboxSlot(chatJID)
+				if !ok {
+					// Re-enqueue the consumed qMsg. processGroupMessages reads pending
+					// work from MySQL (store.GetMessagesSince), not from the NATS queue,
+					// so any message already dequeued here would be permanently lost
+					// unless re-enqueued — the stream has already consumed it. This
+					// matters in particular for scheduled tasks (see executeScheduledTask)
+					// whose payload lives only in the queue, not in MySQL.
+					if qMsg != nil {
+						if reqErr := o.queue.Enqueue(ctx, chatJID, qMsg); reqErr != nil {
+							o.log.Error("post-deactivate: failed to re-enqueue message after slot claim failure; message lost",
+								"group", group.Name, "group_jid", chatJID, "is_task", qMsg.IsTask, "error", reqErr)
+						}
 					}
-				}
-				if pendingCheckFailed {
-					o.log.Error("post-deactivate recovery skipped: slot in-flight; pending-message MySQL check also failed — next poll will retry",
-						"group", group.Name)
+					if pendingCheckFailed {
+						o.log.Error("post-deactivate recovery skipped: slot in-flight; pending-message MySQL check also failed — next poll will retry",
+							"group", group.Name)
+					} else {
+						o.log.Debug("post-deactivate recovery skipped: sandbox already in-flight",
+							"group", group.Name)
+					}
 				} else {
-					o.log.Debug("post-deactivate recovery skipped: sandbox already in-flight",
-						"group", group.Name)
-				}
-			} else {
-				if pendingCheckFailed {
-					o.log.Info("post-deactivate: spawning defensive recovery after pending-message check failure",
-						"group", group.Name)
-				}
-				go func(release func()) {
-					defer release()
-					defer func() {
-						if r := recover(); r != nil {
-							o.log.Error("panic in post-deactivate processGroupMessages",
-								"group", group.Name, "panic", r,
-								"stack", string(debug.Stack()))
-							// Guard MarkInactive: if the panic fired before MarkActive (e.g. inside
-							// GetMessagesSince), the group was never made active — skip cleanup.
-							o.mu.Lock()
-							_, wasActive := o.activeSandboxes[chatJID]
-							delete(o.activeSandboxes, chatJID)
-							o.mu.Unlock()
-							if wasActive {
-								if markErr := o.queue.MarkInactive(context.Background(), chatJID); markErr != nil {
-									o.log.Error("failed to mark group inactive after panic",
-										"group", group.Name, "error", markErr)
+					if pendingCheckFailed {
+						o.log.Info("post-deactivate: spawning defensive recovery after pending-message check failure",
+							"group", group.Name)
+					}
+					go func(release func()) {
+						defer release()
+						defer func() {
+							if r := recover(); r != nil {
+								o.log.Error("panic in post-deactivate processGroupMessages",
+									"group", group.Name, "panic", r,
+									"stack", string(debug.Stack()))
+								// Guard MarkInactive: if the panic fired before MarkActive (e.g. inside
+								// GetMessagesSince), the group was never made active — skip cleanup.
+								o.mu.Lock()
+								_, wasActive := o.activeSandboxes[chatJID]
+								delete(o.activeSandboxes, chatJID)
+								o.mu.Unlock()
+								if wasActive {
+									if markErr := o.queue.MarkInactive(context.Background(), chatJID); markErr != nil {
+										o.log.Error("failed to mark group inactive after panic",
+											"group", group.Name, "error", markErr)
+									}
 								}
 							}
+						}()
+						if err := o.processGroupMessages(ctx, chatJID); err != nil {
+							o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
 						}
-					}()
-					if err := o.processGroupMessages(ctx, chatJID); err != nil {
-						o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
-					}
-				}(release)
+					}(release)
+				}
 			}
-		}
+		})
 	}
+
+	// Panic recovery: if watchGroupOutput panics at any point after this,
+	// deactivate() cleans up activeSandboxes and MySQL state. sync.Once
+	// inside deactivate ensures at-most-once cleanup even when deactivate()
+	// was also called normally before the panic.
+	defer func() {
+		if r := recover(); r != nil {
+			o.log.Error("panic in watchGroupOutput",
+				"group", group.Name, "panic", r,
+				"stack", string(debug.Stack()))
+			deactivate()
+		}
+	}()
 
 	for {
 		select {

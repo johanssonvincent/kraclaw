@@ -3263,6 +3263,54 @@ func TestDeactivateRecovery_ReenqueueErrorLoggedAndMessageLost(t *testing.T) {
 	}
 }
 
+// TestDeactivate_MalformedRetriesExhaustionTriggersRecovery is a regression
+// guard for the skipped == maxMalformedRetries path. When Dequeue returns
+// (nil, nil) five times in a row, deactivate() sets pendingCheckFailed=true
+// and must spawn a recovery goroutine even though len(pending)==0 and qMsg==nil.
+// Removing or mis-counting the exhaustion check would cause the recovery to be
+// silently skipped and the group to stop processing messages.
+func TestDeactivate_MalformedRetriesExhaustionTriggersRecovery(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueRecording{mockQueue: newMockQueue()}
+	mq.active["group1@g.us"] = true
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
+	o.queue = mq
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+	// No pending MySQL messages — recovery is triggered solely by retries exhaustion.
+
+	// Track GetMessagesSince calls: first call is deactivate()'s pending check,
+	// second is the recovery goroutine's processGroupMessages call.
+	var callCount atomic.Int32
+	recoveryEntered := make(chan struct{}, 1)
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) < 2 {
+			return
+		}
+		select {
+		case recoveryEntered <- struct{}{}:
+		default:
+		}
+	}
+
+	// Close IPC channel to trigger deactivate. Dequeue always returns (nil, nil)
+	// by default, so all 5 retries will be exhausted → pendingCheckFailed=true.
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	select {
+	case <-recoveryEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("recovery goroutine was not spawned after maxMalformedRetries exhaustion")
+	}
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
+}
+
 // TestMaxConcurrent_ExcludesOwnJID is a regression guard for the jid != chatJID
 // guard inside the inflightSandboxes.Range call. If that guard were removed,
 // the group under test would count itself among "others" and the total would
