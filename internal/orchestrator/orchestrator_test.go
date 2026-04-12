@@ -3049,8 +3049,8 @@ func TestMaxConcurrent_IncludesInflight(t *testing.T) {
 
 // TestDeactivateRecovery_TakesSlotWhenFree is the positive companion to
 // TestDeactivateRecovery_SkipsWhenSlotHeld. It verifies that when the slot is
-// NOT pre-held, the recovery goroutine claims it (inflightSandboxes.Load returns
-// true during processGroupMessages) and releases it after watchGroupOutput returns.
+// NOT pre-held, the recovery goroutine claims it (the slot is present in
+// inflightSandboxes while processGroupMessages is running) and releases it after watchGroupOutput returns.
 func TestDeactivateRecovery_TakesSlotWhenFree(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()
@@ -3271,11 +3271,11 @@ func TestDeactivateRecovery_ReenqueueErrorLoggedAndMessageLost(t *testing.T) {
 	}
 }
 
-// TestDeactivate_EmptyQueueSkipsRecovery is a regression guard for the
-// skipped == maxMalformedRetries path. When Dequeue returns (nil, nil) five
-// times in a row the queue is empty — deactivate() must NOT spawn a recovery
-// goroutine, because there is nothing to process. Only a Dequeue error or
-// actual pending messages should trigger recovery.
+// TestDeactivate_EmptyQueueSkipsRecovery verifies that when Dequeue returns
+// (nil, nil) on every attempt and there are no pending MySQL messages,
+// deactivate() does NOT spawn a recovery goroutine. The recovery gate
+// (len(pending) > 0 || qMsg != nil || pendingCheckFailed) must remain false
+// when the queue is genuinely empty.
 func TestDeactivate_EmptyQueueSkipsRecovery(t *testing.T) {
 	s := newMockStore()
 	mq := &mockQueueRecording{mockQueue: newMockQueue()}

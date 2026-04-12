@@ -664,11 +664,23 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 						o.mu.Lock()
 						_, wasActive := o.activeSandboxes[jid]
 						delete(o.activeSandboxes, jid)
+						// Roll back cursor so messages sent to the dead agent get re-delivered.
+						confirmed := o.lastConfirmedTimestamp[jid]
+						sent := o.lastAgentTimestamp[jid]
+						if confirmed.Before(sent) {
+							o.log.Info("rolling back agent cursor after panic",
+								"group", g.Name, "from", sent, "to", confirmed)
+							o.lastAgentTimestamp[jid] = confirmed
+						}
 						o.mu.Unlock()
 						if wasActive {
 							if markErr := o.queue.MarkInactive(context.Background(), jid); markErr != nil {
 								o.log.Error("failed to mark group inactive after panic",
 									"group", g.Name, "error", markErr)
+							}
+							if saveErr := o.saveState(context.Background()); saveErr != nil {
+								o.log.Error("failed to save state after panic recovery",
+									"group", g.Name, "error", saveErr)
 							}
 						}
 					}
@@ -896,6 +908,9 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
 			o.log.Error("failed to stop sandbox after SendInput failure", "group", group.Name, "job", status.Name, "error", cleanupErr)
 		}
+		if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
+			o.log.Error("failed to delete IPC streams after SendInput failure", "group", group.Name, "error", delErr)
+		}
 		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
 			o.log.Error("failed to mark group inactive after SendInput failure", "group", group.Name, "error", markErr)
 		}
@@ -1080,7 +1095,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			// spurious recovery after the main cleanup path has already run.
 			active, activeErr := o.queue.IsActive(ctx, chatJID)
 			if activeErr != nil {
-				o.log.Error("deactivate: failed to check active state; skipping cleanup to avoid double-deactivate",
+				o.log.Error("deactivate: IsActive check failed; skipping cleanup — group may remain active until next reconcile",
 					"group", group.Name, "error", activeErr)
 				return
 			}
