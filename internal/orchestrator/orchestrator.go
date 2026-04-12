@@ -862,6 +862,9 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
 			o.log.Error("failed to stop sandbox after SubscribeOutput failure", "group", group.Name, "job", status.Name, "error", cleanupErr)
 		}
+		if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
+			o.log.Error("failed to delete IPC streams after SubscribeOutput failure", "group", group.Name, "error", delErr)
+		}
 		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
 			o.log.Error("failed to mark group inactive after SubscribeOutput failure", "group", group.Name, "error", markErr)
 		}
@@ -1247,6 +1250,11 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 	for {
 		select {
 		case <-ctx.Done():
+			// On shutdown we intentionally skip deactivate() and leave the MySQL
+			// active count as-is. handleSandboxEvent calls MarkInactive when each
+			// K8s Job completes, naturally draining stale entries. Running full
+			// deactivate + recovery here would race with shutdown and risk spawning
+			// new sandboxes during teardown.
 			return
 		case <-startupDeadline.C:
 			if !agentConnected {
