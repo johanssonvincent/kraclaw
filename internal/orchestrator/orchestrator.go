@@ -876,16 +876,9 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	}
 
 	// Spawn watchGroupOutput directly to listen for agent output (no event channel)
-	go func(jid string, g store.Group, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
-		defer func() {
-			if r := recover(); r != nil {
-				o.log.Error("panic in watchGroupOutput",
-					"group", g.Name, "panic", r,
-					"stack", string(debug.Stack()))
-			}
-		}()
+	go func(jid string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
 		o.watchGroupOutput(ctx, jid, ch, errCh)
-	}(chatJID, group, outputCh, outputErrCh)
+	}(chatJID, outputCh, outputErrCh)
 
 	// Send initial messages via IPC so the agent can read them on startup.
 	if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
@@ -1072,20 +1065,6 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 
 	o.log.Debug("watching IPC output", "group", group.Name)
 
-	liveness := time.NewTicker(10 * time.Second)
-	defer liveness.Stop()
-
-	// startupTimeout guards against the agent pod never starting (e.g. operator not
-	// reconciling the SandboxClaim). If no IPC message arrives within the deadline we
-	// treat the sandbox as failed and deactivate the group so the message can be retried.
-	startupTimeout := o.cfg.K8s.SandboxStartupTimeout
-	if startupTimeout <= 0 {
-		startupTimeout = 5 * time.Minute
-	}
-	startupDeadline := time.NewTimer(startupTimeout)
-	defer startupDeadline.Stop()
-	agentConnected := false // set to true on first IPC message from this agent
-
 	var deactivateOnce sync.Once
 	deactivate := func() {
 		deactivateOnce.Do(func() {
@@ -1245,6 +1224,20 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			deactivate()
 		}
 	}()
+
+	liveness := time.NewTicker(10 * time.Second)
+	defer liveness.Stop()
+
+	// startupTimeout guards against the agent pod never starting (e.g. operator not
+	// reconciling the SandboxClaim). If no IPC message arrives within the deadline we
+	// treat the sandbox as failed and deactivate the group so the message can be retried.
+	startupTimeout := o.cfg.K8s.SandboxStartupTimeout
+	if startupTimeout <= 0 {
+		startupTimeout = 5 * time.Minute
+	}
+	startupDeadline := time.NewTimer(startupTimeout)
+	defer startupDeadline.Stop()
+	agentConnected := false // set to true on first IPC message from this agent
 
 	for {
 		select {
