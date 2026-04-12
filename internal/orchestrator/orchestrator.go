@@ -673,7 +673,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 						}
 					}
 				}()
-				if err := o.processGroupMessages(ctx, jid); err != nil {
+				if _, err := o.processGroupMessages(ctx, jid); err != nil {
 					o.log.Error("failed to process group messages", "group", g.Name, "error", err)
 				}
 			}(chatJID, group, release)
@@ -699,12 +699,15 @@ func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 }
 
 // processGroupMessages fetches pending messages for a group and creates a sandbox.
-func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string) error {
+// Returns (true, nil) only when a sandbox is fully created and wired up.
+// Returns (false, nil) for all no-op early exits (group unregistered, no messages,
+// trigger not fired, MAX_CONCURRENT reached). Returns (false, err) on errors.
+func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string) (bool, error) {
 	o.mu.Lock()
 	group, ok := o.registeredGroups[chatJID]
 	if !ok {
 		o.mu.Unlock()
-		return nil
+		return false, nil
 	}
 	agentTs := o.lastAgentTimestamp[chatJID]
 	sessionID := o.sessions[group.Folder]
@@ -712,20 +715,20 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 
 	messages, err := o.store.GetMessagesSince(ctx, chatJID, agentTs, o.cfg.Queue.MessageLimit)
 	if err != nil {
-		return fmt.Errorf("get messages since: %w", err)
+		return false, fmt.Errorf("get messages since: %w", err)
 	}
 	if len(messages) == 0 {
-		return nil
+		return false, nil
 	}
 
 	// Check trigger for non-main groups.
 	if !group.IsMain && group.RequiresTrigger {
 		triggered, err := o.hasTriggerMessage(ctx, chatJID, group, messages)
 		if err != nil {
-			return fmt.Errorf("trigger check: %w", err)
+			return false, fmt.Errorf("trigger check: %w", err)
 		}
 		if !triggered {
-			return nil
+			return false, nil
 		}
 	}
 
@@ -746,7 +749,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	// counting this spawn against itself.
 	activeCount, err := o.queue.ActiveCount(ctx)
 	if err != nil {
-		return fmt.Errorf("check active count: %w", err)
+		return false, fmt.Errorf("check active count: %w", err)
 	}
 	others := 0
 	o.inflightSandboxes.Range(func(k, _ any) bool {
@@ -761,7 +764,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 			"active", activeCount,
 			"inflight_others", others,
 			"max", o.cfg.Queue.MaxConcurrent)
-		return nil // Message stays queued; retried on next poll.
+		return false, nil // Message stays queued; retried on next poll.
 	}
 
 	formatted := o.router.FormatMessagesForAgent(messages, o.cfg.Channels.AssistantName)
@@ -792,7 +795,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	// Marshal initial input payload.
 	payload, err := o.marshalInitialInput(map[string]string{"messages": formatted})
 	if err != nil {
-		return fmt.Errorf("marshal initial input: %w", err)
+		return false, fmt.Errorf("marshal initial input: %w", err)
 	}
 
 	// Create sandbox.
@@ -819,7 +822,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		if err := o.saveState(ctx); err != nil {
 			o.log.Error("failed to save state", "error", err)
 		}
-		return fmt.Errorf("create sandbox: sandbox controller is nil (Kubernetes not connected)")
+		return false, fmt.Errorf("create sandbox: sandbox controller is nil (Kubernetes not connected)")
 	}
 
 	status, err := o.sandbox.CreateSandbox(ctx, sbCfg)
@@ -831,7 +834,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		if err := o.saveState(ctx); err != nil {
 			o.log.Error("failed to save state", "error", err)
 		}
-		return fmt.Errorf("create sandbox: %w", err)
+		return false, fmt.Errorf("create sandbox: %w", err)
 	}
 
 	o.mu.Lock()
@@ -851,7 +854,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state", "error", saveErr)
 		}
-		return fmt.Errorf("mark active: %w", err)
+		return false, fmt.Errorf("mark active: %w", err)
 	}
 
 	// Subscribe to IPC output BEFORE spawning the watcher goroutine and BEFORE
@@ -875,7 +878,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state after SubscribeOutput failure", "group", group.Name, "error", saveErr)
 		}
-		return fmt.Errorf("subscribe output: %w", err)
+		return false, fmt.Errorf("subscribe output: %w", err)
 	}
 
 	// Spawn watchGroupOutput directly to listen for agent output (no event channel)
@@ -903,7 +906,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state after SendInput failure", "group", group.Name, "error", saveErr)
 		}
-		return fmt.Errorf("send initial input: %w", err)
+		return false, fmt.Errorf("send initial input: %w", err)
 	}
 
 	// Mark initial messages as confirmed since they're pre-populated in the IPC stream
@@ -913,7 +916,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	o.mu.Unlock()
 
 	o.log.Info("sandbox created", "group", group.Name, "job", status.Name)
-	return nil
+	return true, nil
 }
 
 // sandboxWatcher runs a self-healing loop that subscribes to Sandbox lifecycle events.
@@ -1203,15 +1206,22 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 											"group", group.Name, "error", markErr)
 									}
 								}
+								if qMsg != nil {
+									if reqErr := o.queue.Enqueue(context.Background(), chatJID, qMsg); reqErr != nil {
+										o.log.Error("post-deactivate: failed to re-enqueue message after panic; message lost",
+											"group", group.Name, "error", reqErr, "is_task", qMsg.IsTask)
+									}
+								}
 							}
 						}()
-						if err := o.processGroupMessages(ctx, chatJID); err != nil {
+						spawned, err := o.processGroupMessages(ctx, chatJID)
+						if err != nil {
 							o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
-							if qMsg != nil {
-								if reqErr := o.queue.Enqueue(context.Background(), chatJID, qMsg); reqErr != nil {
-									o.log.Error("post-deactivate: failed to re-enqueue message after recovery failure; message lost",
-										"group", group.Name, "error", reqErr)
-								}
+						}
+						if !spawned && qMsg != nil {
+							if reqErr := o.queue.Enqueue(context.Background(), chatJID, qMsg); reqErr != nil {
+								o.log.Error("post-deactivate: failed to re-enqueue message after recovery failure; message lost",
+									"group", group.Name, "error", reqErr, "is_task", qMsg.IsTask)
 							}
 						}
 					}(release, qMsg)

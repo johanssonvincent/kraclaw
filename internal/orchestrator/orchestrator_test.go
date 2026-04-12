@@ -284,8 +284,8 @@ func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-ch
 	}
 	if m.subscribeCh != nil {
 		// Return the preset channel on the first call only. Subsequent calls
-		// (e.g. from the watchGroupOutput reconnect path) fail so tests that
-		// pre-close subscribeCh don't loop forever.
+		// (e.g. from the watchGroupOutput reconnect path) fail so tests
+		// exercising reconnect reach deactivate quickly.
 		if m.subscribeCount > 1 {
 			return nil, nil, errors.New("mockIPCBroker: subscribeCh already consumed")
 		}
@@ -729,7 +729,7 @@ func TestMaxConcurrent_AtLimit_SkipsCreateSandbox(t *testing.T) {
 	}
 	defer release()
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
 	if err != nil {
 		t.Fatalf("processGroupMessages() error = %v, want nil", err)
 	}
@@ -779,7 +779,7 @@ func TestMaxConcurrent_BelowLimit_ProceedsToCreateSandbox(t *testing.T) {
 	}
 	defer release()
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
 	// CreateSandbox should be called — it will succeed since sb returns a valid status.
 	// But MarkActive will fail because mockQueueWithActiveCount inherits from mockQueue.
 	// We just care that CreateSandbox was reached.
@@ -820,7 +820,7 @@ func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
 		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
 	}
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
 	if err == nil {
 		t.Fatal("processGroupMessages() error = nil, want error from ActiveCount failure")
 	}
@@ -869,7 +869,7 @@ func TestProcessGroupMessages_SendInputFailure_TeardownAndErrors(t *testing.T) {
 	o.lastAgentTimestamp["group1@g.us"] = before.Add(-time.Second)
 	previousCursor := o.lastAgentTimestamp["group1@g.us"]
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
 	if err == nil {
 		t.Fatal("expected error from SendInput failure, got nil")
 	}
@@ -926,7 +926,7 @@ func TestProcessGroupMessages_MarkActiveFailure_StopsSandbox(t *testing.T) {
 
 	q.markActiveErr = fmt.Errorf("NATS MarkActive failed")
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
 	if err == nil {
 		t.Fatal("expected MarkActive failure error, got nil")
 	}
@@ -1155,7 +1155,7 @@ func TestProcessGroupMessages_UnknownGroup(t *testing.T) {
 	s := newMockStore()
 	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
 
-	err := o.processGroupMessages(context.Background(), "unknown@g.us")
+	_, err := o.processGroupMessages(context.Background(), "unknown@g.us")
 	if err != nil {
 		t.Errorf("processGroupMessages() error = %v, want nil for unknown group", err)
 	}
@@ -1172,7 +1172,7 @@ func TestProcessGroupMessages_NoMessages(t *testing.T) {
 		IsMain: true,
 	}
 
-	err := o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err := o.processGroupMessages(context.Background(), "group1@g.us")
 	if err != nil {
 		t.Errorf("processGroupMessages() error = %v, want nil for no messages", err)
 	}
@@ -1208,7 +1208,7 @@ func TestProcessGroupMessages_MarshalInitialInputFailure_ReturnsEarly(t *testing
 		return nil, fmt.Errorf("marshal boom")
 	}
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
 	if err == nil {
 		t.Fatal("processGroupMessages() error = nil, want wrapped marshal error")
 	}
@@ -2857,7 +2857,7 @@ func TestPollMessages_PanicReleasesSlot(t *testing.T) {
 	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
 
 	// The panic fired inside GetMessagesSince — before MarkActive — so the group
-	// was never inserted into activeSandboxes. With F5 applied, the panic handler
+	// was never inserted into activeSandboxes. With the wasActive guard, the panic handler
 	// skips MarkInactive and must not leave a stale activeSandboxes entry.
 	o.mu.Lock()
 	_, inActive := o.activeSandboxes["group1@g.us"]
@@ -3038,7 +3038,7 @@ func TestMaxConcurrent_IncludesInflight(t *testing.T) {
 	}
 	defer release()
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
 	if err != nil {
 		t.Fatalf("processGroupMessages() error = %v, want nil", err)
 	}
@@ -3147,8 +3147,8 @@ func TestDeactivateRecovery_SkipsWhenSlotHeld(t *testing.T) {
 	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 
 	// Recovery goroutine must have been skipped — no second GetMessagesSince call.
-	// Since the go func() inside watchGroupOutput was never launched (slot held),
-	// callCount reflects only the synchronous pending check.
+	// The slot claim fails, so the recovery goroutine is never spawned.
+	// callCount reflects only the synchronous pending-check call.
 	if got := callCount.Load(); got != 1 {
 		t.Errorf("GetMessagesSince called %d times, want 1 (recovery goroutine must have been skipped)", got)
 	}
@@ -3373,7 +3373,7 @@ func TestMaxConcurrent_ExcludesOwnJID(t *testing.T) {
 	}
 	defer release()
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
 	if err != nil {
 		t.Fatalf("processGroupMessages() error = %v, want nil", err)
 	}
@@ -3589,5 +3589,77 @@ func TestDeactivate_IsActiveErrorReturnsEarly(t *testing.T) {
 	}
 	if !q.active["group1@g.us"] {
 		t.Error("MarkInactive was called (active key deleted), want skipped on IsActive error")
+	}
+}
+
+// countingQueue wraps mockQueue and counts MarkInactive invocations.
+type countingQueue struct {
+	*mockQueue
+	markInactiveCalls atomic.Int32
+}
+
+func (c *countingQueue) MarkInactive(ctx context.Context, groupJID string) error {
+	c.markInactiveCalls.Add(1)
+	return c.mockQueue.MarkInactive(ctx, groupJID)
+}
+
+// TestDeactivate_OnceGuardPreventsDoubleCleanup verifies that the sync.Once
+// wrapper inside deactivate() prevents MarkInactive from being called more than
+// once when two concurrent deactivate() triggers fire: the channel-close path
+// (normal) and the panic-recovery path (inside the recovery goroutine).
+func TestDeactivate_OnceGuardPreventsDoubleCleanup(t *testing.T) {
+	s := newMockStore()
+	inner := newMockQueue()
+	inner.active["group1@g.us"] = true
+	cq := &countingQueue{mockQueue: inner}
+
+	b := &mockIPCBroker{}
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, RateLimitTokensPerSec: 1000, MaxMessageSizeBytes: 32768, MessageLimit: 500},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	log := slog.Default()
+	o, err := New(cfg, s, cq, b, nil, reg, log)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.ipcReconnectDelays = []time.Duration{time.Millisecond, time.Millisecond}
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.groups = append(s.groups, group)
+	o.registeredGroups["group1@g.us"] = group
+
+	// Seed a message so deactivate's pending check finds work and spawns the
+	// recovery goroutine.
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	// First call to GetMessagesSince (inside deactivate's pending check) succeeds.
+	// Second call (inside processGroupMessages in the recovery goroutine) panics,
+	// which triggers the defer-recover path that calls deactivate() a second time.
+	var callSeq atomic.Int32
+	s.getMessagesSinceHook = func() {
+		if callSeq.Add(1) >= 2 {
+			panic("injected once-guard panic")
+		}
+	}
+
+	// Pre-closed channel triggers the channel-close deactivate path immediately.
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	// Wait for the recovery goroutine to panic, recover, and release its slot.
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
+
+	// Both the channel-close path and the panic-recovery path called deactivate(),
+	// but sync.Once must ensure MarkInactive ran exactly once.
+	if got := cq.markInactiveCalls.Load(); got != 1 {
+		t.Errorf("MarkInactive called %d times, want 1 (sync.Once must prevent double cleanup)", got)
 	}
 }
