@@ -1150,8 +1150,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				skipped++
 			}
 			if skipped == maxMalformedRetries {
-				pendingCheckFailed = true
-				o.log.Warn("dequeue retries exhausted: all responses were nil (queue empty or messages malformed)",
+				o.log.Debug("dequeue retries exhausted: queue appears empty",
 					"group", group.Name, "retries", maxMalformedRetries)
 			}
 
