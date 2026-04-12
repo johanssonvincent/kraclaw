@@ -3051,9 +3051,9 @@ func TestMaxConcurrent_IncludesInflight(t *testing.T) {
 // TestDeactivateRecovery_TakesSlotWhenFree is the positive companion to
 // TestDeactivateRecovery_SkipsWhenSlotHeld. It verifies that when the slot is
 // NOT pre-held, the recovery goroutine claims it (the slot is present in
-// inflightSandboxes while processGroupMessages is running) and releases it when
-// the recovery goroutine exits (after processGroupMessages returns, which is before
-// watchGroupOutput finishes running in the background).
+// inflightSandboxes while processGroupMessages is running) and releases it
+// when the recovery goroutine exits, via defer release() wrapping the
+// processGroupMessages call inside the spawned goroutine.
 func TestDeactivateRecovery_TakesSlotWhenFree(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()
@@ -3565,8 +3565,9 @@ func TestDeactivate_MarkInactiveFailureSkipsRecovery(t *testing.T) {
 }
 
 // TestDeactivate_IsActiveErrorProceedsWithCleanup verifies that when IsActive
-// returns an error in deactivate(), MarkInactive is skipped but cursor rollback
-// still proceeds (GetMessagesSince is called despite the error).
+// returns an error in deactivate(), MarkInactive is skipped but the code still
+// reaches the pending-message check (GetMessagesSince is called), confirming
+// the IsActive error path falls through rather than returning early.
 func TestDeactivate_IsActiveErrorProceedsWithCleanup(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()
@@ -3587,8 +3588,8 @@ func TestDeactivate_IsActiveErrorProceedsWithCleanup(t *testing.T) {
 	b.subscribeCh = ipcCh
 	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
 
-	// GetMessagesSince must be called — cursor rollback and recovery proceed even
-	// when IsActive errors (only MarkInactive is skipped).
+	// GetMessagesSince must be called — the IsActive error path falls through
+	// rather than returning early; only MarkInactive is skipped.
 	if got := callCount.Load(); got == 0 {
 		t.Error("GetMessagesSince not called, want called (cursor rollback and recovery proceed on IsActive error)")
 	}
@@ -3596,6 +3597,64 @@ func TestDeactivate_IsActiveErrorProceedsWithCleanup(t *testing.T) {
 	if !q.active["group1@g.us"] {
 		t.Error("MarkInactive was called (active key deleted), want skipped on IsActive error")
 	}
+}
+
+// TestDeactivate_IsActiveError_RecoveryGoroutineSpawns is the positive companion
+// to TestDeactivate_IsActiveErrorProceedsWithCleanup. It verifies that when IsActive
+// errors AND there are pending messages, the recovery goroutine is actually spawned
+// and enters processGroupMessages (slot held during execution). The IsActive error
+// causes MarkInactive to be skipped but must not block the recovery path.
+func TestDeactivate_IsActiveError_RecoveryGoroutineSpawns(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	q.active["group1@g.us"] = true
+	q.isActiveErr = errors.New("db error") // forces IsActive error → fall-through path
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+
+	// Seed a pending message so len(pending) > 0 triggers the recovery goroutine.
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "pending", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	var slotHeldDuringRecovery atomic.Bool
+	var callCount atomic.Int32
+	recoveryEntered := make(chan struct{}, 1)
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) < 2 {
+			return // first call is deactivate()'s own pending check
+		}
+		if _, held := o.inflightSandboxes.Load("group1@g.us"); held {
+			slotHeldDuringRecovery.Store(true)
+		}
+		select {
+		case recoveryEntered <- struct{}{}:
+		default:
+		}
+	}
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	select {
+	case <-recoveryEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("recovery goroutine was not spawned after IsActive error + pending messages")
+	}
+	if !slotHeldDuringRecovery.Load() {
+		t.Error("slot was NOT held during recovery goroutine execution")
+	}
+	// MarkInactive must be skipped since IsActive returned an error.
+	if !q.active["group1@g.us"] {
+		t.Error("MarkInactive was called (active key deleted), want skipped on IsActive error")
+	}
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
 }
 
 // countingQueue wraps mockQueue and counts MarkInactive invocations.

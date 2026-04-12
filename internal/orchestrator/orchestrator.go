@@ -869,6 +869,20 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 		return false, fmt.Errorf("mark active: %w", err)
 	}
 
+	// Observability: log when concurrent-spawn races push the active count over
+	// the configured limit. The pre-flight check (ActiveCount + LoadOrStore above)
+	// is non-atomic — N goroutines for distinct groups can all read below-limit
+	// before any of them calls MarkActive. This post-admission re-check surfaces
+	// that scenario to operators without rolling back (rollback would introduce
+	// its own race). The limit is best-effort by design.
+	if postCount, postErr := o.queue.ActiveCount(ctx); postErr == nil &&
+		postCount > int64(o.cfg.Queue.MaxConcurrent) {
+		o.log.Warn("MAX_CONCURRENT exceeded after admission (concurrent-spawn race)",
+			"group", group.Name,
+			"active_after_admit", postCount,
+			"max", o.cfg.Queue.MaxConcurrent)
+	}
+
 	// Subscribe to IPC output BEFORE spawning the watcher goroutine and BEFORE
 	// SendInput, so we cannot miss the agent's first output (race fix).
 	outputCh, outputErrCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
@@ -1101,7 +1115,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			// spurious recovery after the main cleanup path has already run.
 			active, activeErr := o.queue.IsActive(ctx, chatJID)
 			if activeErr != nil {
-				o.log.Error("deactivate: IsActive check failed; proceeding with cleanup but skipping MarkInactive",
+				o.log.Error("deactivate: IsActive check failed; skipping MarkInactive but proceeding with cursor rollback and recovery — possible double-spawn if group is still active",
 					"group", group.Name, "error", activeErr)
 				// Fall through — still roll back cursor and trigger recovery.
 				// MySQL active count will be corrected by sandbox event or reconcile.
@@ -1244,11 +1258,22 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						if err != nil {
 							o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
 						}
-						if !spawned && qMsg != nil {
+						// Always re-enqueue the consumed qMsg regardless of whether a sandbox
+						// was spawned. processGroupMessages reads pending work from MySQL
+						// (GetMessagesSince), not from the NATS queue, so the newly-spawned
+						// sandbox (if any) will not receive the scheduled-task prompt that lived
+						// in qMsg. Re-enqueueing unconditionally ensures the next pollMessages
+						// tick picks it up. For one-shot scheduled tasks this prevents permanent
+						// loss — their payload lives only in NATS, never in MySQL.
+						if qMsg != nil {
 							if reqErr := o.queue.Enqueue(context.Background(), chatJID, qMsg); reqErr != nil {
-								o.log.Error("post-deactivate: failed to re-enqueue message after recovery failure; message lost",
+								o.log.Error("post-deactivate: failed to re-enqueue message after recovery; message lost",
 									"group", group.Name, "error", reqErr, "is_task", qMsg.IsTask)
 							}
+						}
+						if !spawned && pendingCheckFailed {
+							o.log.Warn("post-deactivate: defensive recovery did not spawn; messages may have been lost",
+								"group", group.Name)
 						}
 					}(release, qMsg)
 				}
