@@ -2573,6 +2573,7 @@ type mockQueueRecording struct {
 	enqueued    []string // groupJIDs passed to Enqueue
 	enqueueErr  error
 	dequeueOnce *queue.QueueMessage // if non-nil, returned once then cleared
+	dequeueErr  error               // if non-nil, Dequeue returns this error
 }
 
 func (m *mockQueueRecording) Enqueue(_ context.Context, groupJID string, _ *queue.QueueMessage) error {
@@ -2585,6 +2586,9 @@ func (m *mockQueueRecording) Enqueue(_ context.Context, groupJID string, _ *queu
 func (m *mockQueueRecording) Dequeue(_ context.Context, _ string) (*queue.QueueMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.dequeueErr != nil {
+		return nil, m.dequeueErr
+	}
 	if m.dequeueOnce != nil {
 		msg := m.dequeueOnce
 		m.dequeueOnce = nil
@@ -3311,4 +3315,56 @@ func TestMaxConcurrent_ExcludesOwnJID(t *testing.T) {
 	if !sb.createCalled.Load() {
 		t.Error("CreateSandbox was NOT called; own-JID exclusion guard may be broken")
 	}
+}
+
+// TestDeactivateRecovery_DequeueErrorTriggersRecovery verifies that when Dequeue
+// fails during the deactivate() check, the error is treated as a defensive trigger
+// for recovery (pendingCheckFailed = true) so the re-enqueue / respawn path runs
+// rather than silently dropping any work sitting in the NATS queue.
+func TestDeactivateRecovery_DequeueErrorTriggersRecovery(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueRecording{
+		mockQueue:  newMockQueue(),
+		dequeueErr: errors.New("NATS transient error"),
+	}
+	mq.active["group1@g.us"] = true
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
+	o.queue = mq
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+
+	// Track whether the recovery goroutine was spawned (second GetMessagesSince call).
+	var callCount atomic.Int32
+	var slotHeldDuringRecovery atomic.Bool
+	recoveryEntered := make(chan struct{}, 1)
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) < 2 {
+			return // first call is deactivate()'s own pending check
+		}
+		if _, held := o.inflightSandboxes.Load("group1@g.us"); held {
+			slotHeldDuringRecovery.Store(true)
+		}
+		select {
+		case recoveryEntered <- struct{}{}:
+		default:
+		}
+	}
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	select {
+	case <-recoveryEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("recovery goroutine was not spawned after Dequeue error")
+	}
+	if !slotHeldDuringRecovery.Load() {
+		t.Error("slot was NOT held during recovery goroutine execution")
+	}
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
 }

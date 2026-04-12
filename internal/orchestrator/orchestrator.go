@@ -66,7 +66,9 @@ type Orchestrator struct {
 	// goroutine. The claim (via sync.Map.LoadOrStore in claimSandboxSlot) is
 	// atomic; the subsequent goroutine spawn is not, so callers must ensure the
 	// claim is released on every exit path (typically via defer). Guards against
-	// the double-sandbox TOCTOU between IsActive()/ActiveCount() and MarkActive().
+	// the double-sandbox TOCTOU: a second poll cycle that observes IsActive() ==
+	// false before the first goroutine reaches MarkActive() would otherwise
+	// spawn a duplicate sandbox for the same group.
 	inflightSandboxes sync.Map // map[string]struct{} — keyed on chatJID
 
 	rateLimiters   map[string]*TokenBucket
@@ -641,7 +643,9 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 			// work will handle any pending messages for this group.
 			release, ok := o.claimSandboxSlot(chatJID)
 			if !ok {
-				o.log.Info("sandbox spawn skipped: already in-flight", "group", group.Name)
+				o.log.Info("sandbox spawn skipped: already in-flight",
+					"group", group.Name,
+					"pending_count", len(groupMsgs))
 				continue
 			}
 			go func(jid string, g store.Group, release func()) {
@@ -651,6 +655,16 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 						o.log.Error("panic in processGroupMessages",
 							"group", g.Name, "panic", r,
 							"stack", string(debug.Stack()))
+						// Force cleanup so a zombie-active group does not wedge future polls.
+						// Use context.Background() — the parent ctx may already be cancelled,
+						// and MarkInactive is idempotent so running it unconditionally is safe.
+						if markErr := o.queue.MarkInactive(context.Background(), jid); markErr != nil {
+							o.log.Error("failed to mark group inactive after panic",
+								"group", g.Name, "error", markErr)
+						}
+						o.mu.Lock()
+						delete(o.activeSandboxes, jid)
+						o.mu.Unlock()
 					}
 				}()
 				if err := o.processGroupMessages(ctx, jid); err != nil {
@@ -670,7 +684,12 @@ func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 	if _, loaded := o.inflightSandboxes.LoadOrStore(chatJID, struct{}{}); loaded {
 		return nil, false
 	}
-	return func() { o.inflightSandboxes.Delete(chatJID) }, true
+	return func() {
+		if _, ok := o.inflightSandboxes.LoadAndDelete(chatJID); !ok {
+			o.log.Error("BUG: releaseSandboxSlot called on non-held slot",
+				"group_jid", chatJID)
+		}
+	}, true
 }
 
 // processGroupMessages fetches pending messages for a group and creates a sandbox.
@@ -705,16 +724,20 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string)
 	}
 
 	// Enforce MAX_CONCURRENT limit — reject sandbox creation when at capacity (REL-01).
-	// activeCount is from NATS; others is from the in-flight map. The two reads
-	// are individually consistent but not taken atomically with respect to each
-	// other, nor with respect to MarkActive() below. This is a best-effort
-	// pre-flight throttle: under a sufficiently large burst of concurrent spawn
-	// attempts across distinct groups, up to N extra sandboxes can be admitted
-	// past MaxConcurrent, where N is the number of goroutines racing through
-	// this check before any of them calls MarkActive. In practice the window
-	// is narrow: claimSandboxSlot is called before this function, so two goroutines
-	// for the same group cannot both reach this check concurrently; only goroutines
-	// for distinct groups can collide. Not a hard invariant.
+	// activeCount is from MySQL (via GroupActiveStore); others is from the in-flight
+	// map. The two reads are individually consistent but not taken atomically with
+	// respect to each other, nor with respect to MarkActive() below. This is a
+	// best-effort pre-flight throttle: under a sufficiently large burst of concurrent
+	// spawn attempts across distinct groups, up to N extra sandboxes can be admitted
+	// past MaxConcurrent, where N is the number of goroutines racing through this
+	// check before any of them calls MarkActive. In practice the window is narrow:
+	// claimSandboxSlot is called before this function, so two goroutines for the same
+	// group cannot both reach this check concurrently; only goroutines for distinct
+	// groups can collide. Not a hard invariant.
+	// The current group's slot is already held in inflightSandboxes (claimed before
+	// this goroutine spawned) and is not yet reflected in activeCount (MarkActive has
+	// not been called), so the Range loop explicitly excludes chatJID to avoid
+	// counting this spawn against itself.
 	activeCount, err := o.queue.ActiveCount(ctx)
 	if err != nil {
 		return fmt.Errorf("check active count: %w", err)
@@ -1104,7 +1127,9 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 		for range maxMalformedRetries {
 			msg, deqErr := o.queue.Dequeue(ctx, chatJID)
 			if deqErr != nil {
-				o.log.Error("failed to dequeue message", "group", group.Name, "error", deqErr)
+				o.log.Error("failed to dequeue message; triggering recovery defensively",
+					"group", group.Name, "error", deqErr)
+				pendingCheckFailed = true
 				break
 			}
 			if msg != nil {
@@ -1152,6 +1177,16 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 							o.log.Error("panic in post-deactivate processGroupMessages",
 								"group", group.Name, "panic", r,
 								"stack", string(debug.Stack()))
+							// Force cleanup so a zombie-active group does not wedge future polls.
+							// Use context.Background() — the parent ctx may already be cancelled,
+							// and MarkInactive is idempotent so running it unconditionally is safe.
+							if markErr := o.queue.MarkInactive(context.Background(), chatJID); markErr != nil {
+								o.log.Error("failed to mark group inactive after panic",
+									"group", group.Name, "error", markErr)
+							}
+							o.mu.Lock()
+							delete(o.activeSandboxes, chatJID)
+							o.mu.Unlock()
 						}
 					}()
 					if err := o.processGroupMessages(ctx, chatJID); err != nil {
