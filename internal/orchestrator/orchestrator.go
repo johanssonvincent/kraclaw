@@ -76,10 +76,10 @@ type Orchestrator struct {
 	rateLimiters   map[string]*TokenBucket
 	rateLimitersMu sync.Mutex
 
-	// prevLast* fields are a best-effort dedup optimisation: they are compared against
+	// prevLast* fields (PERF-04) are a best-effort dedup optimisation: compared against
 	// current state before each MySQL write and accessed without mu. A benign race
 	// (redundant or skipped write at worst) is acceptable given the low cost of the
-	// operation they guard. They track last-saved state values to avoid redundant MySQL writes (PERF-04).
+	// operation they guard.
 	prevLastTimestampStr string // serialized last_timestamp from last save
 	prevAgentTsJSON      string // JSON-serialized last_agent_timestamp from last save
 	prevConfirmedTsJSON  string // JSON-serialized last_confirmed_timestamp from last save
@@ -1089,7 +1089,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 
 			if err := o.queue.MarkInactive(ctx, chatJID); err != nil {
 				// Do not delete from activeSandboxes: keeping the entry allows
-				// handleSandboxEvent to find the sandbox by name and retry
+				// handleSandboxEvent to find the sandbox by name and independently call
 				// MarkInactive when the K8s Job completion event fires.
 				// Spawning recovery on inconsistent MySQL state could inflate
 				// the active count, so we skip it.

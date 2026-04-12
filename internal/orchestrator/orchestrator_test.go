@@ -3099,7 +3099,7 @@ func TestDeactivateRecovery_TakesSlotWhenFree(t *testing.T) {
 	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
 }
 
-// TestDeactivateRecovery_ClaimsInflightSlot verifies that when the
+// TestDeactivateRecovery_SkipsWhenSlotHeld verifies that when the
 // watchGroupOutput recovery goroutine tries to spawn a processGroupMessages call
 // but the in-flight slot is already held, it skips rather than spawning a second
 // concurrent goroutine for the same group.
