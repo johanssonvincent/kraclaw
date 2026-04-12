@@ -11,7 +11,7 @@ App version: 0.6
 - Helm 4.1.3+
 - StorageClass available in cluster (default: `longhorn`)
 - MySQL 5.7+ accessible from cluster
-- Redis 5.0+ accessible from cluster
+- NATS 2.x+ with JetStream enabled
 
 ## Pre-install: Create Required Secrets
 
@@ -43,7 +43,7 @@ These Secrets must exist before running `helm install`:
     helm install kraclaw ./helm \
       --namespace kraclaw \
       --create-namespace \
-      --set k8s.agentImage=ghcr.io/johanssonvincent/kraclaw-agent:0.6
+      --set k8s.agentImageAnthropic=ghcr.io/johanssonvincent/kraclaw-agent-anthropic:0.6
 
     # Install with custom values file
     helm install kraclaw ./helm \
@@ -59,14 +59,17 @@ These Secrets must exist before running `helm install`:
 
 | Value | Default | Description |
 |-------|---------|-------------|
-| `k8s.agentImage` | `""` | REQUIRED: agent container image (AGENT_IMAGE) |
+| `k8s.agentImageAnthropic` | `""` | REQUIRED: Anthropic agent container image (AGENT_IMAGE_ANTHROPIC) |
+| `k8s.agentImageOpenAI` | `""` | OpenAI agent container image (AGENT_IMAGE_OPENAI) |
 | `image.tag` | Chart appVersion | Server image tag |
 | `replicaCount` | `1` | Number of kraclaw replicas |
 | `server.grpcInsecure` | `false` | Set true only for local dev (disables TLS) |
 | `tls.secretName` | `kraclaw-grpc-tls` | Secret containing gRPC TLS certificates |
 | `mysql.secretName` | `kraclaw-mysql-url` | Secret containing MYSQL_DSN |
 | `credproxy.secretName` | `kraclaw-api-keys` | Secret containing ANTHROPIC_API_KEY |
-| `redis.url` | `redis://redis.databases.svc.cluster.local:6379` | Redis connection URL |
+| `nats.url` | `nats://nats.nats.svc.cluster.local:4222` | NATS JetStream server URL (NATS_URL) |
+| `sandbox.agentImage` | `""` | REQUIRED: default agent container image for SandboxTemplate |
+| `sandbox.natsUrl` | `nats://nats.nats.svc.cluster.local:4222` | NATS URL injected into agent pods (NATS_URL) |
 | `storage.class` | `longhorn` | StorageClass for PVCs |
 | `storage.groups.size` | `10Gi` | Size of groups PVC |
 | `storage.sessions.size` | `5Gi` | Size of sessions PVC |
