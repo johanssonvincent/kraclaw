@@ -1182,7 +1182,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						o.log.Info("post-deactivate: spawning defensive recovery after pending-message check failure",
 							"group", group.Name)
 					}
-					go func(release func()) {
+					go func(release func(), qMsg *queue.QueueMessage) {
 						defer release()
 						defer func() {
 							if r := recover(); r != nil {
@@ -1205,8 +1205,14 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						}()
 						if err := o.processGroupMessages(ctx, chatJID); err != nil {
 							o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
+							if qMsg != nil {
+								if reqErr := o.queue.Enqueue(context.Background(), chatJID, qMsg); reqErr != nil {
+									o.log.Error("post-deactivate: failed to re-enqueue message after recovery failure; message lost",
+										"group", group.Name, "error", reqErr)
+								}
+							}
 						}
-					}(release)
+					}(release, qMsg)
 				}
 			}
 		})
