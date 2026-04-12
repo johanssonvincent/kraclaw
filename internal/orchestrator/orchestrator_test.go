@@ -214,8 +214,10 @@ func (m *mockStore) ActiveGroupJIDs(_ context.Context) ([]string, error)     { r
 // --- Mock Queue ---
 
 type mockQueue struct {
-	active        map[string]bool
-	markActiveErr error // if non-nil, MarkActive returns this error
+	active          map[string]bool
+	markActiveErr   error // if non-nil, MarkActive returns this error
+	markInactiveErr error // if non-nil, MarkInactive returns this error and skips delete
+	isActiveErr     error // if non-nil, IsActive returns false, isActiveErr
 }
 
 func newMockQueue() *mockQueue {
@@ -236,10 +238,16 @@ func (m *mockQueue) MarkActive(_ context.Context, groupJID string) error {
 	return nil
 }
 func (m *mockQueue) MarkInactive(_ context.Context, groupJID string) error {
+	if m.markInactiveErr != nil {
+		return m.markInactiveErr
+	}
 	delete(m.active, groupJID)
 	return nil
 }
 func (m *mockQueue) IsActive(_ context.Context, groupJID string) (bool, error) {
+	if m.isActiveErr != nil {
+		return false, m.isActiveErr
+	}
 	return m.active[groupJID], nil
 }
 func (m *mockQueue) ActiveCount(_ context.Context) (int64, error) { return 0, nil }
@@ -3480,5 +3488,106 @@ func TestDeactivateRecovery_PendingCheckFailedAndSlotHeld(t *testing.T) {
 
 	if got := callCount.Load(); got != 1 {
 		t.Errorf("GetMessagesSince called %d times, want 1 (only deactivate's own check)", got)
+	}
+}
+
+// TestDeactivate_InactiveGroupSkipsCleanup verifies that deactivate() is a no-op
+// when IsActive returns false — MarkInactive must not be called and no recovery
+// goroutine must be spawned.
+func TestDeactivate_InactiveGroupSkipsCleanup(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	// q.active["group1@g.us"] deliberately NOT set — IsActive returns (false, nil).
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+
+	var callCount atomic.Int32
+	s.getMessagesSinceHook = func() { callCount.Add(1) }
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	if got := callCount.Load(); got != 0 {
+		t.Errorf("GetMessagesSince called %d times, want 0 (inactive group skips all cleanup)", got)
+	}
+	if q.active["group1@g.us"] {
+		t.Error("MarkInactive was called (active key set), want skipped")
+	}
+}
+
+// TestDeactivate_MarkInactiveFailureSkipsRecovery verifies that when MarkInactive
+// fails, deactivate() logs and returns early — the activeSandboxes entry is
+// preserved so handleSandboxEvent can retry cleanup, and no recovery goroutine
+// is spawned.
+func TestDeactivate_MarkInactiveFailureSkipsRecovery(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	q.active["group1@g.us"] = true
+	q.markInactiveErr = errors.New("db error")
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+
+	// Pre-seed activeSandboxes so we can verify it is NOT removed on MarkInactive failure.
+	o.mu.Lock()
+	o.activeSandboxes["group1@g.us"] = "test-sandbox-job"
+	o.mu.Unlock()
+
+	var callCount atomic.Int32
+	s.getMessagesSinceHook = func() { callCount.Add(1) }
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	if got := callCount.Load(); got != 0 {
+		t.Errorf("GetMessagesSince called %d times, want 0 (MarkInactive failure skips pending check)", got)
+	}
+	o.mu.Lock()
+	_, stillHeld := o.activeSandboxes["group1@g.us"]
+	o.mu.Unlock()
+	if !stillHeld {
+		t.Error("activeSandboxes entry was removed, want preserved so handleSandboxEvent can retry")
+	}
+}
+
+// TestDeactivate_IsActiveErrorReturnsEarly verifies that deactivate() returns early
+// when IsActive returns an error — MarkInactive must not be called (queue active map
+// entry must survive) and no recovery goroutine must be spawned.
+func TestDeactivate_IsActiveErrorReturnsEarly(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	q.active["group1@g.us"] = true
+	q.isActiveErr = errors.New("db error")
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+
+	var callCount atomic.Int32
+	s.getMessagesSinceHook = func() { callCount.Add(1) }
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	if got := callCount.Load(); got != 0 {
+		t.Errorf("GetMessagesSince called %d times, want 0 (IsActive error skips all cleanup)", got)
+	}
+	if !q.active["group1@g.us"] {
+		t.Error("MarkInactive was called (active key deleted), want skipped on IsActive error")
 	}
 }

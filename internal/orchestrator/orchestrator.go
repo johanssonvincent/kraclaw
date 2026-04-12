@@ -1095,9 +1095,11 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			// spurious recovery after the main cleanup path has already run.
 			active, activeErr := o.queue.IsActive(ctx, chatJID)
 			if activeErr != nil {
-				o.log.Error("deactivate: failed to check active state; proceeding with cleanup",
+				o.log.Error("deactivate: failed to check active state; skipping cleanup to avoid double-deactivate",
 					"group", group.Name, "error", activeErr)
-			} else if !active {
+				return
+			}
+			if !active {
 				o.log.Debug("deactivate: group already inactive, skipping",
 					"group", group.Name)
 				return
