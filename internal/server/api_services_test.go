@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -612,6 +613,31 @@ func TestRegisterGroup_StoreError(t *testing.T) {
 	}
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("expected Internal, got %v", status.Code(err))
+	}
+}
+
+func TestRegisterGroup_InvalidProviderModel(t *testing.T) {
+	reg := provider.NewRegistryForTest(map[string]provider.ProviderInfo{
+		"openai": {
+			ID:          "openai",
+			DisplayName: "OpenAI",
+			Models:      []provider.ModelInfo{{ID: "gpt-4o", DisplayName: "GPT-4o"}},
+		},
+	})
+	svc := &groupService{store: &mockGroupStore{}, providers: reg, log: testLogger()}
+	_, err := svc.RegisterGroup(context.Background(), &kraclawv1.RegisterGroupRequest{
+		Jid:                 "tui:test",
+		Folder:              "test",
+		ContainerConfigJson: `{"provider":"frobnitz","model":"anything"}`,
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", status.Code(err))
+	}
+	if !strings.Contains(err.Error(), "invalid provider/model") {
+		t.Errorf("error message = %q, want substring %q", err.Error(), "invalid provider/model")
 	}
 }
 

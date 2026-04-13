@@ -749,3 +749,84 @@ func TestProviderPickerEscClearsAllCreationFields(t *testing.T) {
 		t.Errorf("creationProvidersLoaded = true, want false")
 	}
 }
+
+// TestCreationPickerEnterOnProviderWithNoModels asserts that pressing Enter on
+// a picker item whose backing ProviderInfo has zero models sets chatErr and
+// does not advance to chatStateSelectModel.
+func TestCreationPickerEnterOnProviderWithNoModels(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationProvidersLoaded = true
+	m.creationProviders = []*kraclawv1.ProviderInfo{makeProvider("openai", 0)}
+	// Manually inject picker item — buildProviderItems would filter this out;
+	// we bypass it to exercise the zero-models guard inside the Enter handler.
+	m.creationPicker.items = []creationPickerItem{{id: "openai", label: "openai Display"}}
+
+	next, cmd := m.Update(keyPress("enter"))
+	m = next.(model)
+
+	if m.chatState != chatStateSelectProvider {
+		t.Errorf("chatState = %v, want chatStateSelectProvider", m.chatState)
+	}
+	if m.chatErr == nil {
+		t.Fatal("chatErr should be set when selected provider has no models")
+	}
+	if !strings.Contains(m.chatErr.Error(), "no models configured") {
+		t.Errorf("chatErr = %q, want substring %q", m.chatErr.Error(), "no models configured")
+	}
+	if m.creationSelectedProvider != "" {
+		t.Errorf("creationSelectedProvider = %q, want empty", m.creationSelectedProvider)
+	}
+	if cmd != nil {
+		t.Error("expected no command on Enter when provider has no models")
+	}
+}
+
+// TestChatRegInputEnterStartsProviderFlow asserts that pressing Enter in the
+// name input transitions to chatStateSelectProvider, bumps creationFlowID,
+// sets creationPendingGroupName, and returns a fetchProvidersCmd.
+func TestChatRegInputEnterStartsProviderFlow(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectGroup
+	m.creationFlowID = 0
+	m.chatRegInput.Focus()
+	m.chatRegInput.SetValue("test-group")
+
+	next, cmd := m.Update(keyPress("enter"))
+	m = next.(model)
+
+	if m.chatState != chatStateSelectProvider {
+		t.Errorf("chatState = %v, want chatStateSelectProvider", m.chatState)
+	}
+	if m.creationFlowID != 1 {
+		t.Errorf("creationFlowID = %d, want 1", m.creationFlowID)
+	}
+	if m.creationPendingGroupName != "test-group" {
+		t.Errorf("creationPendingGroupName = %q, want %q", m.creationPendingGroupName, "test-group")
+	}
+	if cmd == nil {
+		t.Error("expected fetchProvidersCmd to be returned, got nil")
+	}
+}
+
+// TestProviderPickerEscBumpsCreationFlowID asserts that Esc from
+// chatStateSelectProvider increments creationFlowID so any in-flight
+// fetchProvidersCmd goroutine is decisively stale.
+func TestProviderPickerEscBumpsCreationFlowID(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationFlowID = 5
+
+	next, _ := m.Update(keyPress("esc"))
+	m = next.(model)
+
+	if m.creationFlowID != 6 {
+		t.Errorf("creationFlowID = %d, want 6 after Esc", m.creationFlowID)
+	}
+	if m.chatState != chatStateSelectGroup {
+		t.Errorf("chatState = %v, want chatStateSelectGroup", m.chatState)
+	}
+}
