@@ -411,8 +411,8 @@ k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 h1:Y3gxNAuB0OBLImH611+UDZ
 k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912/go.mod h1:kdmbQkyfwUagLfXIad1y2TdrjPFWp2Q89B3qkRwf/pQ=
 k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 h1:SjGebBtkBqHFOli+05xYbK8YF1Dzkbzn+gDM4X9T4Ck=
 k8s.io/utils v0.0.0-20251002143259-bc988d571ff4/go.mod h1:OLgZIPagt7ERELqWJFomSt595RzquPNLL48iOWgYOg0=
-sigs.k8s.io/agent-sandbox v0.2.1 h1:BRrZzBkmoXjzSyCLnv7a2F804uSPQbbinOKtRbKe/94=
-sigs.k8s.io/agent-sandbox v0.2.1/go.mod h1:S2A4dLvKUUp7nk7uTXmzzwI2N9/4NabxjQ4McJXrRWU=
+sigs.k8s.io/agent-sandbox v0.3.10 h1:a9lWMeOTx+iJ8CeHeU6N474rYHri4HPX/wUb0Hy7PLs=
+sigs.k8s.io/agent-sandbox v0.3.10/go.mod h1:Jrc7kae72PhTqo/9e3KdmM5rkg3Du2O0Q+3cGDe6NEw=
 sigs.k8s.io/controller-runtime v0.23.3 h1:VjB/vhoPoA9l1kEKZHBMnQF33tdCLQKJtydy4iqwZ80=
 sigs.k8s.io/controller-runtime v0.23.3/go.mod h1:B6COOxKptp+YaUT5q4l6LqUJTRpizbgf9KSRNdQGns0=
 sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 h1:IpInykpT6ceI+QxKBbEflcR5EXP7sU1kvOlxwZh5txg=
