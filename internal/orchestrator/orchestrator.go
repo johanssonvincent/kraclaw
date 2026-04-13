@@ -70,8 +70,10 @@ type Orchestrator struct {
 	// Guards against the double-sandbox TOCTOU: a second poll or deactivate-
 	// recovery that observes IsActive()==false before the first goroutine reaches
 	// MarkActive() would otherwise spawn a duplicate sandbox for the same group.
-	// A claim is held from claimSandboxSlot() until MarkActive() succeeds (early
-	// release) or the goroutine exits on an error path (deferred release).
+	// A claim is held from claimSandboxSlot() until MarkActive() succeeds, at
+	// which point processGroupMessages calls releaseSlot() explicitly (early
+	// release relative to the calling goroutine's deferred release), or until
+	// the goroutine exits on an error path (deferred release).
 	inflightSandboxes sync.Map // map[string]struct{} — keyed on chatJID
 
 	// confirmedCursorDirty is set to true when lastConfirmedTimestamp advances.
@@ -744,7 +746,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 // if another goroutine already holds it. When ok is true, callers MUST
 // invoke release() exactly once — typically via defer — when done. When
 // ok is false, release is nil and must not be called.
-// Calling release() more than once logs a BUG-level error but does not panic.
+// Calling release() more than once logs an Error-level message with a "BUG:" prefix but does not panic.
 func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 	if _, loaded := o.inflightSandboxes.LoadOrStore(chatJID, struct{}{}); loaded {
 		return nil, false
@@ -758,10 +760,6 @@ func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 	}, true
 }
 
-// processGroupMessages fetches pending messages for a group and creates a sandbox.
-// Returns (true, nil) only when a sandbox is fully created and wired up.
-// Returns (false, nil) for all no-op early exits (group unregistered, no messages,
-// trigger not fired, MAX_CONCURRENT reached). Returns (false, err) on errors.
 // processGroupMessages fetches pending messages for chatJID, enforces the
 // MAX_CONCURRENT admission gate, and — if the gate passes — creates a K8s sandbox
 // and wires up IPC. Returns (true, nil) when a sandbox was successfully spawned, or
@@ -769,10 +767,10 @@ func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 //
 // releaseSlot must be the in-flight slot release closure obtained from
 // claimSandboxSlot. processGroupMessages calls it early (right after MarkActive
-// succeeds) so that the slot is freed before CreateSandbox blocks, preventing a
-// transient double-count where ActiveCount and the in-flight map both reflect the
-// same group. Callers must still defer releaseSlot() themselves to handle error paths
-// that return before the early release.
+// succeeds) so the slot is freed before the calling goroutine's deferred
+// release fires, avoiding a transient window where ActiveCount and the
+// in-flight map both reflect the same group. Callers must still defer
+// releaseSlot() to cover error paths that return before the early release.
 func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string, releaseSlot func()) (bool, error) {
 	o.mu.Lock()
 	group, ok := o.registeredGroups[chatJID]
@@ -867,6 +865,13 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 	// Marshal initial input payload.
 	payload, err := o.marshalInitialInput(map[string]string{"messages": formatted})
 	if err != nil {
+		// Roll back cursor on error.
+		o.mu.Lock()
+		o.lastAgentTimestamp[chatJID] = previousCursor
+		o.mu.Unlock()
+		if saveErr := o.saveState(ctx); saveErr != nil {
+			o.log.Error("failed to save state", "error", saveErr)
+		}
 		return false, fmt.Errorf("marshal initial input: %w", err)
 	}
 
@@ -975,8 +980,16 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		return false, fmt.Errorf("subscribe output: %w", err)
 	}
 
-	// Spawn watchGroupOutput directly to listen for agent output (no event channel)
+	// Spawn watchGroupOutput directly to listen for agent output (no event channel).
+	// The outer recover catches panics in the narrow pre-setup window (map lookup etc.)
+	// before watchGroupOutput's own internal defer recover can install itself.
 	go func(jid string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
+		defer func() {
+			if r := recover(); r != nil {
+				o.log.Error("panic in watchGroupOutput goroutine wrapper",
+					"group_jid", jid, "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
 		o.watchGroupOutput(ctx, jid, ch, errCh)
 	}(chatJID, outputCh, outputErrCh)
 
@@ -1331,6 +1344,10 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 									if markErr := o.queue.MarkInactive(context.Background(), chatJID); markErr != nil {
 										o.log.Error("failed to mark group inactive after panic",
 											"group", group.Name, "error", markErr)
+									}
+									if saveErr := o.saveState(context.Background()); saveErr != nil {
+										o.log.Error("failed to save state after panic in post-deactivate recovery — cursor rollback is in-memory only",
+											"group", group.Name, "error", saveErr)
 									}
 								}
 								if qMsg != nil {

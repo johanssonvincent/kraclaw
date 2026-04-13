@@ -1302,6 +1302,9 @@ func TestHandleIPCMessage_MessageUpdatesConfirmedCursor(t *testing.T) {
 	if !confirmed.Equal(agentCursor) {
 		t.Errorf("lastConfirmedTimestamp = %v, want %v (should match lastAgentTimestamp after response)", confirmed, agentCursor)
 	}
+	if !o.confirmedCursorDirty.Load() {
+		t.Error("expected confirmedCursorDirty to be true after IPC message update")
+	}
 }
 
 func TestHandleIPCMessage_SessionUpdateDoesNotUpdateConfirmed(t *testing.T) {
@@ -1454,6 +1457,9 @@ func TestDeactivate_PendingMessagesTriggersReprocessing(t *testing.T) {
 
 	// Unblock the goroutine so it can finish cleanly.
 	close(processBlock)
+
+	// Join the recovery goroutine: wait until its in-flight slot is released.
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
 }
 
 // TestDeactivate_PendingCheckFailedTriggersReprocessing verifies that when
@@ -3981,5 +3987,152 @@ func TestSlot_PollAndRecoveryContendConcurrently(t *testing.T) {
 	// Exactly one sandbox was created despite both paths running concurrently.
 	if got := sb.createCount.Load(); got != 1 {
 		t.Errorf("CreateSandbox called %d times, want 1", got)
+	}
+}
+
+// TestProcessGroupMessages_SlotReleasedEarlyAfterMarkActive verifies the early
+// slot release at line 938: after MarkActive succeeds, releaseSlot() is called
+// immediately, freeing the in-flight slot before processGroupMessages returns and
+// before the spawning goroutine's deferred release fires.
+func TestProcessGroupMessages_SlotReleasedEarlyAfterMarkActive(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueWithActiveCount{
+		mockQueue:   mockQueue{active: make(map[string]bool)},
+		activeCount: 0,
+	}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxController{} // CreateSandbox returns immediately
+
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = sb
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.groups = append(s.groups, group)
+	o.registeredGroups["group1@g.us"] = group
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	// Gate: block SendInput so the processGroupMessages goroutine stays alive
+	// after releaseSlot() fires (which happens at line 938, after MarkActive,
+	// before SendInput).
+	sendGate := make(chan struct{})
+	b.sendInputFn = func(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {
+		select {
+		case <-sendGate:
+		case <-ctx.Done():
+		}
+		return nil
+	}
+	// Never-closing subscribeCh so SubscribeOutput succeeds and watchGroupOutput
+	// parks on the channel without triggering reconnect.
+	b.subscribeCh = make(chan *ipc.IPCMessage)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// pollMessages claims the slot and spawns a goroutine for processGroupMessages.
+	o.pollMessages(ctx)
+
+	// waitSlotReleased: the slot is released at line 938 (after MarkActive,
+	// before SendInput). sendGate is not yet closed, so the goroutine is blocked
+	// in SendInput — proving this is the early release, not the deferred one.
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
+
+	// Unblock SendInput and cancel ctx to stop watchGroupOutput.
+	close(sendGate)
+	cancel()
+}
+
+// --- confirmedCursorFlusher Tests ---
+
+// TestConfirmedCursorFlusher_DirtyTriggersSave verifies that the shutdown flush
+// branch saves state and clears the dirty flag when confirmedCursorDirty is true.
+func TestConfirmedCursorFlusher_DirtyTriggersSave(t *testing.T) {
+	s := newMockStore()
+	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
+
+	// Mark dirty so the shutdown branch flushes.
+	o.confirmedCursorDirty.Store(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		o.confirmedCursorFlusher(ctx)
+	}()
+
+	// Cancel context to trigger the shutdown-flush branch immediately.
+	cancel()
+	<-done
+
+	if o.confirmedCursorDirty.Load() {
+		t.Error("confirmedCursorDirty should be false after shutdown flush")
+	}
+	if len(s.setStateCalls) == 0 {
+		t.Error("saveState should have been called on shutdown flush when dirty")
+	}
+}
+
+// TestConfirmedCursorFlusher_CleanSkipsSave verifies that when
+// confirmedCursorDirty is false, the shutdown branch does not call saveState.
+func TestConfirmedCursorFlusher_CleanSkipsSave(t *testing.T) {
+	s := newMockStore()
+	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
+
+	// dirty is false (default).
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		o.confirmedCursorFlusher(ctx)
+	}()
+
+	cancel()
+	<-done
+
+	if len(s.setStateCalls) != 0 {
+		t.Errorf("saveState should not have been called when dirty=false, got calls: %v", s.setStateCalls)
+	}
+}
+
+// TestConfirmedCursorFlusher_FinalFlushSavesUnderCanceledCtx verifies that the
+// shutdown flush uses context.Background() internally, not the passed (cancelled)
+// context, so the save succeeds even when the orchestrator is shutting down.
+func TestConfirmedCursorFlusher_FinalFlushSavesUnderCanceledCtx(t *testing.T) {
+	s := newMockStore()
+	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
+
+	o.confirmedCursorDirty.Store(true)
+
+	// Start the flusher with an already-cancelled context: it should still flush.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already done before flusher starts
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		o.confirmedCursorFlusher(ctx)
+	}()
+	<-done
+
+	if o.confirmedCursorDirty.Load() {
+		t.Error("confirmedCursorDirty should be false after flush with already-cancelled ctx")
+	}
+	if len(s.setStateCalls) == 0 {
+		t.Error("saveState should succeed using context.Background() even when passed ctx is cancelled")
 	}
 }
