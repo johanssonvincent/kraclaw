@@ -297,7 +297,7 @@ func (s *groupService) ListProviders(ctx context.Context, _ *kraclawv1.ListProvi
 	for _, id := range ids {
 		p, ok := s.providers.Get(id)
 		if !ok {
-			s.log.Warn("provider listed but not retrievable; skipping", "provider_id", id)
+			s.log.Warn("provider listed but not retrievable; skipping", "provider_id", id, "total_advertised", len(ids))
 			continue
 		}
 		pi := &kraclawv1.ProviderInfo{

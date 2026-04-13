@@ -25,8 +25,9 @@ type creationPickerState struct {
 	cursor int
 }
 
-// providersLoadedMsg is the result of a ListProviders call. flowID must match
-// the model's creationFlowID or the message is discarded as stale; err is
+// providersLoadedMsg is the result of a ListProviders call. The message is
+// discarded if the model is not in chatStateSelectProvider or if flowID does
+// not match creationFlowID (stale response from a prior flow); err is
 // non-nil when the call failed.
 type providersLoadedMsg struct {
 	flowID    int
@@ -64,8 +65,9 @@ func translateListProvidersErr(err error) error {
 }
 
 // translateRegisterGroupErr maps known gRPC status codes from RegisterGroup to
-// human-readable errors. Named branches return fresh errors that do NOT wrap
-// the original; codes.InvalidArgument and the default branch wrap with %w.
+// human-readable errors. AlreadyExists and DeadlineExceeded/Unavailable
+// return fresh errors that do NOT wrap the original; InvalidArgument and the
+// default branch wrap with %w.
 func translateRegisterGroupErr(err error) error {
 	switch status.Code(err) {
 	case codes.AlreadyExists:
@@ -82,7 +84,7 @@ func translateRegisterGroupErr(err error) error {
 // buildProviderItems converts ProviderInfo slices to picker items, dropping
 // providers with an empty ID or zero models.
 // If selectedID is non-empty, returns the cursor index of that provider (or 0
-// if not found or absent). If selectedID is empty, cursor is always 0.
+// if not found). If selectedID is empty, cursor is always 0.
 func buildProviderItems(providers []*kraclawv1.ProviderInfo, selectedID string) ([]creationPickerItem, int) {
 	items := make([]creationPickerItem, 0, len(providers))
 	cursor := 0
