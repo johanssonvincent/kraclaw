@@ -70,10 +70,10 @@ type Orchestrator struct {
 	// Guards against the double-sandbox TOCTOU: a second poll or deactivate-
 	// recovery that observes IsActive()==false before the first goroutine reaches
 	// MarkActive() would otherwise spawn a duplicate sandbox for the same group.
-	// A claim is held from claimSandboxSlot() until MarkActive() succeeds, at
-	// which point processGroupMessages calls releaseSlot() explicitly (early
-	// release relative to the calling goroutine's deferred release), or until
-	// the goroutine exits on an error path (deferred release).
+	// A claim is held from claimSandboxSlot() until the early releaseSlot() call
+	// inside processGroupMessages (after CreateSandbox, activeSandboxes population,
+	// and MarkActive all succeed), or until the goroutine exits on any error path
+	// (deferred release via sync.Once).
 	inflightSandboxes sync.Map // map[string]struct{} — keyed on chatJID
 
 	// confirmedCursorDirty is set to true when lastConfirmedTimestamp advances.
@@ -423,23 +423,32 @@ func (o *Orchestrator) confirmedCursorFlusher(ctx context.Context) {
 	for {
 		select {
 		case <-tick.C:
-			if o.confirmedCursorDirty.Swap(false) {
-				if err := o.saveState(ctx); err != nil {
-					o.log.Error("confirmed cursor flush failed", "error", err)
-					// Restore dirty so the next tick retries.
-					o.confirmedCursorDirty.Store(true)
-				}
+			if err := o.flushConfirmedCursor(ctx); err != nil {
+				o.log.Error("confirmed cursor flush failed", "error", err)
 			}
 		case <-ctx.Done():
 			// Final flush on shutdown.
-			if o.confirmedCursorDirty.Swap(false) {
-				if err := o.saveState(context.Background()); err != nil {
-					o.log.Error("confirmed cursor shutdown flush failed", "error", err)
-				}
+			if err := o.flushConfirmedCursor(context.Background()); err != nil {
+				o.log.Error("confirmed cursor shutdown flush failed", "error", err)
 			}
 			return
 		}
 	}
+}
+
+// flushConfirmedCursor writes the confirmed cursor to persistent storage if it
+// has been modified since the last flush. Returns nil if not dirty or if the
+// flush succeeded. On failure the dirty flag is restored so the next tick
+// retries, and the error is returned for the caller to log.
+func (o *Orchestrator) flushConfirmedCursor(ctx context.Context) error {
+	if !o.confirmedCursorDirty.Swap(false) {
+		return nil
+	}
+	if err := o.saveState(ctx); err != nil {
+		o.confirmedCursorDirty.Store(true)
+		return err
+	}
+	return nil
 }
 
 // groupsList returns the current registered groups.
@@ -766,8 +775,9 @@ func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 // (false, nil/err) when no spawn occurred.
 //
 // releaseSlot must be the in-flight slot release closure obtained from
-// claimSandboxSlot. processGroupMessages calls it early (right after MarkActive
-// succeeds) so the slot is freed before the calling goroutine's deferred
+// claimSandboxSlot. processGroupMessages calls it early (after CreateSandbox,
+// activeSandboxes population, and MarkActive all succeed) so the slot is freed
+// before the calling goroutine's deferred
 // release fires, avoiding a transient window where ActiveCount and the
 // in-flight map both reflect the same group. Callers must still defer
 // releaseSlot() to cover error paths that return before the early release.
@@ -1684,6 +1694,7 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 				"enqueue_error", err,
 				"cleanup_error", delErr,
 			)
+			return fmt.Errorf("execute scheduled task: enqueue: %w; compensating delete also failed: %v", err, delErr)
 		}
 		return fmt.Errorf("execute scheduled task: %w", err)
 	}
