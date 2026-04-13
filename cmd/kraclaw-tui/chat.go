@@ -60,9 +60,11 @@ func (m model) registerGroupCmd(name, provider, model string) tea.Cmd {
 				Provider string `json:"provider"`
 				Model    string `json:"model"`
 			}{Provider: provider, Model: model}
-			if b, err := json.Marshal(cc); err == nil {
-				req.ContainerConfigJson = string(b)
+			b, err := json.Marshal(cc)
+			if err != nil {
+				return groupRegisteredMsg{err: fmt.Errorf("marshal container config: %w", err)}
 			}
+			req.ContainerConfigJson = string(b)
 		}
 		resp, err := m.api.groups.RegisterGroup(ctx, req)
 		if err != nil {
@@ -134,6 +136,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.chatErr = nil
 				m.chatState = chatStateSelectProvider
 				m.creationPicker = creationPickerState{}
+				m.creationProvidersLoaded = false
 				return m, m.fetchProvidersCmd()
 			default:
 				var cmd tea.Cmd
@@ -187,6 +190,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.chatState = chatStateSelectGroup
 			m.creationPendingGroupName = ""
 			m.creationPicker = creationPickerState{}
+			m.creationProvidersLoaded = false
 			return m, nil
 		case "j", "down":
 			if m.creationPicker.cursor < len(m.creationPicker.items)-1 {
@@ -203,13 +207,12 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.creationPicker.items[m.creationPicker.cursor]
-			m.creationSelectedProvider = selected.id
 			// Load model list for the selected provider from cached providers.
-			m.creationPicker = creationPickerState{}
+			var modelItems []creationPickerItem
 			for _, p := range m.creationProviders {
 				if p.GetId() == selected.id {
 					for _, mi := range p.GetModels() {
-						m.creationPicker.items = append(m.creationPicker.items, creationPickerItem{
+						modelItems = append(modelItems, creationPickerItem{
 							id:    mi.GetId(),
 							label: mi.GetDisplayName(),
 						})
@@ -217,6 +220,12 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
+			if len(modelItems) == 0 {
+				m.chatErr = fmt.Errorf("provider %q has no configured models", selected.id)
+				return m, nil
+			}
+			m.creationSelectedProvider = selected.id
+			m.creationPicker = creationPickerState{items: modelItems}
 			m.chatState = chatStateSelectModel
 			return m, nil
 		}
@@ -412,9 +421,16 @@ func (m model) renderChat() string {
 		b.WriteString(titleStyle.Render("Chat - Select Provider"))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  New group: %q\n", m.creationPendingGroupName)))
-		if len(m.creationPicker.items) == 0 {
+		if m.chatErr != nil {
+			b.WriteString(errStyle.Render("  Error: "+m.chatErr.Error()) + "\n")
+		}
+		switch {
+		case !m.creationProvidersLoaded:
 			b.WriteString("  " + m.spinner.View() + " Loading providers...\n")
-		} else {
+		case len(m.creationPicker.items) == 0:
+			b.WriteString(errStyle.Render("  No providers are configured on this server.") + "\n")
+			b.WriteString(dimStyle.Render("  Press Esc to go back.") + "\n")
+		default:
 			for i, item := range m.creationPicker.items {
 				cursor := "  "
 				if i == m.creationPicker.cursor {

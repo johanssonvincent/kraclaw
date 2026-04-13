@@ -1,7 +1,12 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"testing"
+
+	"google.golang.org/grpc"
 
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
 )
@@ -150,5 +155,150 @@ func TestCreationPickerBackNavigation(t *testing.T) {
 	}
 	if len(restoredPicker.items) != 2 {
 		t.Errorf("restored items len = %d, want 2", len(restoredPicker.items))
+	}
+}
+
+// fakeGroupClient is a minimal GroupServiceClient that records the last
+// RegisterGroup request and returns a stub group.
+type fakeGroupClient struct {
+	lastRegisterReq *kraclawv1.RegisterGroupRequest
+}
+
+func (f *fakeGroupClient) RegisterGroup(_ context.Context, in *kraclawv1.RegisterGroupRequest, _ ...grpc.CallOption) (*kraclawv1.Group, error) {
+	f.lastRegisterReq = in
+	return &kraclawv1.Group{Jid: in.Jid, Name: in.Name, Folder: in.Folder}, nil
+}
+
+func (f *fakeGroupClient) ListGroups(_ context.Context, _ *kraclawv1.ListGroupsRequest, _ ...grpc.CallOption) (*kraclawv1.ListGroupsResponse, error) {
+	return &kraclawv1.ListGroupsResponse{}, nil
+}
+
+func (f *fakeGroupClient) GetGroup(_ context.Context, _ *kraclawv1.GetGroupRequest, _ ...grpc.CallOption) (*kraclawv1.Group, error) {
+	return nil, nil
+}
+
+func (f *fakeGroupClient) UnregisterGroup(_ context.Context, _ *kraclawv1.UnregisterGroupRequest, _ ...grpc.CallOption) (*kraclawv1.UnregisterGroupResponse, error) {
+	return &kraclawv1.UnregisterGroupResponse{}, nil
+}
+
+func (f *fakeGroupClient) GetSenderAllowlist(_ context.Context, _ *kraclawv1.GetSenderAllowlistRequest, _ ...grpc.CallOption) (*kraclawv1.SenderAllowlist, error) {
+	return nil, nil
+}
+
+func (f *fakeGroupClient) UpdateSenderAllowlist(_ context.Context, _ *kraclawv1.UpdateSenderAllowlistRequest, _ ...grpc.CallOption) (*kraclawv1.SenderAllowlist, error) {
+	return nil, nil
+}
+
+func (f *fakeGroupClient) ListProviders(_ context.Context, _ *kraclawv1.ListProvidersRequest, _ ...grpc.CallOption) (*kraclawv1.ListProvidersResponse, error) {
+	return &kraclawv1.ListProvidersResponse{}, nil
+}
+
+// TestUpdateContainerConfigJson drives the full provider→model→register flow
+// through Update and asserts that container_config_json is set correctly.
+func TestUpdateContainerConfigJson(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+
+	providers := makeProviders("anthropic")
+
+	// Simulate: providers loaded successfully.
+	m.chatState = chatStateSelectProvider
+	m.creationPendingGroupName = "my-group"
+
+	next, _ := m.Update(providersLoadedMsg{providers: providers})
+	m = next.(model)
+
+	if !m.creationProvidersLoaded {
+		t.Fatal("creationProvidersLoaded should be true after successful load")
+	}
+	if m.chatState != chatStateSelectProvider {
+		t.Fatalf("chatState = %v, want chatStateSelectProvider", m.chatState)
+	}
+	if len(m.creationPicker.items) != 1 {
+		t.Fatalf("picker items = %d, want 1", len(m.creationPicker.items))
+	}
+
+	// Press Enter to select the provider.
+	next, _ = m.Update(keyPress("enter"))
+	m = next.(model)
+
+	if m.chatState != chatStateSelectModel {
+		t.Fatalf("chatState = %v, want chatStateSelectModel after provider select", m.chatState)
+	}
+	if len(m.creationPicker.items) != 2 {
+		t.Fatalf("model picker items = %d, want 2", len(m.creationPicker.items))
+	}
+
+	// Press Enter to select the first model.
+	next, cmd := m.Update(keyPress("enter"))
+	m = next.(model)
+
+	// Execute the registerGroupCmd and capture the resulting message.
+	if cmd == nil {
+		t.Fatal("expected a command after model selection, got nil")
+	}
+	result := cmd()
+	regMsg, ok := result.(groupRegisteredMsg)
+	if !ok {
+		t.Fatalf("expected groupRegisteredMsg, got %T", result)
+	}
+	if regMsg.err != nil {
+		t.Fatalf("registerGroupCmd returned error: %v", regMsg.err)
+	}
+
+	req := fake.lastRegisterReq
+	if req == nil {
+		t.Fatal("RegisterGroup was never called")
+	}
+	if req.ContainerConfigJson == "" {
+		t.Fatal("ContainerConfigJson is empty; expected JSON with provider/model")
+	}
+
+	var cc struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(req.ContainerConfigJson), &cc); err != nil {
+		t.Fatalf("ContainerConfigJson is not valid JSON: %v", err)
+	}
+	if cc.Provider != "anthropic" {
+		t.Errorf("provider = %q, want %q", cc.Provider, "anthropic")
+	}
+	if cc.Model != "model-a-anthropic" {
+		t.Errorf("model = %q, want %q", cc.Model, "model-a-anthropic")
+	}
+}
+
+// TestUpdateProvidersLoadedError asserts state is correctly reset when
+// provider fetching fails.
+func TestUpdateProvidersLoadedError(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+
+	m.chatState = chatStateSelectProvider
+	m.creationPendingGroupName = "my-group"
+	m.creationProvidersLoaded = false
+
+	someErr := errors.New("connection refused")
+	next, _ := m.Update(providersLoadedMsg{err: someErr})
+	m = next.(model)
+
+	if m.chatState != chatStateSelectGroup {
+		t.Errorf("chatState = %v, want chatStateSelectGroup", m.chatState)
+	}
+	if m.chatErr == nil {
+		t.Fatal("chatErr should be set on provider load failure")
+	}
+	if !errors.Is(m.chatErr, someErr) {
+		t.Errorf("chatErr does not wrap original error: %v", m.chatErr)
+	}
+	if m.creationPendingGroupName != "" {
+		t.Errorf("creationPendingGroupName = %q, want empty", m.creationPendingGroupName)
+	}
+	if m.creationPicker.items != nil {
+		t.Errorf("creationPicker.items should be nil after error, got %v", m.creationPicker.items)
+	}
+	if m.creationProvidersLoaded {
+		t.Error("creationProvidersLoaded should be false after error")
 	}
 }

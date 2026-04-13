@@ -253,10 +253,11 @@ type model struct {
 	modelPicker         modelPickerState
 
 	// Creation picker (new-group provider/model selection flow)
-	creationPendingGroupName string
-	creationSelectedProvider string
-	creationProviders        []*kraclawv1.ProviderInfo
-	creationPicker           creationPickerState
+	creationPendingGroupName  string
+	creationSelectedProvider  string
+	creationProviders         []*kraclawv1.ProviderInfo
+	creationPicker            creationPickerState
+	creationProvidersLoaded   bool
 
 	// Cached Glamour renderer for markdown in agent messages.
 	// Rebuilt only when viewport width changes.
@@ -652,10 +653,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case providersLoadedMsg:
 		if msg.err != nil {
-			m.chatErr = msg.err
+			slog.Error("failed to load providers", "err", msg.err)
+			m.chatErr = fmt.Errorf("failed to load providers: %w", msg.err)
 			m.chatState = chatStateSelectGroup
 			m.creationPendingGroupName = ""
 			m.creationPicker = creationPickerState{}
+			m.creationProvidersLoaded = false
 			return m, nil
 		}
 		m.creationProviders = msg.providers
@@ -666,6 +669,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				label: p.GetDisplayName(),
 			})
 		}
+		m.creationProvidersLoaded = true
 		return m, nil
 
 	case groupRegisteredMsg:
