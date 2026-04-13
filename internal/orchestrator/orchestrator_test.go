@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -35,6 +36,10 @@ type mockStore struct {
 	storeMessageCalled     bool
 	storeMessageCalledWith *store.Message
 	storeMessageErr        error
+
+	deleteMessageCalled bool
+	deleteMessageArgs   struct{ ID, ChatJID string }
+	deleteMessageErr    error
 	upsertSessionErr     error
 	deleteSessionErr     error
 	allowlist            map[string][]store.SenderAllowlistEntry
@@ -102,6 +107,24 @@ func (m *mockStore) StoreMessage(_ context.Context, msg *store.Message) error {
 }
 
 func (m *mockStore) StoreBatch(_ context.Context, msgs []store.Message) error { return nil }
+
+func (m *mockStore) DeleteMessage(_ context.Context, id, chatJID string) error {
+	m.deleteMessageCalled = true
+	m.deleteMessageArgs.ID = id
+	m.deleteMessageArgs.ChatJID = chatJID
+	if m.deleteMessageErr != nil {
+		return m.deleteMessageErr
+	}
+	msgs := m.messages[chatJID]
+	filtered := msgs[:0]
+	for _, msg := range msgs {
+		if msg.ID != id {
+			filtered = append(filtered, msg)
+		}
+	}
+	m.messages[chatJID] = filtered
+	return nil
+}
 
 func (m *mockStore) GetNewMessages(_ context.Context, jids []string, since time.Time, limit int) ([]store.Message, error) {
 	var result []store.Message
@@ -378,6 +401,12 @@ func newTestOrchestratorWithRouter(s *mockStore, q *mockQueue, b *mockIPCBroker,
 	}
 	o.router = rtr
 	o.auth = auth.New(s)
+	return o
+}
+
+func newTestOrchestratorWithLogger(s *mockStore, q *mockQueue, b *mockIPCBroker, logger *slog.Logger) *Orchestrator {
+	o := newTestOrchestrator(s, q, b)
+	o.log = logger
 	return o
 }
 
@@ -2805,8 +2834,8 @@ func TestExecuteScheduledTask_StoresPromptThenEnqueues(t *testing.T) {
 		t.Fatal("storeMessageCalledWith is nil")
 	}
 	got := s.storeMessageCalledWith
-	if got.ID != task.ID {
-		t.Errorf("stored message ID = %q, want %q", got.ID, task.ID)
+	if got.ID == "" || got.ID == task.ID {
+		t.Errorf("stored message ID = %q: want a fresh UUID (non-empty, not equal to task.ID %q)", got.ID, task.ID)
 	}
 	if got.ChatJID != task.ChatJID {
 		t.Errorf("stored message ChatJID = %q, want %q", got.ChatJID, task.ChatJID)
@@ -2825,6 +2854,9 @@ func TestExecuteScheduledTask_StoresPromptThenEnqueues(t *testing.T) {
 	}
 	if q.enqueueMsg == nil {
 		t.Fatal("enqueueMsg is nil")
+	}
+	if q.enqueueMsg.GroupJID != task.ChatJID {
+		t.Errorf("enqueueMsg.GroupJID = %q, want %q", q.enqueueMsg.GroupJID, task.ChatJID)
 	}
 	if q.enqueueMsg.Content != task.Prompt {
 		t.Errorf("enqueued content = %q, want %q", q.enqueueMsg.Content, task.Prompt)
@@ -2935,5 +2967,103 @@ func TestScheduledTaskPromptReachesAgentFormatting(t *testing.T) {
 	}
 	if !strings.Contains(formatted, "Scheduled Task") {
 		t.Errorf("formatted output does not contain sender name %q:\n%s", "Scheduled Task", formatted)
+	}
+}
+
+func TestExecuteScheduledTask_EnqueueFailureCompensates(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	enqueueErr := errors.New("nats unavailable")
+	q.enqueueErr = enqueueErr
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	task := store.ScheduledTask{
+		ID:      "task-enq-fail",
+		ChatJID: "group-enq@g.us",
+		Prompt:  "Compensating delete test",
+	}
+
+	err := o.executeScheduledTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, enqueueErr) {
+		t.Errorf("error = %v, want it to wrap enqueueErr", err)
+	}
+	if !s.deleteMessageCalled {
+		t.Error("DeleteMessage was not called after enqueue failure")
+	}
+	if s.deleteMessageArgs.ChatJID != task.ChatJID {
+		t.Errorf("DeleteMessage chatJID = %q, want %q", s.deleteMessageArgs.ChatJID, task.ChatJID)
+	}
+	if s.storeMessageCalledWith == nil {
+		t.Fatal("StoreMessage was not called")
+	}
+	if s.deleteMessageArgs.ID != s.storeMessageCalledWith.ID {
+		t.Errorf("DeleteMessage ID = %q, want stored message ID %q", s.deleteMessageArgs.ID, s.storeMessageCalledWith.ID)
+	}
+	if len(s.messages[task.ChatJID]) != 0 {
+		t.Errorf("messages[%q] has %d entries after compensating delete, want 0", task.ChatJID, len(s.messages[task.ChatJID]))
+	}
+}
+
+func TestExecuteScheduledTask_EnqueueFailureCleanupAlsoFails(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	enqueueErr := errors.New("nats unavailable")
+	cleanupErr := errors.New("mysql gone")
+	q.enqueueErr = enqueueErr
+	s.deleteMessageErr = cleanupErr
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	o := newTestOrchestratorWithLogger(s, q, &mockIPCBroker{}, logger)
+
+	task := store.ScheduledTask{
+		ID:      "task-double-fail",
+		ChatJID: "group-df@g.us",
+		Prompt:  "Double failure test",
+	}
+
+	err := o.executeScheduledTask(context.Background(), task)
+	if !errors.Is(err, enqueueErr) {
+		t.Errorf("error = %v, want it to wrap enqueueErr (not cleanupErr)", err)
+	}
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "enqueue_error") {
+		t.Errorf("log output missing enqueue_error field:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "cleanup_error") {
+		t.Errorf("log output missing cleanup_error field:\n%s", logOutput)
+	}
+}
+
+func TestExecuteScheduledTask_RecurringTaskWritesDistinctRows(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	task := store.ScheduledTask{
+		ID:      "task-recurring",
+		ChatJID: "group-rec@g.us",
+		Prompt:  "Daily digest",
+	}
+
+	if err := o.executeScheduledTask(context.Background(), task); err != nil {
+		t.Fatalf("first firing: %v", err)
+	}
+	if err := o.executeScheduledTask(context.Background(), task); err != nil {
+		t.Fatalf("second firing: %v", err)
+	}
+
+	msgs := s.messages[task.ChatJID]
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 rows in messages[%q], got %d", task.ChatJID, len(msgs))
+	}
+	if msgs[0].ID == msgs[1].ID {
+		t.Errorf("both firings wrote the same message ID %q — recurring task overwrites history", msgs[0].ID)
+	}
+	if msgs[0].Content != task.Prompt || msgs[1].Content != task.Prompt {
+		t.Errorf("message content mismatch: got %q and %q, want %q", msgs[0].Content, msgs[1].Content, task.Prompt)
 	}
 }

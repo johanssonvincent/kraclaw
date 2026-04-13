@@ -1641,12 +1641,15 @@ func (o *Orchestrator) hasTriggerMessage(ctx context.Context, chatJID string, gr
 // executeScheduledTask is the TaskExecutor callback for the scheduler.
 func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.ScheduledTask) error {
 	now := time.Now().UTC()
+	msgID := uuid.New().String()
 
 	// Write the prompt to MySQL first so it flows through the normal agent pipeline
 	// (processGroupMessages → GetMessagesSince → FormatMessagesForAgent).
-	// If this fails, abort without enqueuing to avoid a NATS trigger with no content.
+	// If this fails, abort without enqueuing: the agent pipeline reads message
+	// history via GetMessagesSince, so without the MySQL row the agent would
+	// wake to an empty message list.
 	if err := o.store.StoreMessage(ctx, &store.Message{
-		ID:         task.ID,
+		ID:         msgID,
 		ChatJID:    task.ChatJID,
 		Sender:     "scheduler",
 		SenderName: "Scheduled Task",
@@ -1664,6 +1667,24 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 		TaskID:    task.ID,
 	}
 	if err := o.queue.Enqueue(ctx, task.ChatJID, qMsg); err != nil {
+		o.log.Error("failed enqueue",
+			"task_id", task.ID,
+			"message_id", msgID,
+			"chat_jid", task.ChatJID,
+			"error", err,
+		)
+		// Compensating delete: remove the stored message so a failed enqueue
+		// does not leave a phantom row unlikely to be consumed that would
+		// persist indefinitely.
+		if delErr := o.store.DeleteMessage(ctx, msgID, task.ChatJID); delErr != nil {
+			o.log.Error("executeScheduledTask: enqueue failed and compensating delete also failed — zombie message row in MySQL",
+				"task_id", task.ID,
+				"message_id", msgID,
+				"chat_jid", task.ChatJID,
+				"enqueue_error", err,
+				"cleanup_error", delErr,
+			)
+		}
 		return fmt.Errorf("execute scheduled task: %w", err)
 	}
 	return nil
