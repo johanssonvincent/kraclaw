@@ -653,6 +653,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, readEventCmd(m.eventStream)
 
 	case providersLoadedMsg:
+		// Discard responses from a previous flow (user pressed Esc and re-started)
+		// or that arrived after the user left the provider-select step.
 		if m.chatState != chatStateSelectProvider || msg.flowID != m.creationFlowID {
 			return m, nil
 		}

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
 )
@@ -494,7 +496,10 @@ func TestUpdateProvidersLoadedError(t *testing.T) {
 
 	m.chatState = chatStateSelectProvider
 	m.creationPendingGroupName = "my-group"
-	m.creationProvidersLoaded = false
+	m.creationSelectedProvider = "openai"
+	m.creationProviders = makeProviders("openai")
+	m.creationPicker = creationPickerState{items: []creationPickerItem{{id: "openai", label: "OpenAI"}}}
+	m.creationProvidersLoaded = true
 
 	someErr := errors.New("connection refused")
 	next, _ := m.Update(providersLoadedMsg{err: someErr})
@@ -512,10 +517,194 @@ func TestUpdateProvidersLoadedError(t *testing.T) {
 	if m.creationPendingGroupName != "" {
 		t.Errorf("creationPendingGroupName = %q, want empty", m.creationPendingGroupName)
 	}
+	if m.creationSelectedProvider != "" {
+		t.Errorf("creationSelectedProvider = %q, want empty", m.creationSelectedProvider)
+	}
+	if m.creationProviders != nil {
+		t.Errorf("creationProviders = %v, want nil after error", m.creationProviders)
+	}
 	if m.creationPicker.items != nil {
 		t.Errorf("creationPicker.items should be nil after error, got %v", m.creationPicker.items)
 	}
 	if m.creationProvidersLoaded {
 		t.Error("creationProvidersLoaded should be false after error")
+	}
+}
+
+// TestTranslateListProvidersErr verifies the gRPC-to-user-message mapping for
+// ListProviders errors.
+func TestTranslateListProvidersErr(t *testing.T) {
+	tests := []struct {
+		name string
+		in   error
+		want string
+	}{
+		{"deadline", status.Error(codes.DeadlineExceeded, ""), "timed out contacting server"},
+		{"unavailable", status.Error(codes.Unavailable, ""), "server unavailable"},
+		{"unimplemented", status.Error(codes.Unimplemented, ""), "server does not support provider listing"},
+		{"default", errors.New("boom"), "failed to load providers: boom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := translateListProvidersErr(tt.in)
+			if !strings.Contains(got.Error(), tt.want) {
+				t.Errorf("translateListProvidersErr(%v).Error() = %q, want substring %q", tt.in, got.Error(), tt.want)
+			}
+		})
+	}
+}
+
+// TestTranslateRegisterGroupErr verifies the gRPC-to-user-message mapping for
+// RegisterGroup errors.
+func TestTranslateRegisterGroupErr(t *testing.T) {
+	tests := []struct {
+		name string
+		in   error
+		want string
+	}{
+		{"already_exists", status.Error(codes.AlreadyExists, ""), "a group with that name already exists"},
+		{"deadline", status.Error(codes.DeadlineExceeded, ""), "could not reach the server"},
+		{"unavailable", status.Error(codes.Unavailable, ""), "could not reach the server"},
+		{"invalid_argument", status.Error(codes.InvalidArgument, "bad input"), "invalid group configuration"},
+		{"default", errors.New("boom"), "failed to create group: boom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := translateRegisterGroupErr(tt.in)
+			if !strings.Contains(got.Error(), tt.want) {
+				t.Errorf("translateRegisterGroupErr(%v).Error() = %q, want substring %q", tt.in, got.Error(), tt.want)
+			}
+		})
+	}
+}
+
+// TestUpdateGroupRegisteredError asserts that a groupRegisteredMsg with an
+// error resets all creation fields and sets chatErr to the translated message.
+func TestUpdateGroupRegisteredError(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+
+	m.chatState = chatStateSelectProvider
+	m.creationPendingGroupName = "mygroup"
+	m.creationSelectedProvider = "openai"
+	m.creationProviders = makeProviders("openai")
+	m.creationPicker = creationPickerState{items: []creationPickerItem{{id: "openai", label: "OpenAI"}}}
+	m.creationProvidersLoaded = true
+
+	// registerGroupCmd translates errors before packaging them; deliver a
+	// pre-translated error to mirror what the real command produces.
+	translatedErr := translateRegisterGroupErr(status.Error(codes.AlreadyExists, "already exists"))
+	next, _ := m.Update(groupRegisteredMsg{err: translatedErr})
+	m = next.(model)
+
+	if m.chatState != chatStateSelectGroup {
+		t.Errorf("chatState = %v, want chatStateSelectGroup", m.chatState)
+	}
+	if m.chatErr == nil {
+		t.Fatal("chatErr should be set after registration error")
+	}
+	if !strings.Contains(m.chatErr.Error(), "a group with that name already exists") {
+		t.Errorf("chatErr = %q, want translated message", m.chatErr.Error())
+	}
+	if m.creationPendingGroupName != "" {
+		t.Errorf("creationPendingGroupName = %q, want empty", m.creationPendingGroupName)
+	}
+	if m.creationSelectedProvider != "" {
+		t.Errorf("creationSelectedProvider = %q, want empty", m.creationSelectedProvider)
+	}
+	if m.creationProviders != nil {
+		t.Errorf("creationProviders = %v, want nil", m.creationProviders)
+	}
+	if len(m.creationPicker.items) != 0 {
+		t.Errorf("creationPicker.items = %v, want empty", m.creationPicker.items)
+	}
+	if m.creationProvidersLoaded {
+		t.Error("creationProvidersLoaded should be false after error")
+	}
+}
+
+// TestCreationPickerSelectProviderClearsChatErr asserts that selecting a
+// provider (Enter) clears any stale chatErr before entering the model step.
+func TestCreationPickerSelectProviderClearsChatErr(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationFlowID = 1
+
+	next, _ := m.Update(providersLoadedMsg{flowID: 1, providers: makeProviders("anthropic")})
+	m = next.(model)
+
+	m.chatErr = errors.New("stale error")
+
+	next, _ = m.Update(keyPress("enter"))
+	m = next.(model)
+
+	if m.chatState != chatStateSelectModel {
+		t.Fatalf("chatState = %v, want chatStateSelectModel", m.chatState)
+	}
+	if m.chatErr != nil {
+		t.Errorf("chatErr = %v, want nil after Enter from provider picker", m.chatErr)
+	}
+}
+
+// TestCreationPickerModelEscClearsChatErr asserts that pressing Esc from the
+// model picker clears any stale chatErr before returning to provider selection.
+func TestCreationPickerModelEscClearsChatErr(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectModel
+	m.creationProviders = makeProviders("anthropic")
+	m.creationSelectedProvider = "anthropic"
+	m.creationPicker = creationPickerState{items: []creationPickerItem{{id: "model-a-anthropic", label: "Model A"}}}
+	m.chatErr = errors.New("stale error")
+
+	next, _ := m.Update(keyPress("esc"))
+	m = next.(model)
+
+	if m.chatState != chatStateSelectProvider {
+		t.Fatalf("chatState = %v, want chatStateSelectProvider", m.chatState)
+	}
+	if m.chatErr != nil {
+		t.Errorf("chatErr = %v, want nil after Esc from model picker", m.chatErr)
+	}
+}
+
+// TestBuildProviderItemsDropsEmptyID asserts that providers with an empty ID
+// are excluded from the picker, protecting downstream against empty registrations.
+func TestBuildProviderItemsDropsEmptyID(t *testing.T) {
+	empty := &kraclawv1.ProviderInfo{
+		Id:     "",
+		Models: []*kraclawv1.ModelInfo{{Id: "m1", DisplayName: "M1"}},
+	}
+	real := makeProvider("real", 1)
+
+	items, _ := buildProviderItems([]*kraclawv1.ProviderInfo{empty, real}, "")
+	if len(items) != 1 {
+		t.Fatalf("items len = %d, want 1 (empty-ID provider dropped)", len(items))
+	}
+	if items[0].id != "real" {
+		t.Errorf("item[0].id = %q, want %q", items[0].id, "real")
+	}
+}
+
+// TestCreationPickerAllProvidersFilteredRenders asserts that when providers
+// exist but all have zero models, the "no models" message is rendered (not the
+// "no providers configured" message).
+func TestCreationPickerAllProvidersFilteredRenders(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationFlowID = 1
+
+	noModels := makeProvider("empty-provider", 0)
+	next, _ := m.Update(providersLoadedMsg{flowID: 1, providers: []*kraclawv1.ProviderInfo{noModels}})
+	m = next.(model)
+
+	rendered := m.renderChat()
+	if strings.Contains(rendered, "No providers are configured on this server") {
+		t.Errorf("got 'No providers are configured' message, expected the 'none have any models' message")
+	}
+	if !strings.Contains(rendered, "none have any models") {
+		t.Errorf("expected 'none have any models' in render, got:\n%s", rendered)
 	}
 }

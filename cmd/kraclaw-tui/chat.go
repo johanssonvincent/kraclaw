@@ -70,7 +70,7 @@ func (m model) registerGroupCmd(name, provider, model string) tea.Cmd {
 		}
 		resp, err := m.api.groups.RegisterGroup(ctx, req)
 		if err != nil {
-			return groupRegisteredMsg{err: err}
+			return groupRegisteredMsg{err: translateRegisterGroupErr(err)}
 		}
 		return groupRegisteredMsg{group: resp}
 	}
@@ -118,7 +118,6 @@ func (m model) sendMessageCmd(text string) tea.Cmd {
 func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.chatState {
 	case chatStateSelectGroup:
-		// Check if reg input is focused (user is typing a new group name)
 		if m.chatRegInput.Focused() {
 			switch msg.String() {
 			case "ctrl+c":
@@ -233,6 +232,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.creationSelectedProvider = selected.id
 			m.creationPicker = creationPickerState{items: modelItems}
+			m.chatErr = nil
 			m.chatState = chatStateSelectModel
 			return m, nil
 		}
@@ -243,6 +243,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			// Back to provider picker, restoring cursor to the previously selected provider.
+			m.chatErr = nil
 			m.chatState = chatStateSelectProvider
 			items, cursor := buildProviderItems(m.creationProviders, m.creationSelectedProvider)
 			m.creationPicker = creationPickerState{items: items, cursor: cursor}
@@ -430,8 +431,11 @@ func (m model) renderChat() string {
 		switch {
 		case !m.creationProvidersLoaded:
 			b.WriteString("  " + m.spinner.View() + " Loading providers...\n")
-		case len(m.creationPicker.items) == 0:
+		case len(m.creationProviders) == 0:
 			b.WriteString(errStyle.Render("  No providers are configured on this server.") + "\n")
+			b.WriteString(dimStyle.Render("  Press Esc to go back.") + "\n")
+		case len(m.creationPicker.items) == 0:
+			b.WriteString(errStyle.Render("  Providers are configured but none have any models. Check server provider configuration.") + "\n")
 			b.WriteString(dimStyle.Render("  Press Esc to go back.") + "\n")
 		default:
 			for i, item := range m.creationPicker.items {

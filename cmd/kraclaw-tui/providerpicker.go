@@ -25,7 +25,9 @@ type creationPickerState struct {
 	cursor int
 }
 
-// providersLoadedMsg carries the ListProviders response back to the model.
+// providersLoadedMsg is the result of a ListProviders call. flowID must match
+// the model's creationFlowID or the message is discarded as stale; err is
+// non-nil when the call failed.
 type providersLoadedMsg struct {
 	flowID    int
 	providers []*kraclawv1.ProviderInfo
@@ -45,7 +47,9 @@ func (m model) fetchProvidersCmd(flowID int) tea.Cmd {
 	}
 }
 
-// translateListProvidersErr converts gRPC errors into user-readable messages.
+// translateListProvidersErr maps known gRPC status codes to human-readable errors.
+// Named branches (DeadlineExceeded, Unavailable, Unimplemented) return fresh
+// errors that do NOT wrap the original; the default branch wraps with %w.
 func translateListProvidersErr(err error) error {
 	switch status.Code(err) {
 	case codes.DeadlineExceeded:
@@ -59,12 +63,33 @@ func translateListProvidersErr(err error) error {
 	}
 }
 
-// buildProviderItems converts ProviderInfo slices to picker items, dropping zero-model providers.
-// If selectedID is non-empty, returns the cursor index of that provider (or 0 if absent).
+// translateRegisterGroupErr maps known gRPC status codes from RegisterGroup to
+// human-readable errors. Named branches return fresh errors that do NOT wrap
+// the original; codes.InvalidArgument and the default branch wrap with %w.
+func translateRegisterGroupErr(err error) error {
+	switch status.Code(err) {
+	case codes.AlreadyExists:
+		return fmt.Errorf("a group with that name already exists")
+	case codes.DeadlineExceeded, codes.Unavailable:
+		return fmt.Errorf("could not reach the server — check your connection")
+	case codes.InvalidArgument:
+		return fmt.Errorf("invalid group configuration: %w", err)
+	default:
+		return fmt.Errorf("failed to create group: %w", err)
+	}
+}
+
+// buildProviderItems converts ProviderInfo slices to picker items, dropping
+// providers with an empty ID or zero models.
+// If selectedID is non-empty, returns the cursor index of that provider (or 0
+// if not found or absent). If selectedID is empty, cursor is always 0.
 func buildProviderItems(providers []*kraclawv1.ProviderInfo, selectedID string) ([]creationPickerItem, int) {
 	items := make([]creationPickerItem, 0, len(providers))
 	cursor := 0
 	for _, p := range providers {
+		if p.GetId() == "" {
+			continue
+		}
 		if len(p.GetModels()) == 0 {
 			continue
 		}
