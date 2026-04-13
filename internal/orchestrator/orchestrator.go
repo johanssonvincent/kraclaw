@@ -1297,15 +1297,33 @@ func (o *Orchestrator) hasTriggerMessage(ctx context.Context, chatJID string, gr
 
 // executeScheduledTask is the TaskExecutor callback for the scheduler.
 func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.ScheduledTask) error {
-	// Enqueue the task as a message for processing.
+	now := time.Now().UTC()
+
+	// Write the prompt to MySQL first so it flows through the normal agent pipeline
+	// (processGroupMessages → GetMessagesSince → FormatMessagesForAgent).
+	// If this fails, abort without enqueuing to avoid a NATS trigger with no content.
+	if err := o.store.StoreMessage(ctx, &store.Message{
+		ID:         task.ID,
+		ChatJID:    task.ChatJID,
+		Sender:     "scheduler",
+		SenderName: "Scheduled Task",
+		Content:    task.Prompt,
+		Timestamp:  now,
+	}); err != nil {
+		return fmt.Errorf("execute scheduled task: store message: %w", err)
+	}
+
 	qMsg := &queue.QueueMessage{
 		GroupJID:  task.ChatJID,
 		Content:   task.Prompt,
-		Timestamp: time.Now(),
+		Timestamp: now,
 		IsTask:    true,
 		TaskID:    task.ID,
 	}
-	return o.queue.Enqueue(ctx, task.ChatJID, qMsg)
+	if err := o.queue.Enqueue(ctx, task.ChatJID, qMsg); err != nil {
+		return fmt.Errorf("execute scheduled task: %w", err)
+	}
+	return nil
 }
 
 // reconcileActiveSet removes stale entries from the active group store.

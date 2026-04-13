@@ -32,8 +32,9 @@ type mockStore struct {
 	chats    map[string]*store.Chat
 	tasks    map[string]*store.ScheduledTask
 
-	storeMessageCalled   bool
-	storeMessageErr      error
+	storeMessageCalled     bool
+	storeMessageCalledWith *store.Message
+	storeMessageErr        error
 	upsertSessionErr     error
 	deleteSessionErr     error
 	allowlist            map[string][]store.SenderAllowlistEntry
@@ -92,6 +93,7 @@ func (m *mockStore) DeleteSession(_ context.Context, groupFolder string) error {
 
 func (m *mockStore) StoreMessage(_ context.Context, msg *store.Message) error {
 	m.storeMessageCalled = true
+	m.storeMessageCalledWith = msg
 	if m.storeMessageErr != nil {
 		return m.storeMessageErr
 	}
@@ -216,13 +218,20 @@ func (m *mockStore) ActiveGroupJIDs(_ context.Context) ([]string, error)     { r
 type mockQueue struct {
 	active        map[string]bool
 	markActiveErr error // if non-nil, MarkActive returns this error
+	enqueueErr    error
+	enqueueCalled bool
+	enqueueMsg    *queue.QueueMessage
 }
 
 func newMockQueue() *mockQueue {
 	return &mockQueue{active: make(map[string]bool)}
 }
 
-func (m *mockQueue) Enqueue(_ context.Context, _ string, _ *queue.QueueMessage) error { return nil }
+func (m *mockQueue) Enqueue(_ context.Context, _ string, msg *queue.QueueMessage) error {
+	m.enqueueCalled = true
+	m.enqueueMsg = msg
+	return m.enqueueErr
+}
 func (m *mockQueue) Dequeue(_ context.Context, _ string) (*queue.QueueMessage, error) {
 	return nil, nil
 }
@@ -2724,5 +2733,162 @@ func TestWatchGroupOutput_ReconnectUsesGroupFolder(t *testing.T) {
 
 	if reconnectGroup != group.Folder {
 		t.Errorf("SubscribeOutput reconnect arg = %q, want group.Folder %q (was chatJID %q before fix)", reconnectGroup, group.Folder, group.JID)
+	}
+}
+
+// --- executeScheduledTask tests ---
+
+func TestExecuteScheduledTask_StoresPromptThenEnqueues(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	task := store.ScheduledTask{
+		ID:      "task-abc",
+		ChatJID: "test-group@g.us",
+		Prompt:  "Run daily report",
+	}
+
+	if err := o.executeScheduledTask(context.Background(), task); err != nil {
+		t.Fatalf("executeScheduledTask: unexpected error: %v", err)
+	}
+
+	if !s.storeMessageCalled {
+		t.Fatal("StoreMessage was not called")
+	}
+	if s.storeMessageCalledWith == nil {
+		t.Fatal("storeMessageCalledWith is nil")
+	}
+	got := s.storeMessageCalledWith
+	if got.ID != task.ID {
+		t.Errorf("stored message ID = %q, want %q", got.ID, task.ID)
+	}
+	if got.ChatJID != task.ChatJID {
+		t.Errorf("stored message ChatJID = %q, want %q", got.ChatJID, task.ChatJID)
+	}
+	if got.Content != task.Prompt {
+		t.Errorf("stored message Content = %q, want %q", got.Content, task.Prompt)
+	}
+	if got.Sender != "scheduler" {
+		t.Errorf("stored message Sender = %q, want %q", got.Sender, "scheduler")
+	}
+	if got.SenderName != "Scheduled Task" {
+		t.Errorf("stored message SenderName = %q, want %q", got.SenderName, "Scheduled Task")
+	}
+	if !q.enqueueCalled {
+		t.Fatal("Enqueue was not called after StoreMessage succeeded")
+	}
+	if q.enqueueMsg == nil {
+		t.Fatal("enqueueMsg is nil")
+	}
+	if q.enqueueMsg.Content != task.Prompt {
+		t.Errorf("enqueued content = %q, want %q", q.enqueueMsg.Content, task.Prompt)
+	}
+	if q.enqueueMsg.TaskID != task.ID {
+		t.Errorf("enqueued TaskID = %q, want %q", q.enqueueMsg.TaskID, task.ID)
+	}
+	if !q.enqueueMsg.IsTask {
+		t.Error("enqueued IsTask = false, want true")
+	}
+}
+
+func TestExecuteScheduledTask_StoreFailureShortCircuitsEnqueue(t *testing.T) {
+	s := newMockStore()
+	s.storeMessageErr = errors.New("db down")
+	q := newMockQueue()
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	task := store.ScheduledTask{
+		ID:      "task-xyz",
+		ChatJID: "test-group@g.us",
+		Prompt:  "Morning standup",
+	}
+
+	err := o.executeScheduledTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, s.storeMessageErr) {
+		t.Errorf("error does not wrap store error: %v", err)
+	}
+	if q.enqueueCalled {
+		t.Error("Enqueue was called despite StoreMessage failure")
+	}
+}
+
+func TestExecuteScheduledTask_UTCEnforced(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	task := store.ScheduledTask{
+		ID:      "task-utc",
+		ChatJID: "utc-group@g.us",
+		Prompt:  "UTC check",
+	}
+
+	before := time.Now().UTC()
+	if err := o.executeScheduledTask(context.Background(), task); err != nil {
+		t.Fatalf("executeScheduledTask: unexpected error: %v", err)
+	}
+	after := time.Now().UTC()
+
+	if s.storeMessageCalledWith == nil {
+		t.Fatal("storeMessageCalledWith is nil")
+	}
+	storedTS := s.storeMessageCalledWith.Timestamp
+	if storedTS.Location() != time.UTC {
+		t.Errorf("stored message timestamp location = %v, want UTC", storedTS.Location())
+	}
+	if storedTS.Before(before) || storedTS.After(after) {
+		t.Errorf("stored message timestamp %v outside [%v, %v]", storedTS, before, after)
+	}
+
+	if q.enqueueMsg == nil {
+		t.Fatal("enqueueMsg is nil")
+	}
+	enqueuedTS := q.enqueueMsg.Timestamp
+	if enqueuedTS.Location() != time.UTC {
+		t.Errorf("enqueued message timestamp location = %v, want UTC", enqueuedTS.Location())
+	}
+	if enqueuedTS != storedTS {
+		t.Errorf("enqueued timestamp %v != stored timestamp %v (must use same now)", enqueuedTS, storedTS)
+	}
+}
+
+func TestScheduledTaskPromptReachesAgentFormatting(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	rtr, err := router.New(nil, s)
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+
+	task := store.ScheduledTask{
+		ID:      "task-format",
+		ChatJID: "format-group@g.us",
+		Prompt:  "Weekly summary: please report.",
+	}
+
+	if err := o.executeScheduledTask(context.Background(), task); err != nil {
+		t.Fatalf("executeScheduledTask: %v", err)
+	}
+
+	msgs, err := s.GetMessagesSince(context.Background(), task.ChatJID, time.Time{}, 100)
+	if err != nil {
+		t.Fatalf("GetMessagesSince: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("GetMessagesSince returned %d messages, want 1", len(msgs))
+	}
+
+	formatted := rtr.FormatMessagesForAgent(msgs, "TestBot")
+	if !strings.Contains(formatted, task.Prompt) {
+		t.Errorf("formatted output does not contain task prompt %q:\n%s", task.Prompt, formatted)
+	}
+	if !strings.Contains(formatted, "Scheduled Task") {
+		t.Errorf("formatted output does not contain sender name %q:\n%s", "Scheduled Task", formatted)
 	}
 }
