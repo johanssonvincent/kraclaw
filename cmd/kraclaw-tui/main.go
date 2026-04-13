@@ -253,6 +253,7 @@ type model struct {
 	modelPicker         modelPickerState
 
 	// Creation picker (new-group provider/model selection flow)
+	creationFlowID            int
 	creationPendingGroupName  string
 	creationSelectedProvider  string
 	creationProviders         []*kraclawv1.ProviderInfo
@@ -652,29 +653,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, readEventCmd(m.eventStream)
 
 	case providersLoadedMsg:
-		if m.chatState != chatStateSelectProvider {
+		if m.chatState != chatStateSelectProvider || msg.flowID != m.creationFlowID {
 			return m, nil
 		}
 		if msg.err != nil {
-			slog.Error("failed to load providers", "err", msg.err)
-			m.chatErr = fmt.Errorf("failed to load providers: %w", msg.err)
+			slog.Error("failed to load providers",
+				"grpc_code", status.Code(msg.err).String(),
+				"err", msg.err)
+			m.chatErr = msg.err
 			m.chatState = chatStateSelectGroup
 			m.creationPendingGroupName = ""
+			m.creationSelectedProvider = ""
+			m.creationProviders = nil
 			m.creationPicker = creationPickerState{}
 			m.creationProvidersLoaded = false
 			return m, nil
 		}
 		m.creationProviders = msg.providers
-		m.creationPicker = creationPickerState{}
-		for _, p := range msg.providers {
-			if len(p.GetModels()) == 0 {
-				continue
-			}
-			m.creationPicker.items = append(m.creationPicker.items, creationPickerItem{
-				id:    p.GetId(),
-				label: p.GetDisplayName(),
-			})
-		}
+		items, _ := buildProviderItems(msg.providers, "")
+		m.creationPicker = creationPickerState{items: items}
 		m.creationProvidersLoaded = true
 		return m, nil
 
@@ -682,6 +679,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.chatErr = msg.err
 			m.chatState = chatStateSelectGroup
+			m.creationPendingGroupName = ""
+			m.creationSelectedProvider = ""
+			m.creationProviders = nil
+			m.creationPicker = creationPickerState{}
+			m.creationProvidersLoaded = false
 			return m, m.fetchGroups()
 		}
 		g := GroupInfo{

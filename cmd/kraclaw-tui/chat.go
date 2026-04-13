@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -62,7 +63,8 @@ func (m model) registerGroupCmd(name, provider, model string) tea.Cmd {
 			}{Provider: provider, Model: model}
 			b, err := json.Marshal(cc)
 			if err != nil {
-				return groupRegisteredMsg{err: fmt.Errorf("marshal container config: %w", err)}
+				slog.Error("marshal container config", "err", err)
+				return groupRegisteredMsg{err: fmt.Errorf("internal error preparing group configuration — please try again")}
 			}
 			req.ContainerConfigJson = string(b)
 		}
@@ -137,7 +139,8 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.chatState = chatStateSelectProvider
 				m.creationPicker = creationPickerState{}
 				m.creationProvidersLoaded = false
-				return m, m.fetchProvidersCmd()
+				m.creationFlowID++
+				return m, m.fetchProvidersCmd(m.creationFlowID)
 			default:
 				var cmd tea.Cmd
 				m.chatRegInput, cmd = m.chatRegInput.Update(msg)
@@ -204,6 +207,9 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "enter":
+			if !m.creationProvidersLoaded {
+				return m, nil
+			}
 			if len(m.creationPicker.items) == 0 {
 				return m, nil
 			}
@@ -222,7 +228,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if len(modelItems) == 0 {
-				m.chatErr = fmt.Errorf("provider %q has no configured models", selected.id)
+				m.chatErr = fmt.Errorf("provider %q has no models configured — select a different provider or press Esc to cancel", selected.id)
 				return m, nil
 			}
 			m.creationSelectedProvider = selected.id
@@ -238,21 +244,8 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			// Back to provider picker, restoring cursor to the previously selected provider.
 			m.chatState = chatStateSelectProvider
-			providerCursor := 0
-			items := make([]creationPickerItem, 0, len(m.creationProviders))
-			for _, p := range m.creationProviders {
-				if len(p.GetModels()) == 0 {
-					continue
-				}
-				items = append(items, creationPickerItem{
-					id:    p.GetId(),
-					label: p.GetDisplayName(),
-				})
-				if p.GetId() == m.creationSelectedProvider {
-					providerCursor = len(items) - 1
-				}
-			}
-			m.creationPicker = creationPickerState{items: items, cursor: providerCursor}
+			items, cursor := buildProviderItems(m.creationProviders, m.creationSelectedProvider)
+			m.creationPicker = creationPickerState{items: items, cursor: cursor}
 			return m, nil
 		case "j", "down":
 			if m.creationPicker.cursor < len(m.creationPicker.items)-1 {
@@ -275,6 +268,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.creationSelectedProvider = ""
 			m.creationPicker = creationPickerState{}
 			m.creationProviders = nil
+			m.creationProvidersLoaded = false
 			m.chatState = chatStateConnecting
 			m.chatMessages = nil
 			return m, m.registerGroupCmd(name, provider, selectedModel)
@@ -461,6 +455,9 @@ func (m model) renderChat() string {
 		b.WriteString(titleStyle.Render("Chat - Select Model"))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  Provider: %s\n", m.creationSelectedProvider)))
+		if m.chatErr != nil {
+			b.WriteString(errStyle.Render("  Error: "+m.chatErr.Error()) + "\n")
+		}
 		for i, item := range m.creationPicker.items {
 			cursor := "  "
 			if i == m.creationPicker.cursor {
