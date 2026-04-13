@@ -48,7 +48,8 @@ type mockStore struct {
 
 	updateTaskCalled     bool
 	deleteTaskCalledWith [2]string // [id, groupFolder]
-	setStateCalls        []string  // records keys passed to SetState for counting
+	setStateCalls []string // records keys passed to SetState for counting
+	setStateErr   error   // if non-nil, SetState returns this error
 }
 
 func newMockStore() *mockStore {
@@ -67,6 +68,9 @@ func (m *mockStore) GetState(_ context.Context, key string) (string, error) {
 }
 
 func (m *mockStore) SetState(_ context.Context, key, value string) error {
+	if m.setStateErr != nil {
+		return m.setStateErr
+	}
 	m.state[key] = value
 	m.setStateCalls = append(m.setStateCalls, key)
 	return nil
@@ -239,11 +243,13 @@ func (m *mockStore) ActiveGroupJIDs(_ context.Context) ([]string, error)     { r
 // --- Mock Queue ---
 
 type mockQueue struct {
-	active        map[string]bool
-	markActiveErr error // if non-nil, MarkActive returns this error
-	enqueueErr    error
-	enqueueCalled bool
-	enqueueMsg    *queue.QueueMessage
+	active          map[string]bool
+	markActiveErr   error // if non-nil, MarkActive returns this error
+	markInactiveErr error // if non-nil, MarkInactive returns this error
+	isActiveErr     error // if non-nil, IsActive returns this error
+	enqueueErr      error
+	enqueueCalled   bool
+	enqueueMsg      *queue.QueueMessage
 }
 
 func newMockQueue() *mockQueue {
@@ -684,6 +690,55 @@ func TestSaveState_InitialSaveWritesAll(t *testing.T) {
 	}
 }
 
+// TestFlushConfirmedCursor verifies that flushConfirmedCursor retains the dirty
+// flag on saveState failure and clears it on success.
+func TestFlushConfirmedCursor_RetainsOnErrorClearsOnSuccess(t *testing.T) {
+	s := newMockStore()
+	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
+
+	// Seed one group so saveState has actual data to write.
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us"}
+	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	o.lastConfirmedTimestamp["group1@g.us"] = ts
+
+	// Inject a SetState error so saveState will fail.
+	s.setStateErr = errors.New("mysql write error")
+	o.confirmedCursorDirty.Store(true)
+
+	// Flush should fail and leave dirty=true.
+	if err := o.flushConfirmedCursor(context.Background()); err == nil {
+		t.Error("flushConfirmedCursor() error = nil, want non-nil on saveState failure")
+	}
+	if !o.confirmedCursorDirty.Load() {
+		t.Error("confirmedCursorDirty = false after failed flush, want true (retry pending)")
+	}
+
+	// Clear the error; next flush should succeed.
+	s.setStateErr = nil
+
+	if err := o.flushConfirmedCursor(context.Background()); err != nil {
+		t.Errorf("flushConfirmedCursor() error = %v, want nil on saveState success", err)
+	}
+	if o.confirmedCursorDirty.Load() {
+		t.Error("confirmedCursorDirty = true after successful flush, want false")
+	}
+}
+
+// TestFlushConfirmedCursor_NoopWhenClean verifies that a clean (not-dirty) call
+// is a no-op and does not write to the store.
+func TestFlushConfirmedCursor_NoopWhenClean(t *testing.T) {
+	s := newMockStore()
+	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
+	o.confirmedCursorDirty.Store(false)
+
+	if err := o.flushConfirmedCursor(context.Background()); err != nil {
+		t.Errorf("flushConfirmedCursor() error = %v, want nil when not dirty", err)
+	}
+	if len(s.setStateCalls) != 0 {
+		t.Errorf("SetState called %d times on clean flush, want 0", len(s.setStateCalls))
+	}
+}
+
 // --- MAX_CONCURRENT Tests ---
 
 // mockQueueWithActiveCount extends mockQueue with a configurable ActiveCount return.
@@ -862,6 +917,121 @@ func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "check active count") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "check active count")
+	}
+}
+
+// TestClaimSandboxSlot_LoserReturnsNilFalse verifies that:
+//   - The first claim on a JID succeeds (non-nil release, true).
+//   - A second concurrent claim for the same JID loses (nil, false).
+//   - After the first release, a new claim succeeds (entry was deleted).
+//   - Calling release() twice is a no-op and does not panic.
+func TestClaimSandboxSlot_LoserReturnsNilFalse(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	o, err := New(cfg, s, q, &mockIPCBroker{}, nil, channel.NewRegistry(), slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	const jid = "group-slot@g.us"
+
+	// First claim wins.
+	release1, ok := o.claimSandboxSlot(jid)
+	if !ok {
+		t.Fatal("first claimSandboxSlot returned ok=false, want true")
+	}
+	if release1 == nil {
+		t.Fatal("first claimSandboxSlot returned nil release, want non-nil")
+	}
+
+	// Second claim loses.
+	release2, ok := o.claimSandboxSlot(jid)
+	if ok {
+		t.Error("second claimSandboxSlot returned ok=true, want false")
+	}
+	if release2 != nil {
+		t.Error("second claimSandboxSlot returned non-nil release, want nil")
+	}
+
+	// Release the first claim; entry should be deleted.
+	release1()
+
+	// Third claim wins again (entry was deleted by release).
+	release3, ok := o.claimSandboxSlot(jid)
+	if !ok {
+		t.Fatal("third claimSandboxSlot returned ok=false after release, want true")
+	}
+	if release3 == nil {
+		t.Fatal("third claimSandboxSlot returned nil release after release, want non-nil")
+	}
+
+	// Calling release1 a second time must be a no-op (sync.Once idempotency).
+	release1() // must not panic
+
+	release3()
+}
+
+// TestMaxConcurrent_InflightSlotsCountedInAdmission verifies that sandboxes
+// already in-flight for *other* groups count towards the MAX_CONCURRENT gate.
+func TestMaxConcurrent_InflightSlotsCountedInAdmission(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueWithActiveCount{
+		mockQueue:   mockQueue{active: make(map[string]bool)},
+		activeCount: 1, // one group already active in MySQL
+	}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group2@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{}
+
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 2},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	log := slog.Default()
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, log)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = sb
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	// Register the group and queue a pending message.
+	o.registeredGroups["group2@g.us"] = store.Group{
+		JID: "group2@g.us", Folder: "test-group2", IsMain: true,
+	}
+	s.messages["group2@g.us"] = []store.Message{
+		{ChatJID: "group2@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	// Pre-populate inflightSandboxes with a *different* JID so others=1.
+	o.inflightSandboxes.Store("other@g.us", struct{}{})
+
+	// Claim slot for our group (as production does before calling processGroupMessages).
+	releaseSlot, ok := o.claimSandboxSlot("group2@g.us")
+	if !ok {
+		t.Fatal("failed to claim sandbox slot for test group")
+	}
+	defer releaseSlot()
+
+	// activeCount(1) + others(1) >= MaxConcurrent(2) → should skip CreateSandbox.
+	spawned, err := o.processGroupMessages(context.Background(), "group2@g.us", func() {})
+	if err != nil {
+		t.Fatalf("processGroupMessages() error = %v, want nil", err)
+	}
+	if spawned {
+		t.Error("processGroupMessages() returned spawned=true, want false (at MAX_CONCURRENT)")
+	}
+	if sb.createCalled.Load() {
+		t.Error("CreateSandbox was called, want skipped when inflight others fill the limit")
 	}
 }
 
@@ -3027,7 +3197,14 @@ func TestExecuteScheduledTask_EnqueueFailureCleanupAlsoFails(t *testing.T) {
 
 	err := o.executeScheduledTask(context.Background(), task)
 	if !errors.Is(err, enqueueErr) {
-		t.Errorf("error = %v, want it to wrap enqueueErr (not cleanupErr)", err)
+		t.Errorf("error = %v, want it to wrap enqueueErr", err)
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "compensating delete also failed") {
+		t.Errorf("error string missing cleanup fragment: %s", errStr)
+	}
+	if !strings.Contains(errStr, cleanupErr.Error()) {
+		t.Errorf("error string missing cleanupErr text: %s", errStr)
 	}
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, "enqueue_error") {
@@ -3066,4 +3243,18 @@ func TestExecuteScheduledTask_RecurringTaskWritesDistinctRows(t *testing.T) {
 	if msgs[0].Content != task.Prompt || msgs[1].Content != task.Prompt {
 		t.Errorf("message content mismatch: got %q and %q, want %q", msgs[0].Content, msgs[1].Content, task.Prompt)
 	}
+}
+
+// waitSlotReleased polls inflightSandboxes until chatJID is absent (the
+// in-flight slot was released) or the deadline is reached.
+func waitSlotReleased(t *testing.T, o *Orchestrator, chatJID string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, loaded := o.inflightSandboxes.Load(chatJID); !loaded {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("timed out waiting for in-flight slot to be released for %q", chatJID)
 }
