@@ -28,133 +28,178 @@ func makeProviders(ids ...string) []*kraclawv1.ProviderInfo {
 	return providers
 }
 
-// buildPickerFromProviders mirrors the logic in the Update handler.
-func buildPickerFromProviders(providers []*kraclawv1.ProviderInfo) creationPickerState {
-	s := creationPickerState{}
-	for _, p := range providers {
-		s.items = append(s.items, creationPickerItem{
-			id:    p.GetId(),
-			label: p.GetDisplayName(),
-		})
-	}
-	return s
-}
 
 func TestCreationPickerNavigation(t *testing.T) {
-	providers := makeProviders("anthropic", "openai")
-	picker := buildPickerFromProviders(providers)
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
 
-	if picker.cursor != 0 {
-		t.Fatalf("initial cursor = %d, want 0", picker.cursor)
+	next, _ := m.Update(providersLoadedMsg{providers: makeProviders("anthropic", "openai")})
+	m = next.(model)
+
+	if m.creationPicker.cursor != 0 {
+		t.Fatalf("initial cursor = %d, want 0", m.creationPicker.cursor)
 	}
-	if len(picker.items) != 2 {
-		t.Fatalf("items len = %d, want 2", len(picker.items))
+	if len(m.creationPicker.items) != 2 {
+		t.Fatalf("items len = %d, want 2", len(m.creationPicker.items))
 	}
 
 	// Move down.
-	picker.cursor++
-	if picker.cursor != 1 {
-		t.Errorf("cursor after down = %d, want 1", picker.cursor)
+	next, _ = m.Update(keyPress("j"))
+	m = next.(model)
+	if m.creationPicker.cursor != 1 {
+		t.Errorf("cursor after j = %d, want 1", m.creationPicker.cursor)
 	}
 
 	// Cannot go past end.
-	picker.cursor++
-	if picker.cursor > len(picker.items)-1 {
-		picker.cursor = len(picker.items) - 1
-	}
-	if picker.cursor != 1 {
-		t.Errorf("cursor clamped = %d, want 1", picker.cursor)
+	next, _ = m.Update(keyPress("j"))
+	m = next.(model)
+	if m.creationPicker.cursor != 1 {
+		t.Errorf("cursor clamped at end = %d, want 1", m.creationPicker.cursor)
 	}
 
 	// Move up.
-	picker.cursor--
-	if picker.cursor != 0 {
-		t.Errorf("cursor after up = %d, want 0", picker.cursor)
+	next, _ = m.Update(keyPress("k"))
+	m = next.(model)
+	if m.creationPicker.cursor != 0 {
+		t.Errorf("cursor after k = %d, want 0", m.creationPicker.cursor)
 	}
 
 	// Cannot go past start.
-	picker.cursor--
-	if picker.cursor < 0 {
-		picker.cursor = 0
-	}
-	if picker.cursor != 0 {
-		t.Errorf("cursor clamped low = %d, want 0", picker.cursor)
+	next, _ = m.Update(keyPress("k"))
+	m = next.(model)
+	if m.creationPicker.cursor != 0 {
+		t.Errorf("cursor clamped at start = %d, want 0", m.creationPicker.cursor)
 	}
 }
 
 func TestCreationPickerSelectProvider(t *testing.T) {
-	providers := makeProviders("anthropic", "openai")
-	picker := buildPickerFromProviders(providers)
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
 
-	// Select the second item (openai).
-	picker.cursor = 1
-	selected := picker.items[picker.cursor]
-	if selected.id != "openai" {
-		t.Errorf("selected.id = %q, want %q", selected.id, "openai")
+	next, _ := m.Update(providersLoadedMsg{providers: makeProviders("anthropic", "openai")})
+	m = next.(model)
+
+	// Navigate to second item (openai) and Enter to select.
+	next, _ = m.Update(keyPress("j"))
+	m = next.(model)
+	next, _ = m.Update(keyPress("enter"))
+	m = next.(model)
+
+	if m.chatState != chatStateSelectModel {
+		t.Fatalf("chatState = %v, want chatStateSelectModel", m.chatState)
+	}
+	if m.creationSelectedProvider != "openai" {
+		t.Errorf("creationSelectedProvider = %q, want %q", m.creationSelectedProvider, "openai")
 	}
 }
 
 func TestCreationPickerModelList(t *testing.T) {
-	providers := makeProviders("anthropic", "openai")
-	picker := buildPickerFromProviders(providers)
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
 
-	// Select provider at index 0 (anthropic), then build model picker.
-	selectedID := picker.items[0].id
-	if selectedID != "anthropic" {
-		t.Fatalf("selectedID = %q, want %q", selectedID, "anthropic")
-	}
+	next, _ := m.Update(providersLoadedMsg{providers: makeProviders("anthropic")})
+	m = next.(model)
 
-	modelPicker := creationPickerState{}
-	for _, p := range providers {
-		if p.GetId() == selectedID {
-			for _, m := range p.GetModels() {
-				modelPicker.items = append(modelPicker.items, creationPickerItem{
-					id:    m.GetId(),
-					label: m.GetDisplayName(),
-				})
-			}
-			break
-		}
-	}
+	// Enter to select the only provider (anthropic) → transitions to model picker.
+	next, _ = m.Update(keyPress("enter"))
+	m = next.(model)
 
-	if len(modelPicker.items) != 2 {
-		t.Fatalf("model picker items = %d, want 2", len(modelPicker.items))
+	if m.chatState != chatStateSelectModel {
+		t.Fatalf("chatState = %v, want chatStateSelectModel", m.chatState)
 	}
-	if modelPicker.items[0].id != "model-a-anthropic" {
-		t.Errorf("first model id = %q, want %q", modelPicker.items[0].id, "model-a-anthropic")
+	if len(m.creationPicker.items) != 2 {
+		t.Fatalf("model picker items = %d, want 2", len(m.creationPicker.items))
+	}
+	if m.creationPicker.items[0].id != "model-a-anthropic" {
+		t.Errorf("first model id = %q, want %q", m.creationPicker.items[0].id, "model-a-anthropic")
 	}
 }
 
 func TestCreationPickerBackNavigation(t *testing.T) {
-	providers := makeProviders("anthropic", "openai")
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
 
-	// Forward: build provider picker and select.
-	providerPicker := buildPickerFromProviders(providers)
-	providerPicker.cursor = 0
-	selectedProvider := providerPicker.items[0].id
+	// Load two providers; select the second one (openai, index 1).
+	next, _ := m.Update(providersLoadedMsg{providers: makeProviders("anthropic", "openai")})
+	m = next.(model)
 
-	// Build model picker.
-	modelPicker := creationPickerState{}
-	for _, p := range providers {
-		if p.GetId() == selectedProvider {
-			for _, m := range p.GetModels() {
-				modelPicker.items = append(modelPicker.items, creationPickerItem{
-					id:    m.GetId(),
-					label: m.GetDisplayName(),
-				})
-			}
-			break
-		}
+	next, _ = m.Update(keyPress("j")) // cursor → 1
+	m = next.(model)
+	next, _ = m.Update(keyPress("enter")) // select openai → model picker
+	m = next.(model)
+
+	if m.chatState != chatStateSelectModel {
+		t.Fatalf("chatState = %v after select, want chatStateSelectModel", m.chatState)
 	}
-	modelPicker.cursor = 1 // advance cursor so we can verify it resets on back
-
-	// Esc from model: rebuild provider picker (cursor resets to zero).
-	restoredPicker := buildPickerFromProviders(providers)
-	if restoredPicker.cursor != 0 {
-		t.Errorf("restored cursor = %d, want 0", restoredPicker.cursor)
+	// Advance model cursor to prove it resets on back-nav.
+	next, _ = m.Update(keyPress("j"))
+	m = next.(model)
+	if m.creationPicker.cursor != 1 {
+		t.Fatalf("model cursor after j = %d, want 1", m.creationPicker.cursor)
 	}
-	if len(restoredPicker.items) != 2 {
-		t.Errorf("restored items len = %d, want 2", len(restoredPicker.items))
+
+	// Esc back to provider picker; cursor must land on previously selected provider (openai, index 1).
+	next, _ = m.Update(keyPress("esc"))
+	m = next.(model)
+
+	if m.chatState != chatStateSelectProvider {
+		t.Fatalf("chatState = %v after esc, want chatStateSelectProvider", m.chatState)
+	}
+	if m.creationPicker.cursor != 1 {
+		t.Errorf("restored provider cursor = %d, want 1 (openai)", m.creationPicker.cursor)
+	}
+	if len(m.creationPicker.items) != 2 {
+		t.Errorf("restored items len = %d, want 2", len(m.creationPicker.items))
+	}
+}
+
+// TestProvidersLoadedMsgIgnoredAfterEsc asserts that a late-arriving
+// providersLoadedMsg is dropped when the user has already pressed Esc.
+func TestProvidersLoadedMsgIgnoredAfterEsc(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationPendingGroupName = "my-group"
+
+	// User presses Esc → state rewinds to chatStateSelectGroup.
+	next, _ := m.Update(keyPress("esc"))
+	m = next.(model)
+	if m.chatState != chatStateSelectGroup {
+		t.Fatalf("chatState = %v after esc, want chatStateSelectGroup", m.chatState)
+	}
+
+	// Late-arriving success response must be ignored.
+	next, _ = m.Update(providersLoadedMsg{providers: makeProviders("anthropic")})
+	m = next.(model)
+
+	if m.chatState != chatStateSelectGroup {
+		t.Errorf("chatState = %v, want chatStateSelectGroup (stale msg must be ignored)", m.chatState)
+	}
+	if m.creationProvidersLoaded {
+		t.Error("creationProvidersLoaded should remain false")
+	}
+	if len(m.creationPicker.items) != 0 {
+		t.Errorf("creationPicker.items should be empty, got %d", len(m.creationPicker.items))
+	}
+}
+
+// TestProviderPickerEscClearsChatErr asserts that Esc from the provider picker
+// clears any stale error so it doesn't bleed into the name-input state.
+func TestProviderPickerEscClearsChatErr(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.chatErr = errors.New("stale error")
+
+	next, _ := m.Update(keyPress("esc"))
+	m = next.(model)
+
+	if m.chatErr != nil {
+		t.Errorf("chatErr = %v, want nil after Esc from provider picker", m.chatErr)
 	}
 }
 

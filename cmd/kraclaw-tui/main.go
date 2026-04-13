@@ -652,6 +652,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, readEventCmd(m.eventStream)
 
 	case providersLoadedMsg:
+		if m.chatState != chatStateSelectProvider {
+			return m, nil
+		}
 		if msg.err != nil {
 			slog.Error("failed to load providers", "err", msg.err)
 			m.chatErr = fmt.Errorf("failed to load providers: %w", msg.err)
@@ -664,6 +667,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.creationProviders = msg.providers
 		m.creationPicker = creationPickerState{}
 		for _, p := range msg.providers {
+			if len(p.GetModels()) == 0 {
+				continue
+			}
 			m.creationPicker.items = append(m.creationPicker.items, creationPickerItem{
 				id:    p.GetId(),
 				label: p.GetDisplayName(),

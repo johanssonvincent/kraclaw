@@ -284,6 +284,9 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 }
 
 func (s *groupService) ListProviders(_ context.Context, _ *kraclawv1.ListProvidersRequest) (*kraclawv1.ListProvidersResponse, error) {
+	if s.providers == nil {
+		return nil, status.Error(codes.Unavailable, "provider registry not configured")
+	}
 	ids := s.providers.Providers()
 	resp := &kraclawv1.ListProvidersResponse{
 		Providers: make([]*kraclawv1.ProviderInfo, 0, len(ids)),

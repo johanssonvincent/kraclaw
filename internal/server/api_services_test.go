@@ -868,6 +868,17 @@ func TestGetStatus_NoChannels(t *testing.T) {
 
 // --- TestListProviders ---
 
+func TestListProviders_NilRegistry(t *testing.T) {
+	svc := &groupService{log: testLogger()} // providers == nil
+	_, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})
+	if err == nil {
+		t.Fatal("expected error for nil provider registry")
+	}
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable, got %v", status.Code(err))
+	}
+}
+
 func TestListProviders_ReturnsBothProviders(t *testing.T) {
 	svc := &groupService{
 		providers: provider.NewRegistry(),

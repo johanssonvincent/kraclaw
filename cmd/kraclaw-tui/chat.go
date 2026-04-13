@@ -188,6 +188,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			m.chatState = chatStateSelectGroup
+			m.chatErr = nil
 			m.creationPendingGroupName = ""
 			m.creationPicker = creationPickerState{}
 			m.creationProvidersLoaded = false
@@ -235,15 +236,23 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
-			// Back to provider picker.
+			// Back to provider picker, restoring cursor to the previously selected provider.
 			m.chatState = chatStateSelectProvider
-			m.creationPicker = creationPickerState{}
+			providerCursor := 0
+			items := make([]creationPickerItem, 0, len(m.creationProviders))
 			for _, p := range m.creationProviders {
-				m.creationPicker.items = append(m.creationPicker.items, creationPickerItem{
+				if len(p.GetModels()) == 0 {
+					continue
+				}
+				items = append(items, creationPickerItem{
 					id:    p.GetId(),
 					label: p.GetDisplayName(),
 				})
+				if p.GetId() == m.creationSelectedProvider {
+					providerCursor = len(items) - 1
+				}
 			}
+			m.creationPicker = creationPickerState{items: items, cursor: providerCursor}
 			return m, nil
 		case "j", "down":
 			if m.creationPicker.cursor < len(m.creationPicker.items)-1 {
