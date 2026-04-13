@@ -25,6 +25,7 @@ const (
 	GroupService_UnregisterGroup_FullMethodName       = "/kraclaw.v1.GroupService/UnregisterGroup"
 	GroupService_GetSenderAllowlist_FullMethodName    = "/kraclaw.v1.GroupService/GetSenderAllowlist"
 	GroupService_UpdateSenderAllowlist_FullMethodName = "/kraclaw.v1.GroupService/UpdateSenderAllowlist"
+	GroupService_ListProviders_FullMethodName         = "/kraclaw.v1.GroupService/ListProviders"
 )
 
 // GroupServiceClient is the client API for GroupService service.
@@ -37,6 +38,7 @@ type GroupServiceClient interface {
 	UnregisterGroup(ctx context.Context, in *UnregisterGroupRequest, opts ...grpc.CallOption) (*UnregisterGroupResponse, error)
 	GetSenderAllowlist(ctx context.Context, in *GetSenderAllowlistRequest, opts ...grpc.CallOption) (*SenderAllowlist, error)
 	UpdateSenderAllowlist(ctx context.Context, in *UpdateSenderAllowlistRequest, opts ...grpc.CallOption) (*SenderAllowlist, error)
+	ListProviders(ctx context.Context, in *ListProvidersRequest, opts ...grpc.CallOption) (*ListProvidersResponse, error)
 }
 
 type groupServiceClient struct {
@@ -107,6 +109,16 @@ func (c *groupServiceClient) UpdateSenderAllowlist(ctx context.Context, in *Upda
 	return out, nil
 }
 
+func (c *groupServiceClient) ListProviders(ctx context.Context, in *ListProvidersRequest, opts ...grpc.CallOption) (*ListProvidersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListProvidersResponse)
+	err := c.cc.Invoke(ctx, GroupService_ListProviders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GroupServiceServer is the server API for GroupService service.
 // All implementations must embed UnimplementedGroupServiceServer
 // for forward compatibility.
@@ -117,6 +129,7 @@ type GroupServiceServer interface {
 	UnregisterGroup(context.Context, *UnregisterGroupRequest) (*UnregisterGroupResponse, error)
 	GetSenderAllowlist(context.Context, *GetSenderAllowlistRequest) (*SenderAllowlist, error)
 	UpdateSenderAllowlist(context.Context, *UpdateSenderAllowlistRequest) (*SenderAllowlist, error)
+	ListProviders(context.Context, *ListProvidersRequest) (*ListProvidersResponse, error)
 	mustEmbedUnimplementedGroupServiceServer()
 }
 
@@ -144,6 +157,9 @@ func (UnimplementedGroupServiceServer) GetSenderAllowlist(context.Context, *GetS
 }
 func (UnimplementedGroupServiceServer) UpdateSenderAllowlist(context.Context, *UpdateSenderAllowlistRequest) (*SenderAllowlist, error) {
 	return nil, status.Error(codes.Unimplemented, "method UpdateSenderAllowlist not implemented")
+}
+func (UnimplementedGroupServiceServer) ListProviders(context.Context, *ListProvidersRequest) (*ListProvidersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListProviders not implemented")
 }
 func (UnimplementedGroupServiceServer) mustEmbedUnimplementedGroupServiceServer() {}
 func (UnimplementedGroupServiceServer) testEmbeddedByValue()                      {}
@@ -274,6 +290,24 @@ func _GroupService_UpdateSenderAllowlist_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _GroupService_ListProviders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProvidersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GroupServiceServer).ListProviders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GroupService_ListProviders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GroupServiceServer).ListProviders(ctx, req.(*ListProvidersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // GroupService_ServiceDesc is the grpc.ServiceDesc for GroupService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -304,6 +338,10 @@ var GroupService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UpdateSenderAllowlist",
 			Handler:    _GroupService_UpdateSenderAllowlist_Handler,
+		},
+		{
+			MethodName: "ListProviders",
+			Handler:    _GroupService_ListProviders_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

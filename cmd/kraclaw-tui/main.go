@@ -252,6 +252,12 @@ type model struct {
 	chatWaitingForAgent bool
 	modelPicker         modelPickerState
 
+	// Creation picker (new-group provider/model selection flow)
+	creationPendingGroupName string
+	creationSelectedProvider string
+	creationProviders        []*kraclawv1.ProviderInfo
+	creationPicker           creationPickerState
+
 	// Cached Glamour renderer for markdown in agent messages.
 	// Rebuilt only when viewport width changes.
 	mdRenderer      *glamour.TermRenderer
@@ -643,6 +649,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.events = m.events[:200]
 		}
 		return m, readEventCmd(m.eventStream)
+
+	case providersLoadedMsg:
+		if msg.err != nil {
+			m.chatErr = msg.err
+			m.chatState = chatStateSelectGroup
+			m.creationPendingGroupName = ""
+			m.creationPicker = creationPickerState{}
+			return m, nil
+		}
+		m.creationProviders = msg.providers
+		m.creationPicker = creationPickerState{}
+		for _, p := range msg.providers {
+			m.creationPicker.items = append(m.creationPicker.items, creationPickerItem{
+				id:    p.GetId(),
+				label: p.GetDisplayName(),
+			})
+		}
+		return m, nil
 
 	case groupRegisteredMsg:
 		if msg.err != nil {

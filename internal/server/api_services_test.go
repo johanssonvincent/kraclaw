@@ -865,3 +865,80 @@ func TestGetStatus_NoChannels(t *testing.T) {
 		t.Fatalf("ConnectedChannels = %d, want 0", resp.ConnectedChannels)
 	}
 }
+
+// --- TestListProviders ---
+
+func TestListProviders_ReturnsBothProviders(t *testing.T) {
+	svc := &groupService{
+		providers: provider.NewRegistry(),
+		log:       testLogger(),
+	}
+	resp, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Providers) != 2 {
+		t.Fatalf("expected 2 providers, got %d", len(resp.Providers))
+	}
+	ids := make(map[string]bool)
+	for _, p := range resp.Providers {
+		ids[p.GetId()] = true
+	}
+	if !ids[provider.ProviderAnthropic] {
+		t.Error("missing anthropic provider")
+	}
+	if !ids[provider.ProviderOpenAI] {
+		t.Error("missing openai provider")
+	}
+}
+
+func TestListProviders_EachHasDefaultModelAndModels(t *testing.T) {
+	svc := &groupService{
+		providers: provider.NewRegistry(),
+		log:       testLogger(),
+	}
+	resp, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, p := range resp.Providers {
+		if p.GetDefaultModel() == "" {
+			t.Errorf("provider %q has empty default_model", p.GetId())
+		}
+		if len(p.GetModels()) == 0 {
+			t.Errorf("provider %q has no models", p.GetId())
+		}
+		// Each model must have a non-empty ID and display name.
+		for _, m := range p.GetModels() {
+			if m.GetId() == "" {
+				t.Errorf("provider %q has model with empty id", p.GetId())
+			}
+			if m.GetDisplayName() == "" {
+				t.Errorf("provider %q model %q has empty display_name", p.GetId(), m.GetId())
+			}
+		}
+	}
+}
+
+func TestListProviders_DefaultModelInModelList(t *testing.T) {
+	svc := &groupService{
+		providers: provider.NewRegistry(),
+		log:       testLogger(),
+	}
+	resp, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, p := range resp.Providers {
+		found := false
+		for _, m := range p.GetModels() {
+			if m.GetId() == p.GetDefaultModel() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("provider %q default_model %q not in model list", p.GetId(), p.GetDefaultModel())
+		}
+	}
+}

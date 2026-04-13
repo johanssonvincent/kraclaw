@@ -13,6 +13,7 @@ service GroupService {
   rpc UnregisterGroup(UnregisterGroupRequest) returns (UnregisterGroupResponse);
   rpc GetSenderAllowlist(GetSenderAllowlistRequest) returns (SenderAllowlist);
   rpc UpdateSenderAllowlist(UpdateSenderAllowlistRequest) returns (SenderAllowlist);
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
 }
 
 message Group {
@@ -70,4 +71,22 @@ message GetSenderAllowlistRequest {
 message UpdateSenderAllowlistRequest {
   string chat_jid = 1;
   repeated SenderAllowlistEntry entries = 2;
+}
+
+message ListProvidersRequest {}
+
+message ListProvidersResponse {
+  repeated ProviderInfo providers = 1;
+}
+
+message ProviderInfo {
+  string id = 1;
+  string display_name = 2;
+  string default_model = 3;
+  repeated ModelInfo models = 4;
+}
+
+message ModelInfo {
+  string id = 1;
+  string display_name = 2;
 }

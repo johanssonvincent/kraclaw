@@ -626,6 +626,206 @@ func (x *UpdateSenderAllowlistRequest) GetEntries() []*SenderAllowlistEntry {
 	return nil
 }
 
+type ListProvidersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListProvidersRequest) Reset() {
+	*x = ListProvidersRequest{}
+	mi := &file_kraclaw_v1_group_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListProvidersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListProvidersRequest) ProtoMessage() {}
+
+func (x *ListProvidersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kraclaw_v1_group_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListProvidersRequest.ProtoReflect.Descriptor instead.
+func (*ListProvidersRequest) Descriptor() ([]byte, []int) {
+	return file_kraclaw_v1_group_proto_rawDescGZIP(), []int{11}
+}
+
+type ListProvidersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Providers     []*ProviderInfo        `protobuf:"bytes,1,rep,name=providers,proto3" json:"providers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListProvidersResponse) Reset() {
+	*x = ListProvidersResponse{}
+	mi := &file_kraclaw_v1_group_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListProvidersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListProvidersResponse) ProtoMessage() {}
+
+func (x *ListProvidersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_kraclaw_v1_group_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListProvidersResponse.ProtoReflect.Descriptor instead.
+func (*ListProvidersResponse) Descriptor() ([]byte, []int) {
+	return file_kraclaw_v1_group_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ListProvidersResponse) GetProviders() []*ProviderInfo {
+	if x != nil {
+		return x.Providers
+	}
+	return nil
+}
+
+type ProviderInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	DisplayName   string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	DefaultModel  string                 `protobuf:"bytes,3,opt,name=default_model,json=defaultModel,proto3" json:"default_model,omitempty"`
+	Models        []*ModelInfo           `protobuf:"bytes,4,rep,name=models,proto3" json:"models,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProviderInfo) Reset() {
+	*x = ProviderInfo{}
+	mi := &file_kraclaw_v1_group_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProviderInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProviderInfo) ProtoMessage() {}
+
+func (x *ProviderInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_kraclaw_v1_group_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProviderInfo.ProtoReflect.Descriptor instead.
+func (*ProviderInfo) Descriptor() ([]byte, []int) {
+	return file_kraclaw_v1_group_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ProviderInfo) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ProviderInfo) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *ProviderInfo) GetDefaultModel() string {
+	if x != nil {
+		return x.DefaultModel
+	}
+	return ""
+}
+
+func (x *ProviderInfo) GetModels() []*ModelInfo {
+	if x != nil {
+		return x.Models
+	}
+	return nil
+}
+
+type ModelInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	DisplayName   string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ModelInfo) Reset() {
+	*x = ModelInfo{}
+	mi := &file_kraclaw_v1_group_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ModelInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ModelInfo) ProtoMessage() {}
+
+func (x *ModelInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_kraclaw_v1_group_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ModelInfo.ProtoReflect.Descriptor instead.
+func (*ModelInfo) Descriptor() ([]byte, []int) {
+	return file_kraclaw_v1_group_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ModelInfo) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ModelInfo) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
 var File_kraclaw_v1_group_proto protoreflect.FileDescriptor
 
 const file_kraclaw_v1_group_proto_rawDesc = "" +
@@ -668,7 +868,18 @@ const file_kraclaw_v1_group_proto_rawDesc = "" +
 	"\bchat_jid\x18\x01 \x01(\tR\achatJid\"u\n" +
 	"\x1cUpdateSenderAllowlistRequest\x12\x19\n" +
 	"\bchat_jid\x18\x01 \x01(\tR\achatJid\x12:\n" +
-	"\aentries\x18\x02 \x03(\v2 .kraclaw.v1.SenderAllowlistEntryR\aentries2\xf3\x03\n" +
+	"\aentries\x18\x02 \x03(\v2 .kraclaw.v1.SenderAllowlistEntryR\aentries\"\x16\n" +
+	"\x14ListProvidersRequest\"O\n" +
+	"\x15ListProvidersResponse\x126\n" +
+	"\tproviders\x18\x01 \x03(\v2\x18.kraclaw.v1.ProviderInfoR\tproviders\"\x95\x01\n" +
+	"\fProviderInfo\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12#\n" +
+	"\rdefault_model\x18\x03 \x01(\tR\fdefaultModel\x12-\n" +
+	"\x06models\x18\x04 \x03(\v2\x15.kraclaw.v1.ModelInfoR\x06models\">\n" +
+	"\tModelInfo\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName2\xc9\x04\n" +
 	"\fGroupService\x12D\n" +
 	"\rRegisterGroup\x12 .kraclaw.v1.RegisterGroupRequest\x1a\x11.kraclaw.v1.Group\x12K\n" +
 	"\n" +
@@ -676,7 +887,8 @@ const file_kraclaw_v1_group_proto_rawDesc = "" +
 	"\bGetGroup\x12\x1b.kraclaw.v1.GetGroupRequest\x1a\x11.kraclaw.v1.Group\x12Z\n" +
 	"\x0fUnregisterGroup\x12\".kraclaw.v1.UnregisterGroupRequest\x1a#.kraclaw.v1.UnregisterGroupResponse\x12X\n" +
 	"\x12GetSenderAllowlist\x12%.kraclaw.v1.GetSenderAllowlistRequest\x1a\x1b.kraclaw.v1.SenderAllowlist\x12^\n" +
-	"\x15UpdateSenderAllowlist\x12(.kraclaw.v1.UpdateSenderAllowlistRequest\x1a\x1b.kraclaw.v1.SenderAllowlistB\x9b\x01\n" +
+	"\x15UpdateSenderAllowlist\x12(.kraclaw.v1.UpdateSenderAllowlistRequest\x1a\x1b.kraclaw.v1.SenderAllowlist\x12T\n" +
+	"\rListProviders\x12 .kraclaw.v1.ListProvidersRequest\x1a!.kraclaw.v1.ListProvidersResponseB\x9b\x01\n" +
 	"\x0ecom.kraclaw.v1B\n" +
 	"GroupProtoP\x01Z4github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1\xa2\x02\x03KXX\xaa\x02\n" +
 	"Kraclaw.V1\xca\x02\n" +
@@ -694,7 +906,7 @@ func file_kraclaw_v1_group_proto_rawDescGZIP() []byte {
 	return file_kraclaw_v1_group_proto_rawDescData
 }
 
-var file_kraclaw_v1_group_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_kraclaw_v1_group_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_kraclaw_v1_group_proto_goTypes = []any{
 	(*Group)(nil),                        // 0: kraclaw.v1.Group
 	(*RegisterGroupRequest)(nil),         // 1: kraclaw.v1.RegisterGroupRequest
@@ -707,30 +919,38 @@ var file_kraclaw_v1_group_proto_goTypes = []any{
 	(*SenderAllowlist)(nil),              // 8: kraclaw.v1.SenderAllowlist
 	(*GetSenderAllowlistRequest)(nil),    // 9: kraclaw.v1.GetSenderAllowlistRequest
 	(*UpdateSenderAllowlistRequest)(nil), // 10: kraclaw.v1.UpdateSenderAllowlistRequest
-	(*timestamppb.Timestamp)(nil),        // 11: google.protobuf.Timestamp
+	(*ListProvidersRequest)(nil),         // 11: kraclaw.v1.ListProvidersRequest
+	(*ListProvidersResponse)(nil),        // 12: kraclaw.v1.ListProvidersResponse
+	(*ProviderInfo)(nil),                 // 13: kraclaw.v1.ProviderInfo
+	(*ModelInfo)(nil),                    // 14: kraclaw.v1.ModelInfo
+	(*timestamppb.Timestamp)(nil),        // 15: google.protobuf.Timestamp
 }
 var file_kraclaw_v1_group_proto_depIdxs = []int32{
-	11, // 0: kraclaw.v1.Group.added_at:type_name -> google.protobuf.Timestamp
+	15, // 0: kraclaw.v1.Group.added_at:type_name -> google.protobuf.Timestamp
 	0,  // 1: kraclaw.v1.ListGroupsResponse.groups:type_name -> kraclaw.v1.Group
 	7,  // 2: kraclaw.v1.SenderAllowlist.entries:type_name -> kraclaw.v1.SenderAllowlistEntry
 	7,  // 3: kraclaw.v1.UpdateSenderAllowlistRequest.entries:type_name -> kraclaw.v1.SenderAllowlistEntry
-	1,  // 4: kraclaw.v1.GroupService.RegisterGroup:input_type -> kraclaw.v1.RegisterGroupRequest
-	3,  // 5: kraclaw.v1.GroupService.ListGroups:input_type -> kraclaw.v1.ListGroupsRequest
-	2,  // 6: kraclaw.v1.GroupService.GetGroup:input_type -> kraclaw.v1.GetGroupRequest
-	5,  // 7: kraclaw.v1.GroupService.UnregisterGroup:input_type -> kraclaw.v1.UnregisterGroupRequest
-	9,  // 8: kraclaw.v1.GroupService.GetSenderAllowlist:input_type -> kraclaw.v1.GetSenderAllowlistRequest
-	10, // 9: kraclaw.v1.GroupService.UpdateSenderAllowlist:input_type -> kraclaw.v1.UpdateSenderAllowlistRequest
-	0,  // 10: kraclaw.v1.GroupService.RegisterGroup:output_type -> kraclaw.v1.Group
-	4,  // 11: kraclaw.v1.GroupService.ListGroups:output_type -> kraclaw.v1.ListGroupsResponse
-	0,  // 12: kraclaw.v1.GroupService.GetGroup:output_type -> kraclaw.v1.Group
-	6,  // 13: kraclaw.v1.GroupService.UnregisterGroup:output_type -> kraclaw.v1.UnregisterGroupResponse
-	8,  // 14: kraclaw.v1.GroupService.GetSenderAllowlist:output_type -> kraclaw.v1.SenderAllowlist
-	8,  // 15: kraclaw.v1.GroupService.UpdateSenderAllowlist:output_type -> kraclaw.v1.SenderAllowlist
-	10, // [10:16] is the sub-list for method output_type
-	4,  // [4:10] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	13, // 4: kraclaw.v1.ListProvidersResponse.providers:type_name -> kraclaw.v1.ProviderInfo
+	14, // 5: kraclaw.v1.ProviderInfo.models:type_name -> kraclaw.v1.ModelInfo
+	1,  // 6: kraclaw.v1.GroupService.RegisterGroup:input_type -> kraclaw.v1.RegisterGroupRequest
+	3,  // 7: kraclaw.v1.GroupService.ListGroups:input_type -> kraclaw.v1.ListGroupsRequest
+	2,  // 8: kraclaw.v1.GroupService.GetGroup:input_type -> kraclaw.v1.GetGroupRequest
+	5,  // 9: kraclaw.v1.GroupService.UnregisterGroup:input_type -> kraclaw.v1.UnregisterGroupRequest
+	9,  // 10: kraclaw.v1.GroupService.GetSenderAllowlist:input_type -> kraclaw.v1.GetSenderAllowlistRequest
+	10, // 11: kraclaw.v1.GroupService.UpdateSenderAllowlist:input_type -> kraclaw.v1.UpdateSenderAllowlistRequest
+	11, // 12: kraclaw.v1.GroupService.ListProviders:input_type -> kraclaw.v1.ListProvidersRequest
+	0,  // 13: kraclaw.v1.GroupService.RegisterGroup:output_type -> kraclaw.v1.Group
+	4,  // 14: kraclaw.v1.GroupService.ListGroups:output_type -> kraclaw.v1.ListGroupsResponse
+	0,  // 15: kraclaw.v1.GroupService.GetGroup:output_type -> kraclaw.v1.Group
+	6,  // 16: kraclaw.v1.GroupService.UnregisterGroup:output_type -> kraclaw.v1.UnregisterGroupResponse
+	8,  // 17: kraclaw.v1.GroupService.GetSenderAllowlist:output_type -> kraclaw.v1.SenderAllowlist
+	8,  // 18: kraclaw.v1.GroupService.UpdateSenderAllowlist:output_type -> kraclaw.v1.SenderAllowlist
+	12, // 19: kraclaw.v1.GroupService.ListProviders:output_type -> kraclaw.v1.ListProvidersResponse
+	13, // [13:20] is the sub-list for method output_type
+	6,  // [6:13] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_kraclaw_v1_group_proto_init() }
@@ -744,7 +964,7 @@ func file_kraclaw_v1_group_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kraclaw_v1_group_proto_rawDesc), len(file_kraclaw_v1_group_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

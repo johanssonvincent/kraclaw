@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -15,7 +16,9 @@ import (
 type chatState int
 
 const (
-	chatStateSelectGroup chatState = iota
+	chatStateSelectGroup    chatState = iota
+	chatStateSelectProvider          // step 1: pick provider for new group
+	chatStateSelectModel             // step 2: pick model for new group
 	chatStateConnecting
 	chatStateChatting
 )
@@ -40,18 +43,28 @@ type streamOpenedMsg struct {
 	err    error
 }
 
-func (m model) registerGroupCmd(name string) tea.Cmd {
+func (m model) registerGroupCmd(name, provider, model string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		jid := "tui:" + name
-		resp, err := m.api.groups.RegisterGroup(ctx, &kraclawv1.RegisterGroupRequest{
+		req := &kraclawv1.RegisterGroupRequest{
 			Jid:    jid,
 			Name:   name,
 			Folder: name,
 			IsMain: true,
-		})
+		}
+		if provider != "" {
+			cc := struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			}{Provider: provider, Model: model}
+			if b, err := json.Marshal(cc); err == nil {
+				req.ContainerConfigJson = string(b)
+			}
+		}
+		resp, err := m.api.groups.RegisterGroup(ctx, req)
 		if err != nil {
 			return groupRegisteredMsg{err: err}
 		}
@@ -117,10 +130,11 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				m.chatRegInput.Blur()
 				m.chatRegInput.SetValue("")
-				m.chatState = chatStateConnecting
+				m.creationPendingGroupName = name
 				m.chatErr = nil
-				m.chatMessages = nil
-				return m, m.registerGroupCmd(name)
+				m.chatState = chatStateSelectProvider
+				m.creationPicker = creationPickerState{}
+				return m, m.fetchProvidersCmd()
 			default:
 				var cmd tea.Cmd
 				m.chatRegInput, cmd = m.chatRegInput.Update(msg)
@@ -163,6 +177,89 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, m.openInboundStreamCmd(g.JID)
 			}
 			return m, nil
+		}
+
+	case chatStateSelectProvider:
+		switch msg.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.chatState = chatStateSelectGroup
+			m.creationPendingGroupName = ""
+			m.creationPicker = creationPickerState{}
+			return m, nil
+		case "j", "down":
+			if m.creationPicker.cursor < len(m.creationPicker.items)-1 {
+				m.creationPicker.cursor++
+			}
+			return m, nil
+		case "k", "up":
+			if m.creationPicker.cursor > 0 {
+				m.creationPicker.cursor--
+			}
+			return m, nil
+		case "enter":
+			if len(m.creationPicker.items) == 0 {
+				return m, nil
+			}
+			selected := m.creationPicker.items[m.creationPicker.cursor]
+			m.creationSelectedProvider = selected.id
+			// Load model list for the selected provider from cached providers.
+			m.creationPicker = creationPickerState{}
+			for _, p := range m.creationProviders {
+				if p.GetId() == selected.id {
+					for _, mi := range p.GetModels() {
+						m.creationPicker.items = append(m.creationPicker.items, creationPickerItem{
+							id:    mi.GetId(),
+							label: mi.GetDisplayName(),
+						})
+					}
+					break
+				}
+			}
+			m.chatState = chatStateSelectModel
+			return m, nil
+		}
+
+	case chatStateSelectModel:
+		switch msg.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			// Back to provider picker.
+			m.chatState = chatStateSelectProvider
+			m.creationPicker = creationPickerState{}
+			for _, p := range m.creationProviders {
+				m.creationPicker.items = append(m.creationPicker.items, creationPickerItem{
+					id:    p.GetId(),
+					label: p.GetDisplayName(),
+				})
+			}
+			return m, nil
+		case "j", "down":
+			if m.creationPicker.cursor < len(m.creationPicker.items)-1 {
+				m.creationPicker.cursor++
+			}
+			return m, nil
+		case "k", "up":
+			if m.creationPicker.cursor > 0 {
+				m.creationPicker.cursor--
+			}
+			return m, nil
+		case "enter":
+			if len(m.creationPicker.items) == 0 {
+				return m, nil
+			}
+			selectedModel := m.creationPicker.items[m.creationPicker.cursor].id
+			name := m.creationPendingGroupName
+			provider := m.creationSelectedProvider
+			m.creationPendingGroupName = ""
+			m.creationSelectedProvider = ""
+			m.creationPicker = creationPickerState{}
+			m.creationProviders = nil
+			m.chatState = chatStateConnecting
+			m.chatMessages = nil
+			return m, m.registerGroupCmd(name, provider, selectedModel)
 		}
 
 	case chatStateConnecting:
@@ -310,6 +407,50 @@ func (m model) renderChat() string {
 		}
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("  n: new group | Enter: select | j/k: navigate"))
+
+	case chatStateSelectProvider:
+		b.WriteString(titleStyle.Render("Chat - Select Provider"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  New group: %q\n", m.creationPendingGroupName)))
+		if len(m.creationPicker.items) == 0 {
+			b.WriteString("  " + m.spinner.View() + " Loading providers...\n")
+		} else {
+			for i, item := range m.creationPicker.items {
+				cursor := "  "
+				if i == m.creationPicker.cursor {
+					cursor = "> "
+				}
+				line := cursor + item.label
+				if i == m.creationPicker.cursor {
+					b.WriteString(okStyle.Render(line))
+				} else {
+					b.WriteString(line)
+				}
+				b.WriteString("\n")
+			}
+		}
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Enter: select | Esc: back | j/k: navigate"))
+
+	case chatStateSelectModel:
+		b.WriteString(titleStyle.Render("Chat - Select Model"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Provider: %s\n", m.creationSelectedProvider)))
+		for i, item := range m.creationPicker.items {
+			cursor := "  "
+			if i == m.creationPicker.cursor {
+				cursor = "> "
+			}
+			line := cursor + item.label
+			if i == m.creationPicker.cursor {
+				b.WriteString(okStyle.Render(line))
+			} else {
+				b.WriteString(line)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Enter: create group | Esc: back | j/k: navigate"))
 
 	case chatStateConnecting:
 		b.WriteString(titleStyle.Render("Chat"))

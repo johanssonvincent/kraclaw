@@ -283,6 +283,33 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 	}, nil
 }
 
+func (s *groupService) ListProviders(_ context.Context, _ *kraclawv1.ListProvidersRequest) (*kraclawv1.ListProvidersResponse, error) {
+	ids := s.providers.Providers()
+	resp := &kraclawv1.ListProvidersResponse{
+		Providers: make([]*kraclawv1.ProviderInfo, 0, len(ids)),
+	}
+	for _, id := range ids {
+		p, ok := s.providers.Get(id)
+		if !ok {
+			continue
+		}
+		pi := &kraclawv1.ProviderInfo{
+			Id:           p.ID,
+			DisplayName:  p.DisplayName,
+			DefaultModel: p.DefaultModel,
+			Models:       make([]*kraclawv1.ModelInfo, 0, len(p.Models)),
+		}
+		for _, m := range p.Models {
+			pi.Models = append(pi.Models, &kraclawv1.ModelInfo{
+				Id:          m.ID,
+				DisplayName: m.DisplayName,
+			})
+		}
+		resp.Providers = append(resp.Providers, pi)
+	}
+	return resp, nil
+}
+
 func (s *taskService) ListTasks(ctx context.Context, req *kraclawv1.ListTasksRequest) (*kraclawv1.ListTasksResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Unavailable, "task store not configured")
