@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"google.golang.org/grpc/status"
 
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
 )
@@ -70,6 +71,7 @@ func (m model) registerGroupCmd(name, provider, model string) tea.Cmd {
 		}
 		resp, err := m.api.groups.RegisterGroup(ctx, req)
 		if err != nil {
+			slog.Error("RegisterGroup failed", "grpc_code", status.Code(err).String(), "err", err)
 			return groupRegisteredMsg{err: translateRegisterGroupErr(err)}
 		}
 		return groupRegisteredMsg{group: resp}
@@ -191,6 +193,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.chatState = chatStateSelectGroup
 			m.chatErr = nil
+			m.creationFlowID++
 			m.creationPendingGroupName = ""
 			m.creationSelectedProvider = ""
 			m.creationProviders = nil

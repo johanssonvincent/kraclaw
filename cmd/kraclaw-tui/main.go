@@ -656,6 +656,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Discard responses from a previous flow (user pressed Esc and re-started)
 		// or that arrived after the user left the provider-select step.
 		if m.chatState != chatStateSelectProvider || msg.flowID != m.creationFlowID {
+			if msg.err != nil {
+				slog.Warn("discarding stale providersLoadedMsg with error",
+					"flow_id", msg.flowID,
+					"current_flow_id", m.creationFlowID,
+					"state", m.chatState,
+					"err", msg.err)
+			}
 			return m, nil
 		}
 		if msg.err != nil {
