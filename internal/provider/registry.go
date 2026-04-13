@@ -64,6 +64,15 @@ func NewRegistry() *Registry {
 	return r
 }
 
+// NewRegistryForTest creates a registry from an explicit map, intended for tests
+// that need control over which providers are registered (including an empty set).
+func NewRegistryForTest(providers map[string]ProviderInfo) *Registry {
+	if providers == nil {
+		providers = make(map[string]ProviderInfo)
+	}
+	return &Registry{providers: providers}
+}
+
 // Get returns a provider by ID.
 func (r *Registry) Get(id string) (ProviderInfo, bool) {
 	p, ok := r.providers[id]

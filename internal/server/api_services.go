@@ -283,7 +283,10 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 	}, nil
 }
 
-func (s *groupService) ListProviders(_ context.Context, _ *kraclawv1.ListProvidersRequest) (*kraclawv1.ListProvidersResponse, error) {
+func (s *groupService) ListProviders(ctx context.Context, _ *kraclawv1.ListProvidersRequest) (*kraclawv1.ListProvidersResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
 	if s.providers == nil {
 		return nil, status.Error(codes.Unavailable, "provider registry not configured")
 	}
@@ -294,6 +297,7 @@ func (s *groupService) ListProviders(_ context.Context, _ *kraclawv1.ListProvide
 	for _, id := range ids {
 		p, ok := s.providers.Get(id)
 		if !ok {
+			s.log.Warn("provider listed but not retrievable; skipping", "provider_id", id)
 			continue
 		}
 		pi := &kraclawv1.ProviderInfo{
