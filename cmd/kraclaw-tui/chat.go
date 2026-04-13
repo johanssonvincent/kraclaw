@@ -192,6 +192,8 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.chatState = chatStateSelectGroup
 			m.chatErr = nil
 			m.creationPendingGroupName = ""
+			m.creationSelectedProvider = ""
+			m.creationProviders = nil
 			m.creationPicker = creationPickerState{}
 			m.creationProvidersLoaded = false
 			return m, nil

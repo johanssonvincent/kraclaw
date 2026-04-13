@@ -708,3 +708,44 @@ func TestCreationPickerAllProvidersFilteredRenders(t *testing.T) {
 		t.Errorf("expected 'none have any models' in render, got:\n%s", rendered)
 	}
 }
+
+// TestProviderPickerEscClearsAllCreationFields is the regression test for the
+// bug where Esc from chatStateSelectProvider left creationSelectedProvider and
+// creationProviders populated, causing stale state in a subsequent creation
+// flow.
+func TestProviderPickerEscClearsAllCreationFields(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.chatErr = errors.New("stale error")
+	m.creationPendingGroupName = "My Group"
+	m.creationSelectedProvider = "anthropic"
+	m.creationProviders = makeProviders("anthropic")
+	m.creationPicker = creationPickerState{items: []creationPickerItem{{id: "anthropic", label: "anthropic"}}}
+	m.creationProvidersLoaded = true
+
+	next, _ := m.Update(keyPress("esc"))
+	m = next.(model)
+
+	if m.chatState != chatStateSelectGroup {
+		t.Errorf("chatState = %v, want chatStateSelectGroup", m.chatState)
+	}
+	if m.chatErr != nil {
+		t.Errorf("chatErr = %v, want nil", m.chatErr)
+	}
+	if m.creationPendingGroupName != "" {
+		t.Errorf("creationPendingGroupName = %q, want empty", m.creationPendingGroupName)
+	}
+	if m.creationSelectedProvider != "" {
+		t.Errorf("creationSelectedProvider = %q, want empty", m.creationSelectedProvider)
+	}
+	if m.creationProviders != nil {
+		t.Errorf("creationProviders = %v, want nil", m.creationProviders)
+	}
+	if len(m.creationPicker.items) != 0 {
+		t.Errorf("creationPicker.items len = %d, want 0", len(m.creationPicker.items))
+	}
+	if m.creationProvidersLoaded {
+		t.Errorf("creationProvidersLoaded = true, want false")
+	}
+}
