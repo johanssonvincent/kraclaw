@@ -82,7 +82,7 @@ func (s *Scheduler) poll(ctx context.Context) {
 			// If ctx is cancelled while waiting for a slot, Acquire returns an
 			// error and runTask is skipped. The task row is left untouched
 			// (LastRun/NextRun unchanged), so GetDueTasks will re-surface it on
-			// the next startup poll provided NextRun is still in the past.
+			// the next poll tick provided NextRun is still in the past.
 			if err := s.semaphore.Acquire(ctx, 1); err != nil {
 				s.log.Error("semaphore acquire cancelled", "task_id", t.ID, "error", err)
 				return
@@ -142,7 +142,12 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 	}
 
 	if updateErr := s.store.UpdateTask(ctx, &task); updateErr != nil {
-		s.log.Error("failed to update task", "task_id", task.ID, "error", updateErr)
+		if task.ScheduleType == store.ScheduleOnce {
+			s.log.Error("failed to mark once-task completed; task will re-fire on next poll",
+				"task_id", task.ID, "error", updateErr)
+		} else {
+			s.log.Error("failed to update task", "task_id", task.ID, "error", updateErr)
+		}
 	}
 }
 
