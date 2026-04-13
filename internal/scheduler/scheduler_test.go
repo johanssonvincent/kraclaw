@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 // mockTaskStore implements store.TaskStore for testing poll concurrency and runTask.
 type mockTaskStore struct {
+	mu              sync.Mutex
 	tasks           []store.ScheduledTask
 	updateTaskCalls []store.ScheduledTask
 	updateTaskErr   error
@@ -28,11 +30,15 @@ func (m *mockTaskStore) ListTasksByGroup(context.Context, string) ([]store.Sched
 	return nil, nil
 }
 func (m *mockTaskStore) UpdateTask(_ context.Context, t *store.ScheduledTask) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.updateTaskCalls = append(m.updateTaskCalls, *t)
 	return m.updateTaskErr
 }
 func (m *mockTaskStore) DeleteTask(context.Context, string, string) error { return nil }
 func (m *mockTaskStore) GetDueTasks(ctx context.Context) ([]store.ScheduledTask, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.tasks, nil
 }
 func (m *mockTaskStore) LogTaskRun(context.Context, *store.TaskRunLog) error { return nil }
