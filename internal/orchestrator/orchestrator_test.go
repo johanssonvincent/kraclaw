@@ -729,7 +729,7 @@ func TestMaxConcurrent_AtLimit_SkipsCreateSandbox(t *testing.T) {
 	}
 	defer release()
 
-	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err != nil {
 		t.Fatalf("processGroupMessages() error = %v, want nil", err)
 	}
@@ -779,7 +779,7 @@ func TestMaxConcurrent_BelowLimit_ProceedsToCreateSandbox(t *testing.T) {
 	}
 	defer release()
 
-	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	// CreateSandbox should be called — the full happy path runs through since
 	// mockQueueWithActiveCount inherits mockQueue defaults (no injected errors).
 	// We just care that CreateSandbox was reached.
@@ -820,7 +820,7 @@ func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
 		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
 	}
 
-	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err == nil {
 		t.Fatal("processGroupMessages() error = nil, want error from ActiveCount failure")
 	}
@@ -869,7 +869,7 @@ func TestProcessGroupMessages_SendInputFailure_TeardownAndErrors(t *testing.T) {
 	o.lastAgentTimestamp["group1@g.us"] = before.Add(-time.Second)
 	previousCursor := o.lastAgentTimestamp["group1@g.us"]
 
-	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err == nil {
 		t.Fatal("expected error from SendInput failure, got nil")
 	}
@@ -926,7 +926,7 @@ func TestProcessGroupMessages_MarkActiveFailure_StopsSandbox(t *testing.T) {
 
 	q.markActiveErr = fmt.Errorf("NATS MarkActive failed")
 
-	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err == nil {
 		t.Fatal("expected MarkActive failure error, got nil")
 	}
@@ -1156,7 +1156,7 @@ func TestProcessGroupMessages_UnknownGroup(t *testing.T) {
 	s := newMockStore()
 	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
 
-	_, err := o.processGroupMessages(context.Background(), "unknown@g.us")
+	_, err := o.processGroupMessages(context.Background(), "unknown@g.us", func() {})
 	if err != nil {
 		t.Errorf("processGroupMessages() error = %v, want nil for unknown group", err)
 	}
@@ -1173,7 +1173,7 @@ func TestProcessGroupMessages_NoMessages(t *testing.T) {
 		IsMain: true,
 	}
 
-	_, err := o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err != nil {
 		t.Errorf("processGroupMessages() error = %v, want nil for no messages", err)
 	}
@@ -1209,7 +1209,7 @@ func TestProcessGroupMessages_MarshalInitialInputFailure_ReturnsEarly(t *testing
 		return nil, fmt.Errorf("marshal boom")
 	}
 
-	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err == nil {
 		t.Fatal("processGroupMessages() error = nil, want wrapped marshal error")
 	}
@@ -2871,19 +2871,23 @@ func TestPollMessages_PanicReleasesSlot(t *testing.T) {
 // mockSandboxWithGate is a sandbox mock that supports an atomic call counter and
 // a synchronisation gate so concurrent spawn tests can inspect in-progress state.
 type mockSandboxWithGate struct {
-	createCount atomic.Int32
-	createErr   error
+	createCount    atomic.Int32
+	createErr      error
+	createDoneOnce sync.Once
 	// If createStarted is non-nil, it is signalled before createGate is waited on.
 	createStarted chan struct{}
 	// If createGate is non-nil, CreateSandbox blocks until the gate is closed.
 	createGate chan struct{}
 	// If createDone is non-nil, it is closed when CreateSandbox returns.
+	// Protected by createDoneOnce to prevent a double-close channel panic if
+	// CreateSandbox is called more than once (which is itself a test failure, but
+	// the panic would mask the real assertion).
 	createDone chan struct{}
 }
 
 func (m *mockSandboxWithGate) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
 	if m.createDone != nil {
-		defer close(m.createDone)
+		defer m.createDoneOnce.Do(func() { close(m.createDone) })
 	}
 	m.createCount.Add(1)
 	if m.createStarted != nil {
@@ -3039,7 +3043,7 @@ func TestMaxConcurrent_IncludesInflight(t *testing.T) {
 	}
 	defer release()
 
-	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err != nil {
 		t.Fatalf("processGroupMessages() error = %v, want nil", err)
 	}
@@ -3376,7 +3380,7 @@ func TestMaxConcurrent_ExcludesOwnJID(t *testing.T) {
 	}
 	defer release()
 
-	_, err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err != nil {
 		t.Fatalf("processGroupMessages() error = %v, want nil", err)
 	}
@@ -3726,5 +3730,256 @@ func TestDeactivate_OnceGuardPreventsDoubleCleanup(t *testing.T) {
 	// but sync.Once must ensure MarkInactive ran exactly once.
 	if got := cq.markInactiveCalls.Load(); got != 1 {
 		t.Errorf("MarkInactive called %d times, want 1 (sync.Once must prevent double cleanup)", got)
+	}
+}
+
+// TestDeactivateRecovery_PanicRollsBackCursor verifies that a panic inside the
+// recovery goroutine's processGroupMessages rolls back lastAgentTimestamp to
+// lastConfirmedTimestamp, even when the cursor was advanced before the panic.
+func TestDeactivateRecovery_PanicRollsBackCursor(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	q.active["group1@g.us"] = true // active so deactivate runs and recovery is spawned
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
+	o.cfg.Queue.MaxConcurrent = 5 // must be > 0 for processGroupMessages admission gate
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+
+	baseTs := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	advancedTs := baseTs.Add(10 * time.Second)
+
+	// Seed both cursors equal (deactivate's rollback won't fire for equal values).
+	o.mu.Lock()
+	o.lastConfirmedTimestamp["group1@g.us"] = baseTs
+	o.lastAgentTimestamp["group1@g.us"] = baseTs
+	o.mu.Unlock()
+
+	// Seed a message so deactivate's pending check triggers the recovery goroutine.
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "msg", Timestamp: baseTs.Add(time.Second), Sender: "alice"},
+	}
+
+	// On the second GetMessagesSince call (inside processGroupMessages in the recovery
+	// goroutine), simulate the cursor being advanced before a mid-function panic.
+	var callCount atomic.Int32
+	s.getMessagesSinceHook = func() {
+		if callCount.Add(1) < 2 {
+			return // first call: deactivate's pending check — let it run normally
+		}
+		// Second call: recovery goroutine's processGroupMessages. Advance cursor to
+		// simulate the real processGroupMessages advancing lastAgentTimestamp at line
+		// 833, then panic to trigger the recovery goroutine's panic handler.
+		o.mu.Lock()
+		o.lastAgentTimestamp["group1@g.us"] = advancedTs
+		o.mu.Unlock()
+		panic("injected post-advance panic in recovery processGroupMessages")
+	}
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+	b.subscribeCh = ipcCh
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	// Wait for the recovery goroutine's slot to be released (panic handler exits, defer fires).
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
+
+	// After the panic handler: lastAgentTimestamp must equal lastConfirmedTimestamp.
+	o.mu.Lock()
+	gotAgent := o.lastAgentTimestamp["group1@g.us"]
+	gotConfirmed := o.lastConfirmedTimestamp["group1@g.us"]
+	o.mu.Unlock()
+
+	if !gotAgent.Equal(gotConfirmed) {
+		t.Errorf("after recovery panic: lastAgentTimestamp=%v want lastConfirmedTimestamp=%v (cursor must be rolled back)",
+			gotAgent.Format(time.RFC3339Nano), gotConfirmed.Format(time.RFC3339Nano))
+	}
+}
+
+// TestDeactivateRecovery_DoesNotReenqueueWhenSpawned verifies that when the recovery
+// goroutine's processGroupMessages successfully spawns a sandbox (spawned=true), the
+// dequeued qMsg is NOT re-enqueued. Re-enqueueing would duplicate the scheduled-task
+// prompt delivered to the already-live agent on the next pollMessages tick.
+func TestDeactivateRecovery_DoesNotReenqueueWhenSpawned(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueRecording{mockQueue: newMockQueue()}
+	mq.active["group1@g.us"] = true // active so deactivate proceeds
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+
+	// Build the orchestrator with the recording queue wrapper.
+	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
+	o.queue = mq
+	o.cfg.Queue.MaxConcurrent = 5 // must be > 0 for processGroupMessages to admit the spawn
+
+	// Inject a working sandbox so CreateSandbox succeeds and processGroupMessages returns spawned=true.
+	o.sandbox = &mockSandboxControllerWithTracking{}
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	o.registeredGroups["group1@g.us"] = group
+
+	// Arrange for Dequeue to return a scheduled-task message once.
+	mq.dequeueOnce = &queue.QueueMessage{GroupJID: "group1@g.us", Content: "task payload", IsTask: true}
+
+	// Seed messages so processGroupMessages has work to do (spawns sandbox).
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "msg", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	// SubscribeOutput: exhaust reconnect attempts (to trigger deactivate) then succeed
+	// for processGroupMessages so it completes with spawned=true.
+	var subCount atomic.Int32
+	reconnectBudget := int32(len(o.ipcReconnectDelays)) // ipcReconnectDelays = {1ms, 1ms}
+	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, <-chan error, error) {
+		if subCount.Add(1) <= reconnectBudget {
+			return nil, nil, fmt.Errorf("reconnect failed (%d)", subCount.Load())
+		}
+		return make(chan *ipc.IPCMessage), make(chan error), nil
+	}
+
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+
+	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+
+	// Wait for the recovery goroutine to finish (slot released after processGroupMessages returns).
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
+
+	// processGroupMessages should have succeeded (spawned=true); CreateSandbox was called.
+	sb := o.sandbox.(*mockSandboxControllerWithTracking)
+	if !sb.createCalled.Load() {
+		t.Error("CreateSandbox was not called; recovery goroutine should have spawned a sandbox")
+	}
+
+	// Enqueue must NOT have been called for qMsg (re-enqueue is gated on !spawned).
+	if got := mq.count(); got != 0 {
+		t.Errorf("Enqueue called %d times, want 0: qMsg must not be re-enqueued when sandbox was spawned", got)
+	}
+}
+
+// TestSlot_PollAndRecoveryContendConcurrently verifies that when pollMessages and the
+// watchGroupOutput deactivate-recovery path race for the same group's slot, exactly one
+// CreateSandbox call is made.
+//
+// Sequence: watchGroupOutput deactivates the group (MarkInactive + pending check) and
+// pauses before claiming the slot. pollMessages runs while the pause holds: it sees
+// IsActive=false and wins the slot. When the deactivate path resumes, the slot is
+// already held → recovery skipped. CreateSandbox is called exactly once.
+func TestSlot_PollAndRecoveryContendConcurrently(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueWithActiveCount{
+		mockQueue:   mockQueue{active: make(map[string]bool)},
+		activeCount: 0,
+	}
+	mq.active["group1@g.us"] = true // active so deactivate runs
+
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+
+	createStarted := make(chan struct{}, 1)
+	createGate := make(chan struct{})
+	createDone := make(chan struct{})
+	sb := &mockSandboxWithGate{
+		createStarted: createStarted,
+		createGate:    createGate,
+		createDone:    createDone,
+	}
+
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	o.sandbox = sb
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+	o.ipcReconnectDelays = []time.Duration{time.Millisecond, time.Millisecond}
+
+	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.groups = []store.Group{group}
+	o.registeredGroups["group1@g.us"] = group
+
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	// Pause the deactivate-recovery path at the pending check (first GetMessagesSince call,
+	// inside deactivate before claimSandboxSlot). MarkInactive has already run at this point.
+	// The pause lets pollMessages run and win the slot while the recovery path is blocked.
+	recoveryPaused := make(chan struct{}, 1)
+	resumeRecovery := make(chan struct{})
+	var getMessagesCallCount atomic.Int32
+	s.getMessagesSinceHook = func() {
+		// The first call is deactivate's pending check; subsequent calls are from
+		// processGroupMessages. Block only the first call (recovery pending check).
+		if getMessagesCallCount.Add(1) == 1 {
+			select {
+			case recoveryPaused <- struct{}{}:
+			default:
+			}
+			<-resumeRecovery
+		}
+	}
+
+	// Make SubscribeOutput always fail (reconnects exhaust → deactivate; processGroupMessages
+	// doesn't reach SubscribeOutput because pollMessages wins the slot and holds it in
+	// CreateSandbox via createGate).
+	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, <-chan error, error) {
+		return nil, nil, errors.New("reconnect failed for concurrency test")
+	}
+
+	// Start watchGroupOutput in a background goroutine. It will deactivate, pause, then
+	// try to claim the slot after resumeRecovery is closed.
+	ipcCh := make(chan *ipc.IPCMessage)
+	close(ipcCh)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
+	}()
+
+	// Wait for deactivate to have called MarkInactive and reached the pending check.
+	// At this point IsActive=false and no slot is held.
+	select {
+	case <-recoveryPaused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for deactivate to reach pending check")
+	}
+
+	// pollMessages sees IsActive=false → claims slot → spawns goroutine → blocks in CreateSandbox.
+	o.pollMessages(context.Background())
+	select {
+	case <-createStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for pollMessages goroutine to enter CreateSandbox")
+	}
+
+	// Resume the deactivate-recovery path. It will find the slot already held → skip recovery.
+	close(resumeRecovery)
+	wg.Wait()
+
+	// Unblock CreateSandbox and wait for the pollMessages goroutine to finish.
+	close(createGate)
+	select {
+	case <-createDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for CreateSandbox to return")
+	}
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
+
+	// Exactly one sandbox was created despite both paths running concurrently.
+	if got := sb.createCount.Load(); got != 1 {
+		t.Errorf("CreateSandbox called %d times, want 1", got)
 	}
 }
