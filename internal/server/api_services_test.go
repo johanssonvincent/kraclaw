@@ -868,6 +868,20 @@ func TestGetStatus_NoChannels(t *testing.T) {
 
 // --- TestListProviders ---
 
+func TestListProviders_EmptyRegistry(t *testing.T) {
+	svc := &groupService{
+		providers: provider.NewRegistryForTest(nil),
+		log:       testLogger(),
+	}
+	resp, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error for empty registry: %v", err)
+	}
+	if len(resp.Providers) != 0 {
+		t.Fatalf("expected 0 providers, got %d", len(resp.Providers))
+	}
+}
+
 func TestListProviders_NilRegistry(t *testing.T) {
 	svc := &groupService{log: testLogger()} // providers == nil
 	_, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})

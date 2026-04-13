@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -311,6 +313,176 @@ func TestUpdateContainerConfigJson(t *testing.T) {
 	}
 	if cc.Model != "model-a-anthropic" {
 		t.Errorf("model = %q, want %q", cc.Model, "model-a-anthropic")
+	}
+
+	// T3: all creation fields must be zeroed after the model-select Enter.
+	if m.creationPendingGroupName != "" {
+		t.Errorf("creationPendingGroupName = %q, want empty after group creation", m.creationPendingGroupName)
+	}
+	if m.creationSelectedProvider != "" {
+		t.Errorf("creationSelectedProvider = %q, want empty after group creation", m.creationSelectedProvider)
+	}
+	if m.creationProviders != nil {
+		t.Errorf("creationProviders = %v, want nil after group creation", m.creationProviders)
+	}
+	if len(m.creationPicker.items) != 0 {
+		t.Errorf("creationPicker.items = %v, want empty after group creation", m.creationPicker.items)
+	}
+	if m.creationProvidersLoaded {
+		t.Error("creationProvidersLoaded should be false after group creation")
+	}
+	if m.chatState != chatStateConnecting {
+		t.Errorf("chatState = %v, want chatStateConnecting", m.chatState)
+	}
+}
+
+// makeProvider builds a single ProviderInfo with a configurable number of models.
+func makeProvider(id string, modelCount int) *kraclawv1.ProviderInfo {
+	models := make([]*kraclawv1.ModelInfo, modelCount)
+	for i := range modelCount {
+		models[i] = &kraclawv1.ModelInfo{
+			Id:          fmt.Sprintf("model-%d-%s", i, id),
+			DisplayName: fmt.Sprintf("Model %d %s", i, id),
+		}
+	}
+	p := &kraclawv1.ProviderInfo{
+		Id:          id,
+		DisplayName: id + " Display",
+	}
+	if modelCount > 0 {
+		p.DefaultModel = models[0].Id
+		p.Models = models
+	}
+	return p
+}
+
+// TestCreationPickerFiltersZeroModelProviders asserts that providers with no
+// models are excluded from the picker after providers are loaded.
+func TestCreationPickerFiltersZeroModelProviders(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationFlowID = 1
+
+	noModels := makeProvider("empty-provider", 0)
+	withModels := makeProvider("real-provider", 2)
+
+	next, _ := m.Update(providersLoadedMsg{flowID: 1, providers: []*kraclawv1.ProviderInfo{noModels, withModels}})
+	m = next.(model)
+
+	if !m.creationProvidersLoaded {
+		t.Fatal("creationProvidersLoaded should be true")
+	}
+	if len(m.creationPicker.items) != 1 {
+		t.Fatalf("picker items = %d, want 1 (zero-model provider filtered)", len(m.creationPicker.items))
+	}
+	if m.creationPicker.items[0].id != "real-provider" {
+		t.Errorf("item[0].id = %q, want %q", m.creationPicker.items[0].id, "real-provider")
+	}
+}
+
+// TestCreationPickerEnterOnEmpty asserts that pressing Enter on an empty picker
+// or before providers have loaded is a no-op.
+func TestCreationPickerEnterOnEmpty(t *testing.T) {
+	t.Run("provider picker empty items", func(t *testing.T) {
+		fake := &fakeGroupClient{}
+		m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+		m.chatState = chatStateSelectProvider
+		m.creationProvidersLoaded = true
+		// No items in picker.
+
+		next, cmd := m.Update(keyPress("enter"))
+		m = next.(model)
+
+		if m.chatState != chatStateSelectProvider {
+			t.Errorf("chatState = %v, want chatStateSelectProvider", m.chatState)
+		}
+		if cmd != nil {
+			t.Error("expected no command on Enter with empty provider picker")
+		}
+	})
+
+	t.Run("provider picker not loaded", func(t *testing.T) {
+		fake := &fakeGroupClient{}
+		m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+		m.chatState = chatStateSelectProvider
+		m.creationProvidersLoaded = false
+		// Add items to prove the loaded guard fires before the items check.
+		m.creationPicker.items = []creationPickerItem{{id: "p", label: "P"}}
+
+		next, cmd := m.Update(keyPress("enter"))
+		m = next.(model)
+
+		if m.chatState != chatStateSelectProvider {
+			t.Errorf("chatState = %v, want chatStateSelectProvider", m.chatState)
+		}
+		if cmd != nil {
+			t.Error("expected no command on Enter before providers loaded")
+		}
+	})
+
+	t.Run("model picker empty items", func(t *testing.T) {
+		fake := &fakeGroupClient{}
+		m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+		m.chatState = chatStateSelectModel
+		// No items in picker.
+
+		next, cmd := m.Update(keyPress("enter"))
+		m = next.(model)
+
+		if m.chatState != chatStateSelectModel {
+			t.Errorf("chatState = %v, want chatStateSelectModel", m.chatState)
+		}
+		if cmd != nil {
+			t.Error("expected no command on Enter with empty model picker")
+		}
+	})
+}
+
+// TestCreationPickerNoProvidersRendersEmpty asserts that a nil providers list
+// results in the "No providers are configured" message being rendered.
+func TestCreationPickerNoProvidersRendersEmpty(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationFlowID = 1
+
+	next, _ := m.Update(providersLoadedMsg{flowID: 1, providers: nil})
+	m = next.(model)
+
+	if !m.creationProvidersLoaded {
+		t.Fatal("creationProvidersLoaded should be true even with nil providers")
+	}
+	if len(m.creationPicker.items) != 0 {
+		t.Fatalf("picker items = %d, want 0", len(m.creationPicker.items))
+	}
+
+	rendered := m.renderChat()
+	if !strings.Contains(rendered, "No providers are configured") {
+		t.Errorf("expected 'No providers are configured' in render, got:\n%s", rendered)
+	}
+}
+
+// TestProvidersLoadedMsgStaleFlowIgnored asserts that a providersLoadedMsg
+// carrying a stale flowID is dropped even while still in chatStateSelectProvider.
+func TestProvidersLoadedMsgStaleFlowIgnored(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationFlowID = 1 // current flow
+
+	// Stale message from the previous flow (flowID=0).
+	next, _ := m.Update(providersLoadedMsg{flowID: 0, providers: makeProviders("anthropic")})
+	m = next.(model)
+
+	if m.creationProvidersLoaded {
+		t.Error("creationProvidersLoaded should remain false for stale flowID")
+	}
+	if len(m.creationPicker.items) != 0 {
+		t.Errorf("picker items = %d, want 0 for stale flowID", len(m.creationPicker.items))
+	}
+	if m.chatState != chatStateSelectProvider {
+		t.Errorf("chatState = %v, want chatStateSelectProvider", m.chatState)
 	}
 }
 
