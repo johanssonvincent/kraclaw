@@ -245,10 +245,16 @@ func (m *mockQueue) MarkActive(_ context.Context, groupJID string) error {
 	return nil
 }
 func (m *mockQueue) MarkInactive(_ context.Context, groupJID string) error {
+	if m.markInactiveErr != nil {
+		return m.markInactiveErr
+	}
 	delete(m.active, groupJID)
 	return nil
 }
 func (m *mockQueue) IsActive(_ context.Context, groupJID string) (bool, error) {
+	if m.isActiveErr != nil {
+		return false, m.isActiveErr
+	}
 	return m.active[groupJID], nil
 }
 func (m *mockQueue) ActiveCount(_ context.Context) (int64, error) { return 0, nil }
@@ -285,8 +291,8 @@ func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-ch
 	}
 	if m.subscribeCh != nil {
 		// Return the preset channel on the first call only. Subsequent calls
-		// (e.g. from the watchGroupOutput reconnect path) fail so tests that
-		// pre-close subscribeCh don't loop forever.
+		// (e.g. from the watchGroupOutput reconnect path) fail so tests
+		// exercising reconnect reach deactivate quickly.
 		if m.subscribeCount > 1 {
 			return nil, nil, errors.New("mockIPCBroker: subscribeCh already consumed")
 		}
@@ -664,20 +670,20 @@ func (m *mockQueueWithActiveCount) ActiveCount(_ context.Context) (int64, error)
 
 // mockSandboxControllerWithTracking tracks CreateSandbox and StopSandbox calls.
 type mockSandboxControllerWithTracking struct {
-	createCalled bool
+	createCalled atomic.Bool
 	createErr    error
-	stopCalled   bool
+	stopCalled   atomic.Bool
 }
 
 func (m *mockSandboxControllerWithTracking) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
-	m.createCalled = true
+	m.createCalled.Store(true)
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
 	return &sandbox.SandboxStatus{Name: "test-sandbox", State: sandbox.StatePending}, nil
 }
 func (m *mockSandboxControllerWithTracking) StopSandbox(_ context.Context, _ string) error {
-	m.stopCalled = true
+	m.stopCalled.Store(true)
 	return nil
 }
 func (m *mockSandboxControllerWithTracking) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
@@ -722,11 +728,19 @@ func TestMaxConcurrent_AtLimit_SkipsCreateSandbox(t *testing.T) {
 		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
 	}
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	// claimSandboxSlot must be held before entering processGroupMessages, matching
+	// the production calling convention (pollMessages always claims first).
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("failed to claim sandbox slot for test group")
+	}
+	defer release()
+
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err != nil {
 		t.Fatalf("processGroupMessages() error = %v, want nil", err)
 	}
-	if sb.createCalled {
+	if sb.createCalled.Load() {
 		t.Error("CreateSandbox was called, want skipped when at MAX_CONCURRENT")
 	}
 }
@@ -764,14 +778,22 @@ func TestMaxConcurrent_BelowLimit_ProceedsToCreateSandbox(t *testing.T) {
 		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
 	}
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
-	// CreateSandbox should be called — it will succeed since sb returns a valid status.
-	// But MarkActive will fail because mockQueueWithActiveCount inherits from mockQueue.
+	// claimSandboxSlot must be held before entering processGroupMessages, matching
+	// the production calling convention (pollMessages always claims first).
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("failed to claim sandbox slot for test group")
+	}
+	defer release()
+
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
+	// CreateSandbox should be called — the full happy path runs through since
+	// mockQueueWithActiveCount inherits mockQueue defaults (no injected errors).
 	// We just care that CreateSandbox was reached.
-	if !sb.createCalled {
+	if !sb.createCalled.Load() {
 		t.Error("CreateSandbox was NOT called, want called when below MAX_CONCURRENT")
 	}
-	_ = err // error from MarkActive is acceptable here
+	_ = err
 }
 
 func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
@@ -805,7 +827,7 @@ func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
 		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
 	}
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err == nil {
 		t.Fatal("processGroupMessages() error = nil, want error from ActiveCount failure")
 	}
@@ -854,17 +876,17 @@ func TestProcessGroupMessages_SendInputFailure_TeardownAndErrors(t *testing.T) {
 	o.lastAgentTimestamp["group1@g.us"] = before.Add(-time.Second)
 	previousCursor := o.lastAgentTimestamp["group1@g.us"]
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err == nil {
 		t.Fatal("expected error from SendInput failure, got nil")
 	}
 	if !strings.Contains(err.Error(), "send initial input") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "send initial input")
 	}
-	if !sb.createCalled {
+	if !sb.createCalled.Load() {
 		t.Error("CreateSandbox must be called before SendInput")
 	}
-	if !sb.stopCalled {
+	if !sb.stopCalled.Load() {
 		t.Error("StopSandbox must be called on SendInput failure")
 	}
 	if q.active["group1@g.us"] {
@@ -911,14 +933,14 @@ func TestProcessGroupMessages_MarkActiveFailure_StopsSandbox(t *testing.T) {
 
 	q.markActiveErr = fmt.Errorf("NATS MarkActive failed")
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err == nil {
 		t.Fatal("expected MarkActive failure error, got nil")
 	}
 	if !strings.Contains(err.Error(), "mark active") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "mark active")
 	}
-	if !sb.stopCalled {
+	if !sb.stopCalled.Load() {
 		t.Error("StopSandbox must be called on MarkActive failure")
 	}
 	if q.active["group1@g.us"] {
@@ -987,8 +1009,9 @@ func TestHasTriggerMessage(t *testing.T) {
 
 func TestHasTriggerMessage_MainGroup(t *testing.T) {
 	// Main groups skip trigger check entirely in the caller (pollMessages/processGroupMessages).
-	// hasTriggerMessage itself just checks content — but a main group with IsMain=true
-	// would never call hasTriggerMessage. This test verifies the trigger logic still works
+	// hasTriggerMessage checks the trigger pattern, sender authorization (IsFromMe or
+	// allowlist), but not IsMain — a main group with IsMain=true would never call
+	// hasTriggerMessage in production. This test verifies the trigger logic still works
 	// when called directly with a non-trigger message.
 	s := newMockStore()
 	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"main@g.us": true}}
@@ -1003,7 +1026,7 @@ func TestHasTriggerMessage_MainGroup(t *testing.T) {
 	}
 
 	// Even without trigger, main groups are processed because the caller skips the check.
-	// But hasTriggerMessage itself doesn't know about IsMain — it just checks the pattern.
+	// But hasTriggerMessage itself doesn't know about IsMain — it checks the pattern and sender auth.
 	got, err := o.hasTriggerMessage(context.Background(), "main@g.us", group, []store.Message{
 		{Content: "no trigger here", Sender: "alice", IsFromMe: true},
 	})
@@ -1140,7 +1163,7 @@ func TestProcessGroupMessages_UnknownGroup(t *testing.T) {
 	s := newMockStore()
 	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
 
-	err := o.processGroupMessages(context.Background(), "unknown@g.us")
+	_, err := o.processGroupMessages(context.Background(), "unknown@g.us", func() {})
 	if err != nil {
 		t.Errorf("processGroupMessages() error = %v, want nil for unknown group", err)
 	}
@@ -1157,7 +1180,7 @@ func TestProcessGroupMessages_NoMessages(t *testing.T) {
 		IsMain: true,
 	}
 
-	err := o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err != nil {
 		t.Errorf("processGroupMessages() error = %v, want nil for no messages", err)
 	}
@@ -1193,14 +1216,14 @@ func TestProcessGroupMessages_MarshalInitialInputFailure_ReturnsEarly(t *testing
 		return nil, fmt.Errorf("marshal boom")
 	}
 
-	err = o.processGroupMessages(context.Background(), "group1@g.us")
+	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
 	if err == nil {
 		t.Fatal("processGroupMessages() error = nil, want wrapped marshal error")
 	}
 	if !strings.Contains(err.Error(), "marshal initial input") {
 		t.Fatalf("error = %q, want context %q", err.Error(), "marshal initial input")
 	}
-	if sb.createCalled {
+	if sb.createCalled.Load() {
 		t.Fatal("CreateSandbox was called, want processGroupMessages to return early")
 	}
 }
@@ -1285,6 +1308,9 @@ func TestHandleIPCMessage_MessageUpdatesConfirmedCursor(t *testing.T) {
 	confirmed := o.lastConfirmedTimestamp["group1@g.us"]
 	if !confirmed.Equal(agentCursor) {
 		t.Errorf("lastConfirmedTimestamp = %v, want %v (should match lastAgentTimestamp after response)", confirmed, agentCursor)
+	}
+	if !o.confirmedCursorDirty.Load() {
+		t.Error("expected confirmedCursorDirty to be true after IPC message update")
 	}
 }
 
@@ -1438,6 +1464,9 @@ func TestDeactivate_PendingMessagesTriggersReprocessing(t *testing.T) {
 
 	// Unblock the goroutine so it can finish cleanly.
 	close(processBlock)
+
+	// Join the recovery goroutine: wait until its in-flight slot is released.
+	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
 }
 
 // TestDeactivate_PendingCheckFailedTriggersReprocessing verifies that when
@@ -2562,9 +2591,11 @@ func TestWatchGroupOutput_ReconnectExhaustedLogsLastError(t *testing.T) {
 // mockQueueRecording wraps mockQueue and records Enqueue calls for assertion.
 type mockQueueRecording struct {
 	*mockQueue
-	mu         sync.Mutex
-	enqueued   []string // groupJIDs passed to Enqueue
-	enqueueErr error
+	mu          sync.Mutex
+	enqueued    []string // groupJIDs passed to Enqueue
+	enqueueErr  error
+	dequeueOnce *queue.QueueMessage // if non-nil, returned once then cleared
+	dequeueErr  error               // if non-nil, Dequeue returns this error
 }
 
 func (m *mockQueueRecording) Enqueue(_ context.Context, groupJID string, _ *queue.QueueMessage) error {
@@ -2572,6 +2603,20 @@ func (m *mockQueueRecording) Enqueue(_ context.Context, groupJID string, _ *queu
 	defer m.mu.Unlock()
 	m.enqueued = append(m.enqueued, groupJID)
 	return m.enqueueErr
+}
+
+func (m *mockQueueRecording) Dequeue(_ context.Context, _ string) (*queue.QueueMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dequeueErr != nil {
+		return nil, m.dequeueErr
+	}
+	if m.dequeueOnce != nil {
+		msg := m.dequeueOnce
+		m.dequeueOnce = nil
+		return msg, nil
+	}
+	return nil, nil
 }
 
 func (m *mockQueueRecording) count() int {

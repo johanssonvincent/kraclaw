@@ -36,6 +36,7 @@ server:
 
 # MySQL — MYSQL_DSN is REQUIRED and must come from a pre-created Secret (not stored in values.yaml)
 mysql:
+  host: "mysql.databases.svc.cluster.local"  # used by wait-for-db init container
   maxOpenConns: 10         # MYSQL_MAX_OPEN_CONNS
   maxIdleConns: 5          # MYSQL_MAX_IDLE_CONNS
   connMaxLifetime: "5m"    # MYSQL_CONN_MAX_LIFETIME
@@ -137,6 +138,9 @@ secrets:
 # Set sandbox.enabled=false to skip SandboxTemplate creation (e.g., when managing externally)
 sandbox:
   enabled: true
+
+  # Default agent container image for SandboxTemplate pod spec (REQUIRED when sandbox.enabled=true)
+  agentImage: ""            # set to the agent image to run, e.g. via --set sandbox.agentImage=...
 
   # Init container image for per-group directory setup
   initImage: "busybox:latest"
