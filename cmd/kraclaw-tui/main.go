@@ -662,19 +662,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					"current_flow_id", m.creationFlowID,
 					"state", m.chatState,
 					"err", msg.err)
+			} else {
+				slog.Debug("discarding stale providers response",
+					"flow_id", msg.flowID,
+					"current_flow_id", m.creationFlowID,
+					"state", m.chatState,
+					"provider_count", len(msg.providers))
 			}
 			return m, nil
 		}
 		if msg.err != nil {
-			slog.Error("failed to load providers",
-				"grpc_code", status.Code(msg.err).String(),
-				"err", msg.err)
 			m.chatErr = msg.err
-			m.chatState = chatStateSelectGroup
-			m.creationPendingGroupName = ""
-			m.creationSelectedProvider = ""
-			m.creationProviders = nil
-			m.creationPicker = creationPickerState{}
 			m.creationProvidersLoaded = false
 			return m, nil
 		}
@@ -693,6 +691,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.creationProviders = nil
 			m.creationPicker = creationPickerState{}
 			m.creationProvidersLoaded = false
+			m.chatWaitingForAgent = false
+			m.chatGroup = nil
+			m.chatMessages = nil
 			return m, m.fetchGroups()
 		}
 		g := GroupInfo{
@@ -715,6 +716,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatState = chatStateSelectGroup
 			return m, nil
 		}
+		if m.chatCancel != nil {
+			m.chatCancel()
+		}
 		m.inboundStream = msg.stream
 		m.chatCancel = msg.cancel
 		m.chatState = chatStateChatting
@@ -727,6 +731,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatWaitingForAgent = false
 			if !errors.Is(msg.err, io.EOF) && status.Code(msg.err) != codes.Canceled {
 				m.chatErr = msg.err
+			}
+			if m.chatCancel != nil {
+				m.chatCancel()
+				m.chatCancel = nil
 			}
 			m.inboundStream = nil
 			m.chatMessages = append(m.chatMessages, chatMessage{

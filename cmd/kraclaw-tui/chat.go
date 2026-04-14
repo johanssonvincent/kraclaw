@@ -86,7 +86,8 @@ func (m model) openInboundStreamCmd(chatJID string) tea.Cmd {
 		})
 		if err != nil {
 			cancel()
-			return streamOpenedMsg{err: err}
+			slog.Error("StreamInbound failed", "grpc_code", status.Code(err).String(), "jid", chatJID, "err", err)
+			return streamOpenedMsg{err: translateStreamInboundErr(err)}
 		}
 		return streamOpenedMsg{stream: stream, cancel: cancel}
 	}
@@ -200,6 +201,13 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.creationPicker = creationPickerState{}
 			m.creationProvidersLoaded = false
 			return m, nil
+		case "r":
+			if m.chatErr != nil && !m.creationProvidersLoaded {
+				m.creationFlowID++
+				m.chatErr = nil
+				return m, m.fetchProvidersCmd(m.creationFlowID)
+			}
+			return m, nil
 		case "j", "down":
 			if m.creationPicker.cursor < len(m.creationPicker.items)-1 {
 				m.creationPicker.cursor++
@@ -218,7 +226,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.creationPicker.items[m.creationPicker.cursor]
-			// Load model list for the selected provider from cached providers.
+			// Build model picker items from the cached provider list.
 			var modelItems []creationPickerItem
 			for _, p := range m.creationProviders {
 				if p.GetId() == selected.id {
@@ -435,7 +443,11 @@ func (m model) renderChat() string {
 		}
 		switch {
 		case !m.creationProvidersLoaded:
-			b.WriteString("  " + m.spinner.View() + " Loading providers...\n")
+			if m.chatErr != nil {
+				b.WriteString(dimStyle.Render("  Press r to retry, Esc to cancel.") + "\n")
+			} else {
+				b.WriteString("  " + m.spinner.View() + " Loading providers...\n")
+			}
 		case len(m.creationProviders) == 0:
 			b.WriteString(errStyle.Render("  No providers are configured on this server.") + "\n")
 			b.WriteString(dimStyle.Render("  Press Esc to go back.") + "\n")

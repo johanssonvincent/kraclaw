@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -28,7 +29,9 @@ type creationPickerState struct {
 // providersLoadedMsg is the result of a ListProviders call. The message is
 // discarded if the model is not in chatStateSelectProvider or if flowID does
 // not match creationFlowID (stale response from a prior flow); err is
-// non-nil when the call failed.
+// non-nil when the call failed. The handler treats a non-nil, non-stale error
+// as a retryable failure that leaves the user on chatStateSelectProvider with
+// chatErr set.
 type providersLoadedMsg struct {
 	flowID    int
 	providers []*kraclawv1.ProviderInfo
@@ -42,6 +45,7 @@ func (m model) fetchProvidersCmd(flowID int) tea.Cmd {
 		defer cancel()
 		resp, err := m.api.groups.ListProviders(ctx, &kraclawv1.ListProvidersRequest{})
 		if err != nil {
+			slog.Error("ListProviders RPC failed", "grpc_code", status.Code(err).String(), "err", err)
 			return providersLoadedMsg{flowID: flowID, err: translateListProvidersErr(err)}
 		}
 		return providersLoadedMsg{flowID: flowID, providers: resp.GetProviders()}
@@ -76,15 +80,35 @@ func translateRegisterGroupErr(err error) error {
 		return fmt.Errorf("could not reach the server — check your connection")
 	case codes.InvalidArgument:
 		return fmt.Errorf("invalid group configuration: %w", err)
+	case codes.Unimplemented:
+		return fmt.Errorf("server does not support group registration; upgrade kraclaw")
 	default:
 		return fmt.Errorf("failed to create group: %w", err)
 	}
 }
 
+// translateStreamInboundErr maps known gRPC status codes from StreamInbound to
+// human-readable errors. Named branches return fresh errors that do NOT wrap
+// the original; the default branch wraps with %w.
+func translateStreamInboundErr(err error) error {
+	switch status.Code(err) {
+	case codes.DeadlineExceeded:
+		return fmt.Errorf("timed out opening stream — check your connection")
+	case codes.Unavailable:
+		return fmt.Errorf("server unavailable — is kraclaw running?")
+	case codes.NotFound:
+		return fmt.Errorf("group not found — it may have been deleted")
+	default:
+		return fmt.Errorf("failed to open stream: %w", err)
+	}
+}
+
 // buildProviderItems converts ProviderInfo slices to picker items, dropping
 // providers with an empty ID or zero models.
-// If selectedID is non-empty, returns the cursor index of that provider (or 0
-// if not found). If selectedID is empty, cursor is always 0.
+// If selectedID is non-empty, returns the cursor index of that provider in the
+// filtered list; if selectedID is non-empty but not found in the filtered list,
+// the cursor defaults to 0 (first item). If selectedID is empty, cursor is
+// always 0.
 func buildProviderItems(providers []*kraclawv1.ProviderInfo, selectedID string) ([]creationPickerItem, int) {
 	items := make([]creationPickerItem, 0, len(providers))
 	cursor := 0
