@@ -488,8 +488,8 @@ func TestProvidersLoadedMsgStaleFlowIgnored(t *testing.T) {
 	}
 }
 
-// TestUpdateProvidersLoadedError asserts state is correctly reset when
-// provider fetching fails.
+// TestUpdateProvidersLoadedError asserts that a provider-fetch error leaves the
+// user on chatStateSelectProvider with chatErr set and all creation fields intact.
 func TestUpdateProvidersLoadedError(t *testing.T) {
 	fake := &fakeGroupClient{}
 	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
@@ -505,8 +505,9 @@ func TestUpdateProvidersLoadedError(t *testing.T) {
 	next, _ := m.Update(providersLoadedMsg{err: someErr})
 	m = next.(model)
 
-	if m.chatState != chatStateSelectGroup {
-		t.Errorf("chatState = %v, want chatStateSelectGroup", m.chatState)
+	// Error keeps the user on the provider picker so they can retry.
+	if m.chatState != chatStateSelectProvider {
+		t.Errorf("chatState = %v, want chatStateSelectProvider", m.chatState)
 	}
 	if m.chatErr == nil {
 		t.Fatal("chatErr should be set on provider load failure")
@@ -514,17 +515,18 @@ func TestUpdateProvidersLoadedError(t *testing.T) {
 	if !errors.Is(m.chatErr, someErr) {
 		t.Errorf("chatErr does not wrap original error: %v", m.chatErr)
 	}
-	if m.creationPendingGroupName != "" {
-		t.Errorf("creationPendingGroupName = %q, want empty", m.creationPendingGroupName)
+	// Creation fields are preserved so the user can retry without re-entering the group name.
+	if m.creationPendingGroupName != "my-group" {
+		t.Errorf("creationPendingGroupName = %q, want %q", m.creationPendingGroupName, "my-group")
 	}
-	if m.creationSelectedProvider != "" {
-		t.Errorf("creationSelectedProvider = %q, want empty", m.creationSelectedProvider)
+	if m.creationSelectedProvider != "openai" {
+		t.Errorf("creationSelectedProvider = %q, want %q", m.creationSelectedProvider, "openai")
 	}
-	if m.creationProviders != nil {
-		t.Errorf("creationProviders = %v, want nil after error", m.creationProviders)
+	if m.creationProviders == nil {
+		t.Error("creationProviders should remain set after error")
 	}
-	if m.creationPicker.items != nil {
-		t.Errorf("creationPicker.items should be nil after error, got %v", m.creationPicker.items)
+	if len(m.creationPicker.items) == 0 {
+		t.Error("creationPicker.items should remain populated after error")
 	}
 	if m.creationProvidersLoaded {
 		t.Error("creationProvidersLoaded should be false after error")
@@ -828,5 +830,116 @@ func TestProviderPickerEscBumpsCreationFlowID(t *testing.T) {
 	}
 	if m.chatState != chatStateSelectGroup {
 		t.Errorf("chatState = %v, want chatStateSelectGroup", m.chatState)
+	}
+}
+
+// TestUpdateGroupRegisteredSuccess (B1) asserts that a successful groupRegisteredMsg
+// transitions the model to chatStateConnecting with chatGroup populated.
+func TestUpdateGroupRegisteredSuccess(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateConnecting
+
+	group := &kraclawv1.Group{Jid: "tui:test", Name: "test", Folder: "test"}
+	next, cmd := m.Update(groupRegisteredMsg{group: group})
+	m = next.(model)
+
+	if m.chatState != chatStateConnecting {
+		t.Errorf("chatState = %v, want chatStateConnecting", m.chatState)
+	}
+	if m.chatGroup == nil {
+		t.Fatal("chatGroup should be non-nil after successful registration")
+	}
+	if m.chatGroup.JID != "tui:test" {
+		t.Errorf("chatGroup.JID = %q, want %q", m.chatGroup.JID, "tui:test")
+	}
+	if m.chatErr != nil {
+		t.Errorf("chatErr = %v, want nil", m.chatErr)
+	}
+	if cmd == nil {
+		t.Fatal("expected tea.Cmd (tea.Batch with fetchGroups and openInboundStreamCmd) to be returned")
+	}
+}
+
+// TestProvidersLoadedMsgStaleErrorIgnored (B2) asserts that a stale error
+// providersLoadedMsg is silently dropped without touching chatErr or state.
+func TestProvidersLoadedMsgStaleErrorIgnored(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationFlowID = 2
+
+	// Stale error from the previous flow (flowID=1).
+	next, _ := m.Update(providersLoadedMsg{flowID: 1, err: errors.New("stale")})
+	m = next.(model)
+
+	if m.chatErr != nil {
+		t.Errorf("chatErr = %v, want nil for stale error", m.chatErr)
+	}
+	if m.chatState != chatStateSelectProvider {
+		t.Errorf("chatState = %v, want chatStateSelectProvider", m.chatState)
+	}
+	if m.creationProvidersLoaded {
+		t.Error("creationProvidersLoaded should remain false for stale error")
+	}
+}
+
+// TestProvidersLoadedRetryAfterError (B3) asserts that pressing "r" while in
+// the error state clears chatErr, bumps creationFlowID, and fires fetchProvidersCmd.
+func TestProvidersLoadedRetryAfterError(t *testing.T) {
+	fake := &fakeGroupClient{}
+	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationFlowID = 1
+
+	// Deliver a matching error response.
+	next, _ := m.Update(providersLoadedMsg{flowID: 1, err: errors.New("server unavailable")})
+	m = next.(model)
+
+	if m.chatErr == nil {
+		t.Fatal("chatErr should be set after error")
+	}
+	if m.chatState != chatStateSelectProvider {
+		t.Fatalf("chatState = %v, want chatStateSelectProvider", m.chatState)
+	}
+
+	prevFlowID := m.creationFlowID
+
+	// Press "r" to retry.
+	next, cmd := m.Update(keyPress("r"))
+	m = next.(model)
+
+	if m.chatErr != nil {
+		t.Errorf("chatErr = %v, want nil after retry", m.chatErr)
+	}
+	if m.creationFlowID != prevFlowID+1 {
+		t.Errorf("creationFlowID = %d, want %d after retry", m.creationFlowID, prevFlowID+1)
+	}
+	if cmd == nil {
+		t.Fatal("expected fetchProvidersCmd to be returned on retry, got nil")
+	}
+}
+
+// TestBuildProviderItemsCursorPositions (B4) extends cursor coverage for
+// buildProviderItems: last item, first item, and not-found cases.
+func TestBuildProviderItemsCursorPositions(t *testing.T) {
+	providers := makeProviders("alpha", "beta", "gamma")
+
+	// selectedID matches the last provider → cursor equals len(items)-1.
+	_, cursor := buildProviderItems(providers, "gamma")
+	if cursor != 2 {
+		t.Errorf("cursor for last provider = %d, want 2", cursor)
+	}
+
+	// selectedID matches the first provider → cursor equals 0.
+	_, cursor = buildProviderItems(providers, "alpha")
+	if cursor != 0 {
+		t.Errorf("cursor for first provider = %d, want 0", cursor)
+	}
+
+	// selectedID is non-empty but not found in the list → cursor defaults to 0.
+	_, cursor = buildProviderItems(providers, "unknown")
+	if cursor != 0 {
+		t.Errorf("cursor for unknown provider = %d, want 0 (default)", cursor)
 	}
 }
