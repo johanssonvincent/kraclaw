@@ -686,11 +686,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.chatErr = msg.err
 			m.chatState = chatStateSelectGroup
-			m.creationPendingGroupName = ""
-			m.creationSelectedProvider = ""
-			m.creationProviders = nil
-			m.creationPicker = creationPickerState{}
-			m.creationProvidersLoaded = false
+			m.resetCreationFlow()
 			m.chatWaitingForAgent = false
 			m.chatGroup = nil
 			m.chatMessages = nil
@@ -702,6 +698,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Folder: msg.group.Folder,
 			IsMain: msg.group.IsMain,
 		}
+		m.resetCreationFlow()
 		m.chatGroup = &g
 		m.chatState = chatStateConnecting
 		m.chatErr = nil

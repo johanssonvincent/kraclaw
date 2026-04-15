@@ -283,6 +283,10 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 	}, nil
 }
 
+// ListProviders returns the set of AI providers registered with the server.
+// Returns codes.Unavailable if the provider registry is nil (not configured).
+// Providers that are listed by the registry but cannot be retrieved via Get are
+// silently skipped with a Warn log — callers receive only fully-resolvable entries.
 func (s *groupService) ListProviders(ctx context.Context, _ *kraclawv1.ListProvidersRequest) (*kraclawv1.ListProvidersResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()

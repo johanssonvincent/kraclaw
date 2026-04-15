@@ -53,8 +53,9 @@ func (m model) fetchProvidersCmd(flowID int) tea.Cmd {
 }
 
 // translateListProvidersErr maps known gRPC status codes to human-readable errors.
-// Named branches (DeadlineExceeded, Unavailable, Unimplemented) return fresh
-// errors that do NOT wrap the original; the default branch wraps with %w.
+// Named branches (DeadlineExceeded, Unavailable, Unimplemented, PermissionDenied,
+// Unauthenticated) return fresh errors that do NOT wrap the original; the default
+// branch wraps with %w.
 func translateListProvidersErr(err error) error {
 	switch status.Code(err) {
 	case codes.DeadlineExceeded:
@@ -63,21 +64,25 @@ func translateListProvidersErr(err error) error {
 		return fmt.Errorf("server unavailable — is kraclaw running?")
 	case codes.Unimplemented:
 		return fmt.Errorf("server does not support provider listing; upgrade kraclaw")
+	case codes.PermissionDenied, codes.Unauthenticated:
+		return fmt.Errorf("access denied — check your TLS certificate configuration")
 	default:
 		return fmt.Errorf("failed to load providers: %w", err)
 	}
 }
 
 // translateRegisterGroupErr maps known gRPC status codes from RegisterGroup to
-// human-readable errors. AlreadyExists and DeadlineExceeded/Unavailable
-// return fresh errors that do NOT wrap the original; InvalidArgument and the
-// default branch wrap with %w.
+// human-readable errors. AlreadyExists, DeadlineExceeded, Unavailable, and
+// Internal return fresh errors that do NOT wrap the original.
+// InvalidArgument and the default branch preserve the original error via %w.
 func translateRegisterGroupErr(err error) error {
 	switch status.Code(err) {
 	case codes.AlreadyExists:
 		return fmt.Errorf("a group with that name already exists")
 	case codes.DeadlineExceeded, codes.Unavailable:
 		return fmt.Errorf("could not reach the server — check your connection")
+	case codes.Internal:
+		return fmt.Errorf("the server encountered an internal error — check server logs or retry")
 	case codes.InvalidArgument:
 		return fmt.Errorf("invalid group configuration: %w", err)
 	case codes.Unimplemented:
@@ -92,15 +97,26 @@ func translateRegisterGroupErr(err error) error {
 // the original; the default branch wraps with %w.
 func translateStreamInboundErr(err error) error {
 	switch status.Code(err) {
-	case codes.DeadlineExceeded:
-		return fmt.Errorf("timed out opening stream — check your connection")
-	case codes.Unavailable:
-		return fmt.Errorf("server unavailable — is kraclaw running?")
+	case codes.DeadlineExceeded, codes.Unavailable:
+		return fmt.Errorf("could not reach the server — check your connection")
+	case codes.PermissionDenied, codes.Unauthenticated:
+		return fmt.Errorf("access denied — check your TLS certificate configuration")
 	case codes.NotFound:
-		return fmt.Errorf("group not found — it may have been deleted")
+		return fmt.Errorf("group not found on the server")
 	default:
 		return fmt.Errorf("failed to open stream: %w", err)
 	}
+}
+
+// resetCreationFlow clears all transient state for the new-group creation flow.
+// Call from every exit path (Esc, error, success) to prevent stale state leaking
+// into the next flow invocation.
+func (m *model) resetCreationFlow() {
+	m.creationPendingGroupName = ""
+	m.creationSelectedProvider = ""
+	m.creationProviders = nil
+	m.creationPicker = creationPickerState{}
+	m.creationProvidersLoaded = false
 }
 
 // buildProviderItems converts ProviderInfo slices to picker items, dropping

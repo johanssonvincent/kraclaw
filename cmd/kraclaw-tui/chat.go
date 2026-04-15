@@ -278,11 +278,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			selectedModel := m.creationPicker.items[m.creationPicker.cursor].id
 			name := m.creationPendingGroupName
 			provider := m.creationSelectedProvider
-			m.creationPendingGroupName = ""
-			m.creationSelectedProvider = ""
-			m.creationPicker = creationPickerState{}
-			m.creationProviders = nil
-			m.creationProvidersLoaded = false
+			m.resetCreationFlow()
 			m.chatState = chatStateConnecting
 			m.chatMessages = nil
 			return m, m.registerGroupCmd(name, provider, selectedModel)

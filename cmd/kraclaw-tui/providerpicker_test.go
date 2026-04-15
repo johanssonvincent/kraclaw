@@ -495,6 +495,7 @@ func TestUpdateProvidersLoadedError(t *testing.T) {
 	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
 
 	m.chatState = chatStateSelectProvider
+	m.creationFlowID = 1
 	m.creationPendingGroupName = "my-group"
 	m.creationSelectedProvider = "openai"
 	m.creationProviders = makeProviders("openai")
@@ -502,7 +503,7 @@ func TestUpdateProvidersLoadedError(t *testing.T) {
 	m.creationProvidersLoaded = true
 
 	someErr := errors.New("connection refused")
-	next, _ := m.Update(providersLoadedMsg{err: someErr})
+	next, _ := m.Update(providersLoadedMsg{flowID: 1, err: someErr})
 	m = next.(model)
 
 	// Error keeps the user on the provider picker so they can retry.
@@ -544,6 +545,8 @@ func TestTranslateListProvidersErr(t *testing.T) {
 		{"deadline", status.Error(codes.DeadlineExceeded, ""), "timed out contacting server"},
 		{"unavailable", status.Error(codes.Unavailable, ""), "server unavailable"},
 		{"unimplemented", status.Error(codes.Unimplemented, ""), "server does not support provider listing"},
+		{"permission_denied", status.Error(codes.PermissionDenied, ""), "access denied"},
+		{"unauthenticated", status.Error(codes.Unauthenticated, ""), "access denied"},
 		{"default", errors.New("boom"), "failed to load providers: boom"},
 	}
 	for _, tt := range tests {
@@ -567,6 +570,7 @@ func TestTranslateRegisterGroupErr(t *testing.T) {
 		{"already_exists", status.Error(codes.AlreadyExists, ""), "a group with that name already exists"},
 		{"deadline", status.Error(codes.DeadlineExceeded, ""), "could not reach the server"},
 		{"unavailable", status.Error(codes.Unavailable, ""), "could not reach the server"},
+		{"internal", status.Error(codes.Internal, ""), "the server encountered an internal error"},
 		{"invalid_argument", status.Error(codes.InvalidArgument, "bad input"), "invalid group configuration"},
 		{"default", errors.New("boom"), "failed to create group: boom"},
 	}
@@ -833,14 +837,22 @@ func TestProviderPickerEscBumpsCreationFlowID(t *testing.T) {
 	}
 }
 
-// TestUpdateGroupRegisteredSuccess (B1) asserts that a successful groupRegisteredMsg
-// transitions the model to chatStateConnecting with chatGroup populated.
+// TestUpdateGroupRegisteredSuccess asserts that a successful groupRegisteredMsg
+// sets the group, transitions to chatStateConnecting, resets all five creation
+// fields, and returns a non-nil command batch.
 func TestUpdateGroupRegisteredSuccess(t *testing.T) {
 	fake := &fakeGroupClient{}
 	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
-	m.chatState = chatStateConnecting
 
-	group := &kraclawv1.Group{Jid: "tui:test", Name: "test", Folder: "test"}
+	// Seed all five creation fields to verify they are zeroed on success (B2).
+	m.chatState = chatStateSelectProvider
+	m.creationPendingGroupName = "mygroup"
+	m.creationSelectedProvider = "openai"
+	m.creationProviders = makeProviders("openai")
+	m.creationPicker = creationPickerState{items: []creationPickerItem{{id: "openai", label: "OpenAI"}}}
+	m.creationProvidersLoaded = true
+
+	group := &kraclawv1.Group{Jid: "tui:mygroup", Name: "mygroup", Folder: "mygroup", IsMain: true}
 	next, cmd := m.Update(groupRegisteredMsg{group: group})
 	m = next.(model)
 
@@ -850,14 +862,40 @@ func TestUpdateGroupRegisteredSuccess(t *testing.T) {
 	if m.chatGroup == nil {
 		t.Fatal("chatGroup should be non-nil after successful registration")
 	}
-	if m.chatGroup.JID != "tui:test" {
-		t.Errorf("chatGroup.JID = %q, want %q", m.chatGroup.JID, "tui:test")
+	if m.chatGroup.JID != "tui:mygroup" {
+		t.Errorf("chatGroup.JID = %q, want %q", m.chatGroup.JID, "tui:mygroup")
+	}
+	if m.chatGroup.Name != "mygroup" {
+		t.Errorf("chatGroup.Name = %q, want %q", m.chatGroup.Name, "mygroup")
 	}
 	if m.chatErr != nil {
 		t.Errorf("chatErr = %v, want nil", m.chatErr)
 	}
+	if m.chatMessages != nil {
+		t.Errorf("chatMessages = %v, want nil after registration", m.chatMessages)
+	}
+	if m.chatModel != "" {
+		t.Errorf("chatModel = %q, want empty after registration", m.chatModel)
+	}
+
+	// All five creation fields must be zeroed.
+	if m.creationPendingGroupName != "" {
+		t.Errorf("creationPendingGroupName = %q, want empty", m.creationPendingGroupName)
+	}
+	if m.creationSelectedProvider != "" {
+		t.Errorf("creationSelectedProvider = %q, want empty", m.creationSelectedProvider)
+	}
+	if m.creationProviders != nil {
+		t.Errorf("creationProviders = %v, want nil", m.creationProviders)
+	}
+	if len(m.creationPicker.items) != 0 {
+		t.Errorf("creationPicker.items = %v, want empty", m.creationPicker.items)
+	}
+	if m.creationProvidersLoaded {
+		t.Error("creationProvidersLoaded should be false after successful registration")
+	}
 	if cmd == nil {
-		t.Fatal("expected tea.Cmd (tea.Batch with fetchGroups and openInboundStreamCmd) to be returned")
+		t.Fatal("expected tea.Cmd (fetchGroups + openInboundStreamCmd batch)")
 	}
 }
 
@@ -941,5 +979,30 @@ func TestBuildProviderItemsCursorPositions(t *testing.T) {
 	_, cursor = buildProviderItems(providers, "unknown")
 	if cursor != 0 {
 		t.Errorf("cursor for unknown provider = %d, want 0 (default)", cursor)
+	}
+}
+
+// TestTranslateStreamInboundErr verifies the gRPC-to-user-message mapping for
+// inbound-stream open errors.
+func TestTranslateStreamInboundErr(t *testing.T) {
+	tests := []struct {
+		name string
+		in   error
+		want string
+	}{
+		{"deadline", status.Error(codes.DeadlineExceeded, ""), "could not reach the server"},
+		{"unavailable", status.Error(codes.Unavailable, ""), "could not reach the server"},
+		{"permission_denied", status.Error(codes.PermissionDenied, ""), "access denied"},
+		{"unauthenticated", status.Error(codes.Unauthenticated, ""), "access denied"},
+		{"not_found", status.Error(codes.NotFound, ""), "group not found"},
+		{"default", errors.New("boom"), "failed to open stream: boom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := translateStreamInboundErr(tt.in)
+			if !strings.Contains(got.Error(), tt.want) {
+				t.Errorf("translateStreamInboundErr(%v).Error() = %q, want substring %q", tt.in, got.Error(), tt.want)
+			}
+		})
 	}
 }
