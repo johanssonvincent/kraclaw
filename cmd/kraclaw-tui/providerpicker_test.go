@@ -537,23 +537,28 @@ func TestUpdateProvidersLoadedError(t *testing.T) {
 // TestTranslateListProvidersErr verifies the gRPC-to-user-message mapping for
 // ListProviders errors.
 func TestTranslateListProvidersErr(t *testing.T) {
+	defaultIn := errors.New("boom")
 	tests := []struct {
-		name string
-		in   error
-		want string
+		name    string
+		in      error
+		want    string
+		wantIs  bool // assert errors.Is(out, in) to verify %w preservation on the default branch
 	}{
-		{"deadline", status.Error(codes.DeadlineExceeded, ""), "timed out contacting server"},
-		{"unavailable", status.Error(codes.Unavailable, ""), "server unavailable"},
-		{"unimplemented", status.Error(codes.Unimplemented, ""), "server does not support provider listing"},
-		{"permission_denied", status.Error(codes.PermissionDenied, ""), "access denied"},
-		{"unauthenticated", status.Error(codes.Unauthenticated, ""), "access denied"},
-		{"default", errors.New("boom"), "failed to load providers: boom"},
+		{"deadline", status.Error(codes.DeadlineExceeded, ""), "timed out contacting server", false},
+		{"unavailable", status.Error(codes.Unavailable, ""), "server unavailable", false},
+		{"unimplemented", status.Error(codes.Unimplemented, ""), "server does not support provider listing", false},
+		{"permission_denied", status.Error(codes.PermissionDenied, ""), "access denied", false},
+		{"unauthenticated", status.Error(codes.Unauthenticated, ""), "access denied", false},
+		{"default", defaultIn, "failed to load providers: boom", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := translateListProvidersErr(tt.in)
 			if !strings.Contains(got.Error(), tt.want) {
 				t.Errorf("translateListProvidersErr(%v).Error() = %q, want substring %q", tt.in, got.Error(), tt.want)
+			}
+			if tt.wantIs && !errors.Is(got, tt.in) {
+				t.Errorf("errors.Is(out, in) = false, want true — %%w wrap dropped on default branch")
 			}
 		})
 	}
@@ -600,7 +605,7 @@ func TestUpdateGroupRegisteredError(t *testing.T) {
 	// registerGroupCmd translates errors before packaging them; deliver a
 	// pre-translated error to mirror what the real command produces.
 	translatedErr := translateRegisterGroupErr(status.Error(codes.AlreadyExists, "already exists"))
-	next, _ := m.Update(groupRegisteredMsg{err: translatedErr})
+	next, cmd := m.Update(groupRegisteredMsg{err: translatedErr})
 	m = next.(model)
 
 	if m.chatState != chatStateSelectGroup {
@@ -626,6 +631,12 @@ func TestUpdateGroupRegisteredError(t *testing.T) {
 	}
 	if m.creationProvidersLoaded {
 		t.Error("creationProvidersLoaded should be false after error")
+	}
+	// The error path must fan out to fetchGroups() so the group list re-hydrates
+	// after the user is returned to the picker — a regression that dropped the
+	// cmd would leave the UI stuck on the prior (now-invalid) snapshot.
+	if cmd == nil {
+		t.Error("expected non-nil cmd (fetchGroups) after groupRegisteredMsg error")
 	}
 }
 

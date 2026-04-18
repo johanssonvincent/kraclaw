@@ -993,3 +993,23 @@ func TestListProviders_DefaultModelInModelList(t *testing.T) {
 		}
 	}
 }
+
+// TestListProviders_ContextCanceled locks in the ctx.Err() → status.FromContextError
+// short-circuit at api_services.go so a refactor that drops the context check would
+// fail CI. The handler must surface Canceled before touching the registry.
+func TestListProviders_ContextCanceled(t *testing.T) {
+	svc := &groupService{
+		providers: provider.NewRegistry(),
+		log:       testLogger(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := svc.ListProviders(ctx, &kraclawv1.ListProvidersRequest{})
+	if err == nil {
+		t.Fatal("expected error for canceled context")
+	}
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("expected Canceled, got %v (err=%v)", status.Code(err), err)
+	}
+}
