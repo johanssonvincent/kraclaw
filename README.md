@@ -8,7 +8,7 @@ Kraclaw turns a Kubernetes cluster into a managed runtime for AI agents. It runs
 
 ## 🏗️ Architecture
 
-Messages arrive from chat platforms (Discord, Telegram), get routed through a per-group Redis queue, and trigger sandboxed K8s Jobs where Claude agents execute. Agents communicate back through Redis Streams IPC, and results are routed to the originating channel. A gRPC API exposes five services (Admin, Group, Task, Channel, Sandbox) for programmatic control, with a Bubbletea TUI as the primary operator interface.
+Messages arrive from chat platforms (Discord, Telegram), get routed through a per-group NATS JetStream queue, and trigger sandboxed K8s Jobs where Claude agents execute. Agents communicate back through a NATS JetStream IPC broker, and results are routed to the originating channel. A gRPC API exposes five services (Admin, Group, Task, Channel, Sandbox) for programmatic control, with a Bubbletea TUI as the primary operator interface.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dbeafe', 'primaryTextColor': '#1e3a5f', 'primaryBorderColor': '#3b82f6', 'lineColor': '#64748b', 'secondaryColor': '#f1f5f9', 'tertiaryColor': '#eff6ff', 'fontSize': '16px', 'fontFamily': 'system-ui, -apple-system, sans-serif'}, 'flowchart': {'curve': 'basis', 'nodeSpacing': 40, 'rankSpacing': 60, 'padding': 20}}}%%
@@ -23,7 +23,7 @@ graph TB
         subgraph ingestion [" Message Ingestion"]
             channels["Channel Registry<br/>Discord · Telegram"]
             router["Message Router"]
-            queue["Redis Queue<br/>per-group FIFO"]
+            queue["NATS JetStream<br/>per-group WorkQueue"]
         end
 
         subgraph api [" API Layer"]
@@ -38,7 +38,7 @@ graph TB
         end
 
         subgraph infra [" Infrastructure"]
-            ipc["Redis Streams · IPC Broker"]
+            ipc["NATS JetStream · IPC Broker"]
             credproxy["Credential Proxy · :3001"]
             auth["Auth · sender allowlist"]
             metrics["Prometheus Metrics"]
@@ -51,7 +51,7 @@ graph TB
         pvcs[("PVCs<br/>groups · sessions · data")]
     end
 
-    redis[("Redis")]
+    nats[("NATS JetStream")]
     mysql[("MySQL")]
     anthropic["Anthropic API"]
 
@@ -75,8 +75,8 @@ graph TB
     jobs -->|proxied requests| credproxy
     netpol -.->|restricts access| credproxy
     credproxy -->|injected credentials| anthropic
-    queue <--> redis
-    ipc <--> redis
+    queue <--> nats
+    ipc <--> nats
 
     classDef client fill:#dbeafe,stroke:#3b82f6,color:#1e40af,stroke-width:2px,font-weight:bold,font-size:16px
     classDef nd fill:#fff,stroke:#3b82f6,color:#1e293b,stroke-width:1.5px,font-size:14px
@@ -89,7 +89,7 @@ graph TB
     class channels,router,queue,grpc,rest,scheduler,sandbox,ipc,credproxy,auth,metrics nd
     class orchestrator orch
     class jobs,netpol,pvcs k8snd
-    class redis,mysql db
+    class nats,mysql db
     class anthropic ext
 
     style server fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e3a5f,font-size:20px,font-weight:bold
@@ -110,8 +110,8 @@ graph TB
 
 **Messaging & Routing**
 - **Multi-channel messaging** — Pluggable channel system with a registry pattern, shipping Discord and Telegram support out of the box
-- **Per-group queuing** — Redis-backed message queues ensure ordered delivery and prevent cross-group interference
-- **Redis Streams IPC** — Real-time bidirectional agent communication via XREADGROUP with exactly-once delivery semantics
+- **Per-group queuing** — NATS JetStream per-group WorkQueue streams ensure ordered delivery and prevent cross-group interference
+- **NATS JetStream IPC** — Real-time bidirectional agent communication over durable consumers with exactly-once delivery semantics
 
 **Scheduling & Control**
 - **Scheduled tasks** — Cron, interval, and one-time task scheduling with drift-proof anchoring and persistent state across restarts
@@ -133,7 +133,7 @@ graph TB
 
 - Go 1.26+
 - MySQL 8+
-- Redis (latest)
+- NATS Server 2.10+ with JetStream enabled
 - Kubernetes cluster with client access
 - Docker Engine (for Docker-based integration tests)
 
@@ -152,24 +152,60 @@ Kraclaw is configured entirely via environment variables:
 <details>
 <summary>Environment variables reference</summary>
 
+**Core**
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `MYSQL_DSN` | Yes | — | MySQL connection string |
-| `AGENT_IMAGE` | Yes | — | Container image for agent pods |
-| `REDIS_URL` | No | `redis://localhost:6379` | Redis connection URL |
+| `NATS_URL` | No | `nats://localhost:4222` | NATS JetStream server URL |
 | `K8S_NAMESPACE` | No | `kraclaw` | Kubernetes namespace for Jobs |
+
+**Agent images** (at least one required, paired with the matching provider key)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `AGENT_IMAGE_ANTHROPIC` | Conditional | — | Container image for Anthropic agent pods |
+| `AGENT_IMAGE_OPENAI` | Conditional | — | Container image for OpenAI agent pods |
+
+**gRPC / TLS**
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
 | `GRPC_ADDR` | No | `:50051` | gRPC listen address |
 | `REST_ADDR` | No | `:8080` | REST gateway listen address |
+| `GRPC_INSECURE` | No | `false` | Disable mTLS (dev only) |
+
+**Credential proxy** (at least one provider key required)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
 | `PROXY_ADDR` | No | `:3001` | Credential proxy listen address |
-| `ANTHROPIC_API_KEY` | No | — | API key injected by credential proxy |
+| `ANTHROPIC_API_KEY` | Conditional | — | Anthropic API key injected by credential proxy |
+| `OPENAI_API_KEY` | Conditional | — | OpenAI API key injected by credential proxy |
+| `CREDENTIAL_ENCRYPTION_KEY` | Conditional | — | 64-hex-char key for multi-provider credential store (required for OpenAI-only setups) |
+
+**Queue / limits / scheduler**
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
 | `MAX_CONCURRENT` | No | `5` | Max concurrent sandbox Jobs |
 | `IDLE_TIMEOUT` | No | `30m` | Sandbox idle timeout |
+| `MAX_RETRIES` | No | `5` | Max retries per queued message |
+| `SCHEDULER_POLL_INTERVAL` | No | `60s` | Scheduler tick interval |
+
+**Channels / metrics / logging**
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
 | `DISCORD_TOKEN` | No | — | Discord bot token |
 | `TELEGRAM_TOKEN` | No | — | Telegram bot token |
 | `ASSISTANT_NAME` | No | `Kraclaw` | Bot display name |
 | `TZ` | No | `UTC` | Timezone for message formatting |
+| `METRICS_ENABLED` | No | `true` | Expose `/metrics` endpoint |
 | `LOG_LEVEL` | No | `info` | Log level (debug, info, warn, error) |
 | `LOG_FORMAT` | No | `json` | Log format (json, text) |
+
+See `internal/config/config.go` for the full list, including TLS paths, CIDR allowlists, and tuning knobs.
 
 </details>
 
@@ -178,12 +214,13 @@ Kraclaw is configured entirely via environment variables:
 ```bash
 # Local development
 export MYSQL_DSN="user:pass@tcp(localhost:3306)/kraclaw?parseTime=true"
-export AGENT_IMAGE="registry.local/agent:latest"
-export REDIS_URL="redis://localhost:6379"
+export NATS_URL="nats://localhost:4222"
+export AGENT_IMAGE_ANTHROPIC="registry.local/agent-anthropic:latest"
+export AGENT_IMAGE_OPENAI="registry.local/agent-openai:latest"
 make run
 
 # TUI client
-./kraclaw-tui --server http://localhost:8080
+./kraclaw-tui --server localhost:50051
 ```
 
 ### ☸️ Deploy to Kubernetes
@@ -209,12 +246,14 @@ kraclaw/
 │   ├── config/               # envconfig-based configuration
 │   ├── server/               # gRPC server + REST gateway
 │   ├── store/                # Store interfaces + MySQL implementation
-│   ├── queue/                # Redis-backed per-group message queue
-│   ├── ipc/                  # Redis Streams IPC broker
+│   ├── queue/                # NATS JetStream per-group message queue
+│   ├── ipc/                  # NATS JetStream IPC broker
 │   ├── sandbox/              # K8s Job lifecycle controller
 │   ├── channel/              # Channel interface + registry
 │   │   ├── discord/          # Discord bot
-│   │   └── telegram/         # Telegram bot
+│   │   ├── telegram/         # Telegram bot
+│   │   └── tui/              # TUI channel adapter
+│   ├── provider/             # LLM provider registry (Anthropic, OpenAI)
 │   ├── router/               # Message formatting + outbound routing
 │   ├── auth/                 # Sender allowlist
 │   ├── scheduler/            # Task scheduler (cron/interval/once)
@@ -252,18 +291,18 @@ make test-short     # Unit tests only
 make test-integration # Integration tests only (Docker required)
 ```
 
-- **Redis tests** use [miniredis](https://github.com/alicebob/miniredis) (in-memory)
+- **NATS JetStream tests** use an embedded [`nats-server/v2`](https://github.com/nats-io/nats-server) (in-process)
 - **MySQL tests** use [go-sqlmock](https://github.com/DATA-DOG/go-sqlmock)
 - **K8s tests** use [client-go/kubernetes/fake](https://pkg.go.dev/k8s.io/client-go/kubernetes/fake)
-- **Backend integration tests** use [dockertest](https://github.com/ory/dockertest) to spin up ephemeral **MySQL 8** and **Redis 7** containers
+- **Backend integration tests** use [dockertest](https://github.com/ory/dockertest) to spin up an ephemeral **MySQL 8.0** container, paired with an embedded NATS JetStream server (no Docker required for NATS)
 
 ### 🐳 Docker-based Integration Tests
 
-Kraclaw includes backend integration tests under `integration/` that validate real MySQL and Redis behavior using Docker containers.
+Kraclaw includes backend integration tests under `integration/` that validate real MySQL behavior (via dockertest) alongside an embedded NATS JetStream server.
 
 **Prerequisites**
 - Docker Engine installed and running (`docker version` succeeds)
-- Ability to pull images from Docker Hub (`mysql:8.0` and `redis:7-alpine`)
+- Ability to pull images from Docker Hub (`mysql:8.0`)
 
 **Run integration tests**
 
