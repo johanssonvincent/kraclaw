@@ -103,7 +103,6 @@ var (
 	keyHintLabelStyle  lipgloss.Style
 
 	selStrongStyle lipgloss.Style
-	selRowStyle    lipgloss.Style
 
 	inputBoxStyle       lipgloss.Style
 	composerPromptStyle lipgloss.Style
@@ -128,7 +127,6 @@ var (
 	spinnerStyle     lipgloss.Style
 	stubMessageStyle lipgloss.Style
 	groupHeaderStyle lipgloss.Style
-	timeDividerStyle lipgloss.Style
 )
 
 func init() {
@@ -178,7 +176,6 @@ func rebuildStyles() {
 	keyHintLabelStyle = lipgloss.NewStyle().Foreground(p.Muted)
 
 	selStrongStyle = lipgloss.NewStyle().Foreground(p.SelStrongFg).Background(p.SelStrongBg)
-	selRowStyle = lipgloss.NewStyle().Background(p.SelBg)
 
 	inputBoxStyle = lipgloss.NewStyle().Padding(0, 1)
 	composerPromptStyle = lipgloss.NewStyle().Foreground(p.Coral).Bold(true)
@@ -203,7 +200,6 @@ func rebuildStyles() {
 	spinnerStyle = lipgloss.NewStyle().Foreground(p.Coral)
 	stubMessageStyle = lipgloss.NewStyle().Foreground(p.Coral)
 	groupHeaderStyle = lipgloss.NewStyle().Foreground(p.FgDim)
-	timeDividerStyle = lipgloss.NewStyle().Foreground(p.Muted)
 }
 
 // configPath returns the path to the persisted TUI config file, honoring

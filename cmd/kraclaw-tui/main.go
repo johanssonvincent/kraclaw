@@ -1062,11 +1062,11 @@ func (m model) renderDashboard() string {
 		if len(ts) >= 19 {
 			ts = ts[11:19]
 		}
-		b.WriteString(fmt.Sprintf("  %s  %s  %s\n",
+		fmt.Fprintf(&b, "  %s  %s  %s\n",
 			dimStyle.Render(ts),
 			krakenStyle.Render(padRight(truncateWidth(e.Source, 14), 14)),
 			truncateWidth(e.Message, w-30),
-		))
+		)
 	}
 
 	return b.String()

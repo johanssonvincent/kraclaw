@@ -16,11 +16,6 @@ type chatMessage struct {
 // markdown for agent replies. Lines starting with "» " are treated as
 // tool-use sub-lines and rendered dim to match the design.
 func (m model) formatChatMessages() string {
-	w := m.chatViewport.Width()
-	if w < 10 {
-		w = 10
-	}
-
 	var b strings.Builder
 	var prevSender string
 	for i, msg := range m.chatMessages {
