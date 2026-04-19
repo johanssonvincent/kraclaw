@@ -1,15 +1,9 @@
 package main
 
-import "charm.land/lipgloss/v2"
-
-// renderInputBox renders the chat input area with themed styling.
-// The inputBoxStyle and prompt styling come from theme.go.
+// renderInputBox renders the composer line as a coral "▌" prompt glyph
+// followed by the input view. The design omits the rounded border used in
+// the previous theme — a single-line bar is the whole composer.
 func renderInputBox(inputView string, width int) string {
-	prompt := lipgloss.NewStyle().
-		Foreground(defaultChatTheme.InputPrompt).
-		Bold(true).
-		Render("> ")
-	return inputBoxStyle.
-		Width(width).
-		Render(prompt + inputView)
+	prompt := composerPromptStyle.Render("▌ ")
+	return inputBoxStyle.Width(width).Render(prompt + inputView)
 }
