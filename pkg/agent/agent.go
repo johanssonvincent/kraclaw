@@ -78,7 +78,7 @@ func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) err
 	}
 	defer nc.Close()
 
-	ipcClient, err := NewIPCClient(nc, cfg.GroupJID, cfg.AgentID, log)
+	ipcClient, err := NewIPCClient(nc, cfg.Group, cfg.AgentID, log)
 	if err != nil {
 		return fmt.Errorf("create ipc client: %w", err)
 	}
