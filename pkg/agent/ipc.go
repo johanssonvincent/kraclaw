@@ -30,11 +30,11 @@ type OutboundMessage struct {
 
 // IPCClient handles NATS JetStream communication for a Go agent.
 type IPCClient struct {
-	nc       *nats.Conn
-	js       jetstream.JetStream
-	groupJID string // raw JID (used for sanitization to match server)
-	agentID  string
-	logger   *slog.Logger
+	nc      *nats.Conn
+	js      jetstream.JetStream
+	group   string // group folder (used for sanitization to match server)
+	agentID string
+	logger  *slog.Logger
 
 	readOnce sync.Once
 	msgCh    chan *InboundMessage
@@ -46,12 +46,14 @@ type IPCClient struct {
 }
 
 // NewIPCClient creates an IPC client for a specific group.
-func NewIPCClient(nc *nats.Conn, groupJID, agentID string, logger *slog.Logger) (*IPCClient, error) {
+// The group parameter must be the group folder (not the JID), matching the
+// value the server uses when computing sanitized stream names and subjects.
+func NewIPCClient(nc *nats.Conn, group, agentID string, logger *slog.Logger) (*IPCClient, error) {
 	if nc == nil {
 		return nil, fmt.Errorf("ipc client: NATS connection is required")
 	}
-	if groupJID == "" {
-		return nil, fmt.Errorf("ipc client: groupJID is required")
+	if group == "" {
+		return nil, fmt.Errorf("ipc client: group is required")
 	}
 	if agentID == "" {
 		agentID = ipc.DefaultAgentID
@@ -64,19 +66,19 @@ func NewIPCClient(nc *nats.Conn, groupJID, agentID string, logger *slog.Logger) 
 		return nil, fmt.Errorf("ipc client: jetstream: %w", err)
 	}
 	return &IPCClient{
-		nc:       nc,
-		js:       js,
-		groupJID: groupJID,
-		agentID:  agentID,
-		logger:   logger,
+		nc:      nc,
+		js:      js,
+		group:   group,
+		agentID: agentID,
+		logger:  logger,
 	}, nil
 }
 
 // sanitizeGroupID delegates to ipc.SanitizeGroupID so tests in this package
 // and internal callers can use the unexported name without duplicating logic.
-func sanitizeGroupID(groupJID string) string { return ipc.SanitizeGroupID(groupJID) }
+func sanitizeGroupID(group string) string { return ipc.SanitizeGroupID(group) }
 
-func (c *IPCClient) sanitized() string { return sanitizeGroupID(c.groupJID) }
+func (c *IPCClient) sanitized() string { return sanitizeGroupID(c.group) }
 
 func (c *IPCClient) streamName() string {
 	return "KRACLAW_IPC_" + strings.ToUpper(c.sanitized())
@@ -123,7 +125,7 @@ func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error 
 	}
 
 	ipcMsg := map[string]interface{}{
-		"group":    c.groupJID,
+		"group":    c.group,
 		"agent_id": c.agentID,
 		"type":     msg.Type,
 	}
@@ -224,7 +226,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 					return
 				}
 				c.logger.Error("ipc read goroutine terminating",
-					"group", c.groupJID,
+					"group", c.group,
 					"agent_id", c.agentID,
 					"error", err)
 				errCh <- fmt.Errorf("ipc read: %w", err)
@@ -242,13 +244,13 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 					seq = meta.Sequence.Stream
 				}
 				c.logger.Error("unmarshal ipc message",
-					"group", c.groupJID,
+					"group", c.group,
 					"agent_id", c.agentID,
 					"sequence", seq,
 					"error", err)
 				if err := jmsg.Ack(); err != nil {
 					c.logger.Error("ack malformed message",
-						"group", c.groupJID,
+						"group", c.group,
 						"agent_id", c.agentID,
 						"sequence", seq,
 						"error", err)
@@ -267,7 +269,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 						seq = meta.Sequence.Stream
 					}
 					c.logger.Error("ack ipc message",
-						"group", c.groupJID,
+						"group", c.group,
 						"agent_id", c.agentID,
 						"sequence", seq,
 						"error", err)
@@ -282,7 +284,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 						seq = meta.Sequence.Stream
 					}
 					c.logger.Error("nak message on context cancel",
-						"group", c.groupJID,
+						"group", c.group,
 						"agent_id", c.agentID,
 						"sequence", seq,
 						"error", err)

@@ -13,6 +13,8 @@ import (
 	natserver "github.com/nats-io/nats-server/v2/server"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/johanssonvincent/kraclaw/internal/ipc"
 )
 
 func startTestNATS(t *testing.T) *nats.Conn {
@@ -41,10 +43,44 @@ func startTestNATS(t *testing.T) *nats.Conn {
 	return nc
 }
 
+// TestIPCClient_SubjectContract pins the contract that the agent and server
+// hash the same input when deriving JetStream subject and stream names.
+// Regression: agents used to be instantiated with the group JID while the
+// server published using the group folder, so the two sides hashed into
+// different streams and never exchanged messages. If the wiring regresses
+// (e.g. someone passes cfg.GroupJID into NewIPCClient), this test fails.
+func TestIPCClient_SubjectContract(t *testing.T) {
+	const folder = "testslivo"
+	const jid = "tui:testslivo"
+	const agentID = "main"
+
+	client := &IPCClient{group: folder, agentID: agentID}
+
+	serverSanitized := ipc.SanitizeGroupID(folder)
+	agentSanitized := ipc.SanitizeAgentID(agentID)
+	wantInput := "kraclaw.ipc." + serverSanitized + "." + agentSanitized + ".input"
+	wantOutput := "kraclaw.ipc." + serverSanitized + "." + agentSanitized + ".output"
+	wantStream := "KRACLAW_IPC_" + strings.ToUpper(serverSanitized)
+
+	if got := client.inputSubject(); got != wantInput {
+		t.Errorf("inputSubject = %q, want %q", got, wantInput)
+	}
+	if got := client.outputSubject(); got != wantOutput {
+		t.Errorf("outputSubject = %q, want %q", got, wantOutput)
+	}
+	if got := client.streamName(); got != wantStream {
+		t.Errorf("streamName = %q, want %q", got, wantStream)
+	}
+
+	if ipc.SanitizeGroupID(folder) == ipc.SanitizeGroupID(jid) {
+		t.Fatal("folder and JID hash to the same value; regression test cannot detect the bug")
+	}
+}
+
 func TestIPCClient_SendOutput(t *testing.T) {
 	nc := startTestNATS(t)
-	groupJID := "send-test@g.us"
-	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	group := "send-test"
+	client, err := NewIPCClient(nc, group, "main", nil)
 	if err != nil {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
@@ -52,7 +88,7 @@ func TestIPCClient_SendOutput(t *testing.T) {
 	ctx := context.Background()
 	// Create the stream first (as the server normally would).
 	js, _ := jetstream.New(nc)
-	sanitized := sanitizeGroupID(groupJID)
+	sanitized := sanitizeGroupID(group)
 	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
@@ -70,8 +106,8 @@ func TestIPCClient_SendOutput(t *testing.T) {
 
 func TestIPCClient_ReadInput(t *testing.T) {
 	nc := startTestNATS(t)
-	groupJID := "read-test@g.us"
-	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	group := "read-test"
+	client, err := NewIPCClient(nc, group, "main", nil)
 	if err != nil {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
@@ -81,7 +117,7 @@ func TestIPCClient_ReadInput(t *testing.T) {
 
 	// Create the stream and publish an input message (as the server normally would).
 	js, _ := jetstream.New(nc)
-	sanitized := sanitizeGroupID(groupJID)
+	sanitized := sanitizeGroupID(group)
 	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
@@ -101,7 +137,7 @@ func TestIPCClient_ReadInput(t *testing.T) {
 	}
 
 	payload, _ := json.Marshal(map[string]interface{}{
-		"group":   groupJID,
+		"group":   group,
 		"type":    "message",
 		"payload": json.RawMessage(`{"text":"hi"}`),
 	})
@@ -126,8 +162,8 @@ func TestIPCClient_ReadInput(t *testing.T) {
 // close (gap 11).
 func TestIPCClient_ReadInput_ContextCancel(t *testing.T) {
 	nc := startTestNATS(t)
-	groupJID := "ctx-cancel-readinput@g.us"
-	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	group := "ctx-cancel-readinput"
+	client, err := NewIPCClient(nc, group, "main", nil)
 	if err != nil {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
@@ -162,7 +198,7 @@ func TestIPCClient_ReadInput_ContextCancel(t *testing.T) {
 
 func TestIPCClient_EnsureStreamError_Wrapped(t *testing.T) {
 	nc := startTestNATS(t)
-	client, err := NewIPCClient(nc, "ensure-wrap@g.us", "main", nil)
+	client, err := NewIPCClient(nc, "ensure-wrap", "main", nil)
 	if err != nil {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
@@ -181,7 +217,7 @@ func TestIPCClient_EnsureStreamError_Wrapped(t *testing.T) {
 
 func TestIPCClient_SendOutput_EnsureStreamError_Wrapped(t *testing.T) {
 	nc := startTestNATS(t)
-	client, err := NewIPCClient(nc, "send-ensure-wrap@g.us", "main", nil)
+	client, err := NewIPCClient(nc, "send-ensure-wrap", "main", nil)
 	if err != nil {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
@@ -204,8 +240,8 @@ func TestIPCClient_SendOutput_EnsureStreamError_Wrapped(t *testing.T) {
 // duplication from multiple consumer instances).
 func TestIPCClientSyncOnce(t *testing.T) {
 	nc := startTestNATS(t)
-	groupJID := "sync-once@g.us"
-	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	group := "sync-once"
+	client, err := NewIPCClient(nc, group, "main", nil)
 	if err != nil {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
@@ -215,7 +251,7 @@ func TestIPCClientSyncOnce(t *testing.T) {
 
 	// Pre-create the stream.
 	js, _ := jetstream.New(nc)
-	sanitized := sanitizeGroupID(groupJID)
+	sanitized := sanitizeGroupID(group)
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
@@ -297,8 +333,8 @@ func startTestNATSServer(t *testing.T) (*nats.Conn, *natserver.Server) {
 // surfaces the error on errCh and closes both channels so callers unblock.
 func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
 	nc, server := startTestNATSServer(t)
-	groupJID := "iterator-error@g.us"
-	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	group := "iterator-error"
+	client, err := NewIPCClient(nc, group, "main", nil)
 	if err != nil {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
@@ -308,7 +344,7 @@ func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
 
 	// Pre-create the stream.
 	js, _ := jetstream.New(nc)
-	sanitized := sanitizeGroupID(groupJID)
+	sanitized := sanitizeGroupID(group)
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
@@ -362,13 +398,13 @@ func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
 }
 
 // TestIPCClient_ReadInput_MultiGroupIsolation verifies that two IPCClients
-// bound to different groupJIDs do not cross-deliver input messages, even when
+// bound to different groups do not cross-deliver input messages, even when
 // they share a single NATS connection.
 func TestIPCClient_ReadInput_MultiGroupIsolation(t *testing.T) {
 	nc := startTestNATS(t)
 
-	groupA := "iso-group-a@g.us"
-	groupB := "iso-group-b@g.us"
+	groupA := "iso-group-a"
+	groupB := "iso-group-b"
 
 	clientA, err := NewIPCClient(nc, groupA, "main", nil)
 	if err != nil {
@@ -461,8 +497,8 @@ func TestIPCClient_ReadInput_MultiGroupIsolation(t *testing.T) {
 func TestIPCClient_ReadInput_MalformedMessage(t *testing.T) {
 	nc := startTestNATS(t)
 
-	groupJID := "malformed-input@g.us"
-	client, err := NewIPCClient(nc, groupJID, "main", nil)
+	group := "malformed-input"
+	client, err := NewIPCClient(nc, group, "main", nil)
 	if err != nil {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
@@ -472,7 +508,7 @@ func TestIPCClient_ReadInput_MalformedMessage(t *testing.T) {
 
 	// Pre-create the stream.
 	js, _ := jetstream.New(nc)
-	sanitized := sanitizeGroupID(groupJID)
+	sanitized := sanitizeGroupID(group)
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
@@ -496,7 +532,7 @@ func TestIPCClient_ReadInput_MalformedMessage(t *testing.T) {
 	// Now publish a valid message; if the malformed message was correctly ACK'd
 	// and skipped, the consume loop should still deliver this one.
 	validPayload, _ := json.Marshal(map[string]interface{}{
-		"group":   groupJID,
+		"group":   group,
 		"type":    "message",
 		"payload": json.RawMessage(`{"text":"after-malformed"}`),
 	})
@@ -527,16 +563,16 @@ type mockAckFailMsg struct {
 
 func (m *mockAckFailMsg) Metadata() (*jetstream.MsgMetadata, error) { return nil, nil }
 func (m *mockAckFailMsg) Data() []byte                              { return m.data }
-func (m *mockAckFailMsg) Headers() nats.Header                     { return nil }
-func (m *mockAckFailMsg) Subject() string                          { return "" }
-func (m *mockAckFailMsg) Reply() string                            { return "" }
-func (m *mockAckFailMsg) Ack() error                               { return errors.New("simulated ack failure") }
-func (m *mockAckFailMsg) DoubleAck(context.Context) error          { return nil }
-func (m *mockAckFailMsg) Nak() error                               { return nil }
-func (m *mockAckFailMsg) NakWithDelay(time.Duration) error         { return nil }
-func (m *mockAckFailMsg) InProgress() error                        { return nil }
-func (m *mockAckFailMsg) Term() error                              { return nil }
-func (m *mockAckFailMsg) TermWithReason(string) error              { return nil }
+func (m *mockAckFailMsg) Headers() nats.Header                      { return nil }
+func (m *mockAckFailMsg) Subject() string                           { return "" }
+func (m *mockAckFailMsg) Reply() string                             { return "" }
+func (m *mockAckFailMsg) Ack() error                                { return errors.New("simulated ack failure") }
+func (m *mockAckFailMsg) DoubleAck(context.Context) error           { return nil }
+func (m *mockAckFailMsg) Nak() error                                { return nil }
+func (m *mockAckFailMsg) NakWithDelay(time.Duration) error          { return nil }
+func (m *mockAckFailMsg) InProgress() error                         { return nil }
+func (m *mockAckFailMsg) Term() error                               { return nil }
+func (m *mockAckFailMsg) TermWithReason(string) error               { return nil }
 
 // mockMessagesCtx delivers one message then blocks until Stop/Drain is called.
 type mockMessagesCtx struct {
@@ -593,10 +629,10 @@ func TestIPCClient_ReadInput_AckFailurePropagatesError(t *testing.T) {
 	js := &mockAckFailJS{consumer: consumer}
 
 	c := &IPCClient{
-		groupJID: "ack-fail-test@g.us",
-		agentID:  "main",
-		logger:   slog.Default(),
-		js:       js,
+		group:   "ack-fail-test",
+		agentID: "main",
+		logger:  slog.Default(),
+		js:      js,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
