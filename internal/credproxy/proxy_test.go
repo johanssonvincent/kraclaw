@@ -578,8 +578,8 @@ func TestDefaultCredentialResolver_PerGroupOpenAI(t *testing.T) {
 	}
 
 	encKey, _ := enc.Encrypt("sk-group-openai-key")
-	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted"}).
-		AddRow("openai", encKey)
+	rows := sqlmock.NewRows([]string{"provider", "auth_mode", "api_key_encrypted", "oauth_access_token_encrypted", "oauth_refresh_token_encrypted", "oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp"}).
+		AddRow("openai", string(AuthModeAPIKey), encKey, nil, nil, nil, nil, nil, false)
 	mock.ExpectQuery("SELECT").WithArgs("discord:123").WillReturnRows(rows)
 
 	r := NewDefaultResolver(credStore, config.ProxyConfig{
@@ -736,8 +736,8 @@ func TestDefaultCredentialResolver_PerGroupProviderMismatch_FallsThroughToPlatfo
 
 	// Group has Anthropic credentials stored.
 	encKey, _ := enc.Encrypt("sk-group-anthropic")
-	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted"}).
-		AddRow("anthropic", encKey)
+	rows := sqlmock.NewRows([]string{"provider", "auth_mode", "api_key_encrypted", "oauth_access_token_encrypted", "oauth_refresh_token_encrypted", "oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp"}).
+		AddRow("anthropic", string(AuthModeAPIKey), encKey, nil, nil, nil, nil, nil, false)
 	mock.ExpectQuery("SELECT").WithArgs("discord:mismatch").WillReturnRows(rows)
 
 	r := NewDefaultResolver(credStore, config.ProxyConfig{
