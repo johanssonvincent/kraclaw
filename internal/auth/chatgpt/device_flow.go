@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -218,11 +219,29 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 			CodeChallenge: parsed.CodeChallenge,
 			CodeVerifier:  parsed.CodeVerifier,
 		}, nil
-	case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusNotFound:
+	case isPollPending(resp.StatusCode, respBody):
 		return nil, ErrAuthorizationPending
 	default:
 		return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 	}
+}
+
+// isPollPending returns true when the device-token response represents an
+// RFC 8628 pending state: HTTP 400 with error=authorization_pending|slow_down,
+// or — for older Codex backends — 403/404 with the same body code.
+func isPollPending(status int, body []byte) bool {
+	if status != http.StatusBadRequest && status != http.StatusForbidden && status != http.StatusNotFound {
+		return false
+	}
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	switch strings.ToLower(strings.TrimSpace(parsed.Error)) {
+	case "authorization_pending", "slow_down":
+		return true
+	}
+	return false
 }
 
 // PollUntilCode loops PollOnce on the device-code interval until the user

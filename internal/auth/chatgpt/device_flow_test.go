@@ -175,17 +175,63 @@ func TestPollOnce_Success(t *testing.T) {
 }
 
 func TestPollOnce_PendingStatuses(t *testing.T) {
-	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
+	statuses := []int{http.StatusForbidden, http.StatusNotFound, http.StatusBadRequest}
+	for _, status := range statuses {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
 			}))
 			defer srv.Close()
 			c := newTestClient(t, srv)
 			dc := DeviceCodeFromParts("dev", "USER", "", 5*time.Millisecond)
+			if _, err := c.PollOnce(context.Background(), dc); !errors.Is(err, ErrAuthorizationPending) {
+				t.Fatalf("status %d with pending body: expected ErrAuthorizationPending, got %v", status, err)
+			}
+		})
+	}
+}
+
+func TestPollOnce_404WithoutPendingCodeIsBadStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"device_code_expired"}`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	dc := DeviceCodeFromParts("daid", "UC", c.VerificationURL(), time.Second)
+	_, err := c.PollOnce(context.Background(), dc)
+	if errors.Is(err, ErrAuthorizationPending) {
+		t.Fatalf("404 with non-pending body should not be pending; got %v", err)
+	}
+	var bad *errBadStatus
+	if !errors.As(err, &bad) {
+		t.Fatalf("expected errBadStatus, got %v", err)
+	}
+}
+
+func TestPollOnce_PendingByCodeNotStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"400 authorization_pending", http.StatusBadRequest, `{"error":"authorization_pending"}`},
+		{"400 slow_down", http.StatusBadRequest, `{"error":"slow_down"}`},
+		{"403 authorization_pending (legacy)", http.StatusForbidden, `{"error":"authorization_pending"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+			c := newTestClient(t, srv)
+			dc := DeviceCodeFromParts("daid", "UC", c.VerificationURL(), time.Second)
 			_, err := c.PollOnce(context.Background(), dc)
 			if !errors.Is(err, ErrAuthorizationPending) {
-				t.Fatalf("status %d: expected ErrAuthorizationPending, got %v", status, err)
+				t.Fatalf("expected ErrAuthorizationPending, got %v", err)
 			}
 		})
 	}
@@ -222,7 +268,8 @@ func TestPollUntilCode_SucceedsAfterPending(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := calls.Add(1)
 		if n < 3 {
-			w.WriteHeader(http.StatusForbidden)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"authorization_code":"a","code_challenge":"c","code_verifier":"v"}`))
@@ -250,7 +297,8 @@ func TestPollUntilCode_SucceedsAfterPending(t *testing.T) {
 
 func TestPollUntilCode_RespectsContextCancel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
 	}))
 	defer srv.Close()
 
@@ -268,7 +316,8 @@ func TestPollUntilCode_RespectsContextCancel(t *testing.T) {
 
 func TestPollUntilCode_TimesOut(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
 	}))
 	defer srv.Close()
 
