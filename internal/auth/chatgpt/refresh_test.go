@@ -158,71 +158,43 @@ func mintJWTNow(payload map[string]any) string {
 }
 
 func TestRefresh_PermanentFailures(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want RefreshFailureReason
+	tests := map[string]struct {
+		status     int
+		body       string
+		wantReason RefreshFailureReason
 	}{
-		{"expired", `{"error":"refresh_token_expired"}`, RefreshFailureExpired},
-		{"reused-error-code", `{"error_code":"refresh_token_reused"}`, RefreshFailureReused},
-		{"invalidated", `{"error":"refresh_token_invalidated"}`, RefreshFailureRevoked},
-		{"unknown", `{"error":"something_else"}`, RefreshFailureUnknown},
+		// 401 with RFC 6749 error/error_code values.
+		"401 refresh_token_expired":     {status: http.StatusUnauthorized, body: `{"error":"refresh_token_expired"}`, wantReason: RefreshFailureExpired},
+		"401 reused (error_code)":       {status: http.StatusUnauthorized, body: `{"error_code":"refresh_token_reused"}`, wantReason: RefreshFailureReused},
+		"401 refresh_token_invalidated": {status: http.StatusUnauthorized, body: `{"error":"refresh_token_invalidated"}`, wantReason: RefreshFailureRevoked},
+		"401 unknown error body":        {status: http.StatusUnauthorized, body: `{"error":"something_else"}`, wantReason: RefreshFailureUnknown},
+		// 400 invalid_grant variants (RFC 6749 §5.2).
+		"400 invalid_grant + refresh_token_expired":     {status: http.StatusBadRequest, body: `{"error":"invalid_grant","error_code":"refresh_token_expired"}`, wantReason: RefreshFailureExpired},
+		"400 invalid_grant + refresh_token_reused":      {status: http.StatusBadRequest, body: `{"error":"invalid_grant","error_code":"refresh_token_reused"}`, wantReason: RefreshFailureReused},
+		"400 invalid_grant + refresh_token_invalidated": {status: http.StatusBadRequest, body: `{"error":"invalid_grant","error_code":"refresh_token_invalidated"}`, wantReason: RefreshFailureRevoked},
+		"400 bare invalid_grant":                        {status: http.StatusBadRequest, body: `{"error":"invalid_grant"}`, wantReason: RefreshFailureUnknown},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusUnauthorized)
-				_, _ = w.Write([]byte(tt.body))
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer srv.Close()
 			c := newTestClient(t, srv)
 			_, err := c.Refresh(context.Background(), "rt")
 			var re *RefreshError
 			if !errors.As(err, &re) {
-				t.Fatalf("expected RefreshError, got %v", err)
+				t.Fatalf("err = %v, want *RefreshError", err)
 			}
 			if !re.Permanent() {
-				t.Fatalf("expected permanent error, got %+v", re)
+				t.Fatalf("Permanent() = false, want true (status=%d body=%s err=%+v)", tc.status, tc.body, re)
 			}
-			if re.Reason != tt.want {
-				t.Fatalf("Reason = %q, want %q", re.Reason, tt.want)
+			if re.Reason != tc.wantReason {
+				t.Fatalf("Reason = %q, want %q (status=%d body=%s)", re.Reason, tc.wantReason, tc.status, tc.body)
 			}
-		})
-	}
-}
-
-func TestRefresh_Permanent400InvalidGrant(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-		want RefreshFailureReason
-	}{
-		{"400 invalid_grant + refresh_token_expired", `{"error":"invalid_grant","error_code":"refresh_token_expired"}`, RefreshFailureExpired},
-		{"400 invalid_grant + refresh_token_reused", `{"error":"invalid_grant","error_code":"refresh_token_reused"}`, RefreshFailureReused},
-		{"400 invalid_grant + refresh_token_invalidated", `{"error":"invalid_grant","error_code":"refresh_token_invalidated"}`, RefreshFailureRevoked},
-		{"400 bare invalid_grant", `{"error":"invalid_grant"}`, RefreshFailureUnknown},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusBadRequest)
-				_, _ = w.Write([]byte(tt.body))
-			}))
-			defer srv.Close()
-			c := newTestClient(t, srv)
-			_, err := c.Refresh(context.Background(), "rt")
-			var re *RefreshError
-			if !errors.As(err, &re) {
-				t.Fatalf("expected RefreshError, got %v", err)
-			}
-			if !re.Permanent() {
-				t.Fatalf("400 invalid_grant must be permanent, got %+v", re)
-			}
-			if re.Reason != tt.want {
-				t.Fatalf("Reason = %q, want %q", re.Reason, tt.want)
-			}
-			if re.Status != http.StatusBadRequest {
-				t.Fatalf("Status = %d, want 400", re.Status)
+			if re.Status != tc.status {
+				t.Fatalf("Status = %d, want %d", re.Status, tc.status)
 			}
 		})
 	}
