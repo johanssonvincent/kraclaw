@@ -1,9 +1,7 @@
 // Package chatgpt implements the OAuth 2.0 device-code flow and token refresh
-// for OpenAI's ChatGPT subscription, mirroring the behaviour of the official
-// Codex CLI at github.com/openai/codex (Apache-2.0).
-//
-// The package only knows how to talk to auth.openai.com. Wiring it into the
-// credential store, credential proxy, or gRPC API lives in adjacent packages.
+// for OpenAI's ChatGPT subscription. The public client id and endpoint paths
+// match the upstream Codex CLI (github.com/openai/codex) because there is no
+// alternative client id published for third-party integrations.
 package chatgpt
 
 import (
