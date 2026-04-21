@@ -206,6 +206,24 @@ func TestRefresh_TransientFailures(t *testing.T) {
 	}
 }
 
+func TestRefresh_NoExpiryIsObservable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r"}`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	tokens, err := c.Refresh(context.Background(), "rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokens.HasExpiry {
+		t.Fatalf("HasExpiry must be false when neither id_token.exp nor expires_in present; got %+v", tokens)
+	}
+	if !tokens.ExpiresAt.IsZero() {
+		t.Fatalf("ExpiresAt should remain zero; got %v", tokens.ExpiresAt)
+	}
+}
+
 func TestRefresh_RejectsEmptyToken(t *testing.T) {
 	c, err := NewClient(Config{})
 	if err != nil {

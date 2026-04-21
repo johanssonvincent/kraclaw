@@ -59,9 +59,11 @@ type Tokens struct {
 	IDToken      string
 	IDClaims     IDTokenClaims
 
-	// ExpiresAt is the token expiry derived from the id_token's exp claim.
-	// If the id_token is missing exp the field stays zero.
+	// ExpiresAt is the absolute token expiry. Valid only when HasExpiry is
+	// true — otherwise the server returned neither id_token.exp nor
+	// expires_in and the absolute expiry is unknown.
 	ExpiresAt time.Time
+	HasExpiry bool
 }
 
 // userCodeResponse mirrors the Codex UserCodeResp struct. interval is sent
@@ -364,6 +366,7 @@ func (c *Client) tokensFromResponse(parsed *tokenResponse) (*Tokens, error) {
 	if tokens.ExpiresAt.IsZero() && parsed.ExpiresIn > 0 {
 		tokens.ExpiresAt = c.now().Add(time.Duration(parsed.ExpiresIn) * time.Second)
 	}
+	tokens.HasExpiry = !tokens.ExpiresAt.IsZero()
 	return tokens, nil
 }
 
