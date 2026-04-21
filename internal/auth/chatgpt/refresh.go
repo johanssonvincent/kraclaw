@@ -91,6 +91,9 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: build refresh request: %w", err)
 	}
+	// ChatGPT's /oauth/token accepts JSON for the refresh_token grant (in contrast
+	// to the authorization_code grant at ExchangeCode, which is form-encoded).
+	// Matches the Codex CLI contract.
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 

@@ -101,7 +101,11 @@ func NewClient(cfg Config) (*Client, error) {
 // Issuer returns the configured issuer URL.
 func (c *Client) Issuer() string { return c.issuer }
 
-// VerificationURL is the human-facing page where the user enters the user_code.
+// VerificationURL is the human-facing consent page where the user enters the
+// user_code. The device-flow endpoint does not return a verification_uri;
+// the path /codex/device is published out-of-band by OpenAI's auth server as
+// the approval UI bound to the Codex client id we reuse. If OpenAI rotates
+// that path, update both this method and the Codex CLI reference.
 func (c *Client) VerificationURL() string {
 	return c.issuer + "/codex/device"
 }
