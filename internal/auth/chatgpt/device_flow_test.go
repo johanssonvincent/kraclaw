@@ -33,104 +33,98 @@ func newTestClient(t *testing.T, server *httptest.Server, opts ...func(*Config))
 	return c
 }
 
-func TestRequestDeviceCode_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/accounts/deviceauth/usercode" {
-			t.Errorf("unexpected path %s", r.URL.Path)
-		}
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		if r.Header.Get("Content-Type") != "application/json" {
-			t.Errorf("missing JSON content-type")
-		}
-		body, _ := io.ReadAll(r.Body)
-		var got map[string]string
-		_ = json.Unmarshal(body, &got)
-		if got["client_id"] != ClientID {
-			t.Errorf("expected client_id %q, got %q", ClientID, got["client_id"])
-		}
-		_, _ = w.Write([]byte(`{"device_auth_id":"dev_abc","user_code":"BCDF-1234","interval":"7"}`))
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv)
-	dc, err := c.RequestDeviceCode(context.Background())
-	if err != nil {
-		t.Fatalf("RequestDeviceCode: %v", err)
+func TestRequestDeviceCode_ResponseParsing(t *testing.T) {
+	tests := map[string]struct {
+		body  string
+		check func(t *testing.T, dc *DeviceCode)
+	}{
+		"full success response with string interval": {
+			body: `{"device_auth_id":"dev_abc","user_code":"BCDF-1234","interval":"7"}`,
+			check: func(t *testing.T, dc *DeviceCode) {
+				if dc.UserCode != "BCDF-1234" {
+					t.Errorf("UserCode = %q, want BCDF-1234", dc.UserCode)
+				}
+				if dc.deviceAuthID != "dev_abc" {
+					t.Errorf("deviceAuthID = %q, want dev_abc", dc.deviceAuthID)
+				}
+				if dc.Interval != 7*time.Second {
+					t.Errorf("Interval = %v, want 7s", dc.Interval)
+				}
+				if !strings.HasSuffix(dc.VerificationURL, "/codex/device") {
+					t.Errorf("VerificationURL = %q, want suffix /codex/device", dc.VerificationURL)
+				}
+			},
+		},
+		"numeric interval": {
+			body: `{"device_auth_id":"d","user_code":"C","interval":3}`,
+			check: func(t *testing.T, dc *DeviceCode) {
+				if dc.Interval != 3*time.Second {
+					t.Fatalf("Interval = %v, want 3s", dc.Interval)
+				}
+			},
+		},
+		"usercode alias (no underscore)": {
+			body: `{"device_auth_id":"d","usercode":"ABCD","interval":"5"}`,
+			check: func(t *testing.T, dc *DeviceCode) {
+				if dc.UserCode != "ABCD" {
+					t.Fatalf("UserCode = %q, want ABCD via alias", dc.UserCode)
+				}
+			},
+		},
+		"interval null falls back to default": {
+			body: `{"device_auth_id":"d","user_code":"UC","interval":null}`,
+			check: func(t *testing.T, dc *DeviceCode) {
+				if dc.Interval != DefaultPollInterval {
+					t.Fatalf("Interval = %v, want DefaultPollInterval %v", dc.Interval, DefaultPollInterval)
+				}
+			},
+		},
+		"interval empty string falls back to default": {
+			body: `{"device_auth_id":"d","user_code":"UC","interval":""}`,
+			check: func(t *testing.T, dc *DeviceCode) {
+				if dc.Interval != DefaultPollInterval {
+					t.Fatalf("Interval = %v, want DefaultPollInterval %v", dc.Interval, DefaultPollInterval)
+				}
+			},
+		},
+		"interval field missing falls back to default": {
+			body: `{"device_auth_id":"d","user_code":"UC"}`,
+			check: func(t *testing.T, dc *DeviceCode) {
+				if dc.Interval != DefaultPollInterval {
+					t.Fatalf("Interval = %v, want DefaultPollInterval %v", dc.Interval, DefaultPollInterval)
+				}
+			},
+		},
 	}
-	if dc.UserCode != "BCDF-1234" {
-		t.Errorf("UserCode = %q", dc.UserCode)
-	}
-	if dc.deviceAuthID != "dev_abc" {
-		t.Errorf("deviceAuthID = %q", dc.deviceAuthID)
-	}
-	if dc.Interval != 7*time.Second {
-		t.Errorf("Interval = %v, want 7s", dc.Interval)
-	}
-	if !strings.HasSuffix(dc.VerificationURL, "/codex/device") {
-		t.Errorf("VerificationURL = %q", dc.VerificationURL)
-	}
-}
-
-func TestRequestDeviceCode_NumericInterval(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"device_auth_id":"d","user_code":"C","interval":3}`))
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv)
-	dc, err := c.RequestDeviceCode(context.Background())
-	if err != nil {
-		t.Fatalf("RequestDeviceCode: %v", err)
-	}
-	if dc.Interval != 3*time.Second {
-		t.Fatalf("Interval = %v, want 3s", dc.Interval)
-	}
-}
-
-func TestRequestDeviceCode_IntervalFallbacks(t *testing.T) {
-	cases := []struct{ name, interval string }{
-		{"null", `null`},
-		{"empty string", `""`},
-		{"missing", ``}, // field absent
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			body := `{"device_auth_id":"d","user_code":"UC"`
-			if tc.interval != "" {
-				body += `,"interval":` + tc.interval
-			}
-			body += `}`
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte(body))
+				if r.URL.Path != "/api/accounts/deviceauth/usercode" {
+					t.Errorf("unexpected path %s", r.URL.Path)
+				}
+				if r.Method != http.MethodPost {
+					t.Errorf("method = %s, want POST", r.Method)
+				}
+				if r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("Content-Type = %q, want application/json", r.Header.Get("Content-Type"))
+				}
+				body, _ := io.ReadAll(r.Body)
+				var got map[string]string
+				_ = json.Unmarshal(body, &got)
+				if got["client_id"] != ClientID {
+					t.Errorf("client_id = %q, want %q", got["client_id"], ClientID)
+				}
+				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer srv.Close()
+
 			c := newTestClient(t, srv)
 			dc, err := c.RequestDeviceCode(context.Background())
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("RequestDeviceCode: %v", err)
 			}
-			if dc.Interval != DefaultPollInterval {
-				t.Fatalf("Interval = %v, want DefaultPollInterval (%v)", dc.Interval, DefaultPollInterval)
-			}
+			tc.check(t, dc)
 		})
-	}
-}
-
-func TestRequestDeviceCode_UserCodeAlias(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"device_auth_id":"d","usercode":"ABCD","interval":"5"}`))
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv)
-	dc, err := c.RequestDeviceCode(context.Background())
-	if err != nil {
-		t.Fatalf("RequestDeviceCode: %v", err)
-	}
-	if dc.UserCode != "ABCD" {
-		t.Fatalf("UserCode = %q, expected alias", dc.UserCode)
 	}
 }
 
