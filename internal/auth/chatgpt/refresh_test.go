@@ -2,6 +2,7 @@ package chatgpt
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,86 +12,149 @@ import (
 	"time"
 )
 
-func TestRefresh_Success_RotatesTokens(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/oauth/token" {
-			t.Errorf("path = %s", r.URL.Path)
-		}
-		if got := r.Header.Get("Content-Type"); got != "application/json" {
-			t.Errorf("Content-Type = %q", got)
-		}
-		body, _ := io.ReadAll(r.Body)
-		var got map[string]string
-		_ = json.Unmarshal(body, &got)
-		if got["client_id"] != ClientID {
-			t.Errorf("client_id = %q", got["client_id"])
-		}
-		if got["grant_type"] != "refresh_token" {
-			t.Errorf("grant_type = %q", got["grant_type"])
-		}
-		if got["refresh_token"] != "rt_old" {
-			t.Errorf("refresh_token = %q", got["refresh_token"])
-		}
-		idTok := mintJWT(t, map[string]any{
-			"exp": time.Now().Add(time.Hour).Unix(),
-			"https://api.openai.com/auth": map[string]any{
-				"chatgpt_account_id": "acct_42",
-				"chatgpt_plan_type":  "plus",
+func TestRefresh_Success(t *testing.T) {
+	tests := map[string]struct {
+		// respBody is the raw /oauth/token response body. Exactly one of
+		// respBody or respBodyFn must be set; respBodyFn lets a case mint a
+		// JWT at test time (it runs once per subtest).
+		respBody   string
+		respBodyFn func() string
+		// reqCheck, when non-nil, runs extra request-side assertions.
+		// It receives the parsed JSON body (nil if parse failed).
+		reqCheck func(t *testing.T, body map[string]string)
+		// refreshToken is the token passed to Refresh.
+		refreshToken string
+		// now pins the client clock when non-zero (needed for expires_in math).
+		now time.Time
+		// check asserts on the returned tokens.
+		check func(t *testing.T, tokens *Tokens)
+	}{
+		"rotates tokens and populates IDClaims": {
+			refreshToken: "rt_old",
+			respBodyFn: func() string {
+				idTok := mintJWTNow(map[string]any{
+					"exp": time.Now().Add(time.Hour).Unix(),
+					"https://api.openai.com/auth": map[string]any{
+						"chatgpt_account_id": "acct_42",
+						"chatgpt_plan_type":  "plus",
+					},
+				})
+				return `{"id_token":"` + idTok + `","access_token":"acc_new","refresh_token":"rt_new"}`
 			},
-		})
-		_, _ = w.Write([]byte(`{"id_token":"` + idTok + `","access_token":"acc_new","refresh_token":"rt_new"}`))
-	}))
-	defer srv.Close()
+			reqCheck: func(t *testing.T, body map[string]string) {
+				if body["client_id"] != ClientID {
+					t.Errorf("client_id = %q, want %q", body["client_id"], ClientID)
+				}
+				if body["grant_type"] != "refresh_token" {
+					t.Errorf("grant_type = %q, want refresh_token", body["grant_type"])
+				}
+				if body["refresh_token"] != "rt_old" {
+					t.Errorf("refresh_token = %q, want rt_old", body["refresh_token"])
+				}
+			},
+			check: func(t *testing.T, tokens *Tokens) {
+				if tokens.AccessToken != "acc_new" || tokens.RefreshToken != "rt_new" {
+					t.Fatalf("tokens = %+v", tokens)
+				}
+				if tokens.IDClaims.AccountID != "acct_42" {
+					t.Fatalf("IDClaims.AccountID = %q, want acct_42", tokens.IDClaims.AccountID)
+				}
+			},
+		},
+		"keeps refresh_token when server omits it": {
+			refreshToken: "rt_keep",
+			respBodyFn: func() string {
+				idTok := mintJWTNow(map[string]any{
+					"exp":                         time.Now().Add(time.Hour).Unix(),
+					"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "acct"},
+				})
+				return `{"id_token":"` + idTok + `","access_token":"acc_new"}`
+			},
+			check: func(t *testing.T, tokens *Tokens) {
+				if tokens.RefreshToken != "rt_keep" {
+					t.Fatalf("RefreshToken = %q, want rt_keep preserved", tokens.RefreshToken)
+				}
+			},
+		},
+		"expires_in fallback populates ExpiresAt": {
+			refreshToken: "rt",
+			now:          time.Unix(1_700_000_000, 0).UTC(),
+			respBody:     `{"access_token":"a","refresh_token":"r","expires_in":600}`,
+			check: func(t *testing.T, tokens *Tokens) {
+				want := time.Unix(1_700_000_000, 0).UTC().Add(600 * time.Second)
+				if !tokens.ExpiresAt.Equal(want) {
+					t.Fatalf("ExpiresAt = %v, want %v", tokens.ExpiresAt, want)
+				}
+			},
+		},
+		"no expiry is observable via HasExpiry=false": {
+			refreshToken: "rt",
+			respBody:     `{"access_token":"a","refresh_token":"r"}`,
+			check: func(t *testing.T, tokens *Tokens) {
+				if tokens.HasExpiry {
+					t.Fatalf("HasExpiry = true, want false when neither id_token.exp nor expires_in present; tokens=%+v", tokens)
+				}
+				if !tokens.ExpiresAt.IsZero() {
+					t.Fatalf("ExpiresAt = %v, want zero", tokens.ExpiresAt)
+				}
+			},
+		},
+	}
 
-	c := newTestClient(t, srv)
-	tokens, err := c.Refresh(context.Background(), "rt_old")
-	if err != nil {
-		t.Fatalf("Refresh: %v", err)
-	}
-	if tokens.AccessToken != "acc_new" || tokens.RefreshToken != "rt_new" {
-		t.Fatalf("tokens = %+v", tokens)
-	}
-	if tokens.IDClaims.AccountID != "acct_42" {
-		t.Fatalf("IDClaims.AccountID = %q", tokens.IDClaims.AccountID)
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/oauth/token" {
+					t.Errorf("path = %s, want /oauth/token", r.URL.Path)
+				}
+				if got := r.Header.Get("Content-Type"); got != "application/json" {
+					t.Errorf("Content-Type = %q, want application/json", got)
+				}
+				if tc.reqCheck != nil {
+					raw, _ := io.ReadAll(r.Body)
+					var parsed map[string]string
+					_ = json.Unmarshal(raw, &parsed)
+					tc.reqCheck(t, parsed)
+				}
+				body := tc.respBody
+				if tc.respBodyFn != nil {
+					body = tc.respBodyFn()
+				}
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+
+			var opts []func(*Config)
+			if !tc.now.IsZero() {
+				now := tc.now
+				opts = append(opts, func(cfg *Config) { cfg.Now = func() time.Time { return now } })
+			}
+			c := newTestClient(t, srv, opts...)
+
+			tokens, err := c.Refresh(context.Background(), tc.refreshToken)
+			if err != nil {
+				t.Fatalf("Refresh: %v", err)
+			}
+			tc.check(t, tokens)
+		})
 	}
 }
 
-func TestRefresh_KeepsRefreshTokenWhenServerOmits(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		idTok := mintJWT(t, map[string]any{
-			"exp":                         time.Now().Add(time.Hour).Unix(),
-			"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "acct"},
-		})
-		_, _ = w.Write([]byte(`{"id_token":"` + idTok + `","access_token":"acc_new"}`))
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv)
-	tokens, err := c.Refresh(context.Background(), "rt_keep")
+// mintJWTNow is a test-time JWT builder usable from handler closures and case
+// builders where no *testing.T is in scope. It panics on marshal errors, which
+// cannot happen for the fixed payloads used here.
+func mintJWTNow(payload map[string]any) string {
+	header := map[string]string{"alg": "RS256", "typ": "JWT"}
+	headerJSON, err := json.Marshal(header)
 	if err != nil {
-		t.Fatalf("Refresh: %v", err)
+		panic(err)
 	}
-	if tokens.RefreshToken != "rt_keep" {
-		t.Fatalf("expected refresh_token to be preserved, got %q", tokens.RefreshToken)
-	}
-}
-
-func TestRefresh_ExpiresInFallback(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r","expires_in":600}`))
-	}))
-	defer srv.Close()
-
-	now := time.Unix(1_700_000_000, 0).UTC()
-	c := newTestClient(t, srv, func(cfg *Config) { cfg.Now = func() time.Time { return now } })
-	tokens, err := c.Refresh(context.Background(), "rt")
+	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		t.Fatalf("Refresh: %v", err)
+		panic(err)
 	}
-	want := now.Add(600 * time.Second)
-	if !tokens.ExpiresAt.Equal(want) {
-		t.Fatalf("ExpiresAt = %v, want %v", tokens.ExpiresAt, want)
-	}
+	enc := base64.RawURLEncoding
+	return enc.EncodeToString(headerJSON) + "." + enc.EncodeToString(payloadJSON) + ".sig"
 }
 
 func TestRefresh_PermanentFailures(t *testing.T) {
@@ -242,24 +306,6 @@ func TestRefresh_MalformedIDTokenIsTransient(t *testing.T) {
 	}
 	if re.Permanent() {
 		t.Fatalf("malformed id_token in 2xx must be transient; got %+v", re)
-	}
-}
-
-func TestRefresh_NoExpiryIsObservable(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r"}`))
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-	tokens, err := c.Refresh(context.Background(), "rt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tokens.HasExpiry {
-		t.Fatalf("HasExpiry must be false when neither id_token.exp nor expires_in present; got %+v", tokens)
-	}
-	if !tokens.ExpiresAt.IsZero() {
-		t.Fatalf("ExpiresAt should remain zero; got %v", tokens.ExpiresAt)
 	}
 }
 
