@@ -337,11 +337,14 @@ func TestPollUntilCode_SucceedsAfterPending(t *testing.T) {
 	if ac.Code != "a" {
 		t.Fatalf("code = %q", ac.Code)
 	}
-	if got := ticks.Load(); got < 1 {
-		t.Errorf("expected at least 1 onTick, got %d", got)
+	// Handler returns pending on calls 1 and 2, then success on call 3.
+	// onTick fires once per pending response → must equal 2, not >= 1
+	// (which would mask a regression where onTick runs only once).
+	if got := ticks.Load(); got != 2 {
+		t.Errorf("onTick = %d, want 2 (one per pending poll)", got)
 	}
-	if got := calls.Load(); got < 3 {
-		t.Errorf("expected at least 3 polls, got %d", got)
+	if got := calls.Load(); got != 3 {
+		t.Errorf("poll calls = %d, want 3", got)
 	}
 }
 
