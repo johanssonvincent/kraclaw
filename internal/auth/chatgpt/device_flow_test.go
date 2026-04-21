@@ -250,57 +250,66 @@ func TestPollOnce_Pending(t *testing.T) {
 	}
 }
 
-func TestPollOnce_404WithoutPendingCodeIsBadStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"device_code_expired"}`))
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-	dc := deviceCodeForTest("daid", "UC", c.VerificationURL(), time.Second)
-	_, err := c.PollOnce(context.Background(), dc)
-	if errors.Is(err, ErrAuthorizationPending) {
-		t.Fatalf("404 with non-pending body should not be pending; got %v", err)
-	}
-	var bad *errBadStatus
-	if !errors.As(err, &bad) {
-		t.Fatalf("expected errBadStatus, got %v", err)
-	}
-}
-
-func TestPollOnce_OtherErrorIsBadStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "oops", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-	dc := deviceCodeForTest("dev", "USER", "", 5*time.Millisecond)
-	_, err := c.PollOnce(context.Background(), dc)
-	var bad *errBadStatus
-	if !errors.As(err, &bad) || bad.Status != http.StatusInternalServerError {
-		t.Fatalf("expected 500 errBadStatus, got %v", err)
-	}
-}
-
-func TestPollOnce_MissingFields(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
+func TestPollOnce_Errors(t *testing.T) {
+	tests := map[string]struct {
+		handler http.HandlerFunc
+		check   func(t *testing.T, err error)
 	}{
-		{"missing code_verifier", `{"authorization_code":"a"}`},
-		{"missing authorization_code", `{"code_verifier":"v"}`},
+		"404 with non-pending body is errBadStatus not pending": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"device_code_expired"}`))
+			},
+			check: func(t *testing.T, err error) {
+				if errors.Is(err, ErrAuthorizationPending) {
+					t.Fatalf("err = %v, must not be ErrAuthorizationPending when body is device_code_expired", err)
+				}
+				var bad *errBadStatus
+				if !errors.As(err, &bad) {
+					t.Fatalf("err = %v, want *errBadStatus", err)
+				}
+			},
+		},
+		"5xx is errBadStatus": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "oops", http.StatusInternalServerError)
+			},
+			check: func(t *testing.T, err error) {
+				var bad *errBadStatus
+				if !errors.As(err, &bad) || bad.Status != http.StatusInternalServerError {
+					t.Fatalf("err = %v, want *errBadStatus with Status=500", err)
+				}
+			},
+		},
+		"missing code_verifier errors": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"authorization_code":"a"}`))
+			},
+			check: func(t *testing.T, err error) {
+				if err == nil {
+					t.Fatal("err = nil, want error")
+				}
+			},
+		},
+		"missing authorization_code errors": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"code_verifier":"v"}`))
+			},
+			check: func(t *testing.T, err error) {
+				if err == nil {
+					t.Fatal("err = nil, want error")
+				}
+			},
+		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte(tc.body))
-			}))
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
 			defer srv.Close()
 			c := newTestClient(t, srv)
 			dc := deviceCodeForTest("dev", "USER", "", 5*time.Millisecond)
-			if _, err := c.PollOnce(context.Background(), dc); err == nil {
-				t.Fatalf("expected error for %s", tc.name)
-			}
+			_, err := c.PollOnce(context.Background(), dc)
+			tc.check(t, err)
 		})
 	}
 }
