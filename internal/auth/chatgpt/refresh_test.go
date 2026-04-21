@@ -240,29 +240,54 @@ func TestRefresh_TransientFailures(t *testing.T) {
 	}
 }
 
-func TestRefresh_RejectsEmptyToken(t *testing.T) {
-	c, err := NewClient(Config{})
-	if err != nil {
-		t.Fatal(err)
+func TestRefresh_PreflightAndTransport(t *testing.T) {
+	tests := map[string]struct {
+		// setup returns a ready-to-use Client and the refresh_token argument.
+		setup func(t *testing.T) (*Client, string)
+		// wantPermanent, when non-nil, asserts on RefreshError.Permanent().
+		// Nil means the test only requires a non-nil error (no wrapping shape).
+		wantPermanent *bool
+	}{
+		"rejects blank refresh_token before network": {
+			setup: func(t *testing.T) (*Client, string) {
+				c, err := NewClient(Config{})
+				if err != nil {
+					t.Fatalf("NewClient: %v", err)
+				}
+				return c, "  "
+			},
+		},
+		"transport error is transient": {
+			setup: func(t *testing.T) (*Client, string) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+				srv.Close() // close immediately so requests fail at dial
+				c, err := NewClient(Config{Issuer: srv.URL, HTTPClient: &http.Client{Timeout: 500 * time.Millisecond}})
+				if err != nil {
+					t.Fatalf("NewClient: %v", err)
+				}
+				return c, "rt"
+			},
+			wantPermanent: boolPtr(false),
+		},
 	}
-	if _, err := c.Refresh(context.Background(), "  "); err == nil {
-		t.Fatal("expected error for blank refresh token")
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			c, token := tc.setup(t)
+			_, err := c.Refresh(context.Background(), token)
+			if err == nil {
+				t.Fatal("Refresh returned nil error, want error")
+			}
+			if tc.wantPermanent != nil {
+				var re *RefreshError
+				if !errors.As(err, &re) {
+					t.Fatalf("err = %v, want *RefreshError", err)
+				}
+				if re.Permanent() != *tc.wantPermanent {
+					t.Fatalf("Permanent() = %v, want %v (err=%+v)", re.Permanent(), *tc.wantPermanent, re)
+				}
+			}
+		})
 	}
 }
 
-func TestRefresh_TransportError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // close immediately so requests fail
-	c, err := NewClient(Config{Issuer: srv.URL, HTTPClient: &http.Client{Timeout: 500 * time.Millisecond}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = c.Refresh(context.Background(), "rt")
-	var re *RefreshError
-	if !errors.As(err, &re) {
-		t.Fatalf("expected RefreshError, got %v", err)
-	}
-	if re.Permanent() {
-		t.Fatalf("transport error should be transient, got %+v", re)
-	}
-}
+func boolPtr(b bool) *bool { return &b }
