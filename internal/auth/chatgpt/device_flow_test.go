@@ -62,8 +62,8 @@ func TestRequestDeviceCode_Success(t *testing.T) {
 	if dc.UserCode != "BCDF-1234" {
 		t.Errorf("UserCode = %q", dc.UserCode)
 	}
-	if dc.DeviceAuthID() != "dev_abc" {
-		t.Errorf("DeviceAuthID = %q", dc.DeviceAuthID())
+	if dc.deviceAuthID != "dev_abc" {
+		t.Errorf("deviceAuthID = %q", dc.deviceAuthID)
 	}
 	if dc.Interval != 7*time.Second {
 		t.Errorf("Interval = %v, want 7s", dc.Interval)
@@ -202,7 +202,7 @@ func TestPollOnce_Success(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	dc := DeviceCodeFromParts("dev", "USER", c.VerificationURL(), 5*time.Millisecond)
+	dc := deviceCodeForTest("dev", "USER", c.VerificationURL(), 5*time.Millisecond)
 
 	ac, err := c.PollOnce(context.Background(), dc)
 	if err != nil {
@@ -223,7 +223,7 @@ func TestPollOnce_PendingStatuses(t *testing.T) {
 			}))
 			defer srv.Close()
 			c := newTestClient(t, srv)
-			dc := DeviceCodeFromParts("dev", "USER", "", 5*time.Millisecond)
+			dc := deviceCodeForTest("dev", "USER", "", 5*time.Millisecond)
 			if _, err := c.PollOnce(context.Background(), dc); !errors.Is(err, ErrAuthorizationPending) {
 				t.Fatalf("status %d with pending body: expected ErrAuthorizationPending, got %v", status, err)
 			}
@@ -238,7 +238,7 @@ func TestPollOnce_404WithoutPendingCodeIsBadStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := newTestClient(t, srv)
-	dc := DeviceCodeFromParts("daid", "UC", c.VerificationURL(), time.Second)
+	dc := deviceCodeForTest("daid", "UC", c.VerificationURL(), time.Second)
 	_, err := c.PollOnce(context.Background(), dc)
 	if errors.Is(err, ErrAuthorizationPending) {
 		t.Fatalf("404 with non-pending body should not be pending; got %v", err)
@@ -267,7 +267,7 @@ func TestPollOnce_PendingByCodeNotStatus(t *testing.T) {
 			}))
 			defer srv.Close()
 			c := newTestClient(t, srv)
-			dc := DeviceCodeFromParts("daid", "UC", c.VerificationURL(), time.Second)
+			dc := deviceCodeForTest("daid", "UC", c.VerificationURL(), time.Second)
 			_, err := c.PollOnce(context.Background(), dc)
 			if !errors.Is(err, ErrAuthorizationPending) {
 				t.Fatalf("expected ErrAuthorizationPending, got %v", err)
@@ -282,7 +282,7 @@ func TestPollOnce_OtherErrorIsBadStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := newTestClient(t, srv)
-	dc := DeviceCodeFromParts("dev", "USER", "", 5*time.Millisecond)
+	dc := deviceCodeForTest("dev", "USER", "", 5*time.Millisecond)
 	_, err := c.PollOnce(context.Background(), dc)
 	var bad *errBadStatus
 	if !errors.As(err, &bad) || bad.Status != http.StatusInternalServerError {
@@ -305,7 +305,7 @@ func TestPollOnce_MissingFields(t *testing.T) {
 			}))
 			defer srv.Close()
 			c := newTestClient(t, srv)
-			dc := DeviceCodeFromParts("dev", "USER", "", 5*time.Millisecond)
+			dc := deviceCodeForTest("dev", "USER", "", 5*time.Millisecond)
 			if _, err := c.PollOnce(context.Background(), dc); err == nil {
 				t.Fatalf("expected error for %s", tc.name)
 			}
@@ -327,7 +327,7 @@ func TestPollUntilCode_SucceedsAfterPending(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	dc := DeviceCodeFromParts("dev", "USER", "", time.Millisecond)
+	dc := deviceCodeForTest("dev", "USER", "", time.Millisecond)
 
 	var ticks atomic.Int32
 	ac, err := c.PollUntilCode(context.Background(), dc, func() { ticks.Add(1) })
@@ -353,7 +353,7 @@ func TestPollUntilCode_RespectsContextCancel(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	dc := DeviceCodeFromParts("dev", "USER", "", time.Millisecond)
+	dc := deviceCodeForTest("dev", "USER", "", time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -375,7 +375,7 @@ func TestPollUntilCode_TimesOut(t *testing.T) {
 		cfg.PollTimeout = 20 * time.Millisecond
 		cfg.PollInterval = 5 * time.Millisecond
 	})
-	dc := DeviceCodeFromParts("dev", "USER", "", time.Millisecond)
+	dc := deviceCodeForTest("dev", "USER", "", time.Millisecond)
 
 	_, err := c.PollUntilCode(context.Background(), dc, nil)
 	if !errors.Is(err, ErrDeviceAuthTimeout) {
@@ -391,7 +391,7 @@ func TestPollUntilCode_NonPendingErrorReturnsImmediately(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := newTestClient(t, srv)
-	dc := DeviceCodeFromParts("daid", "UC", c.VerificationURL(), time.Millisecond)
+	dc := deviceCodeForTest("daid", "UC", c.VerificationURL(), time.Millisecond)
 	_, err := c.PollUntilCode(context.Background(), dc, nil)
 	var bad *errBadStatus
 	if !errors.As(err, &bad) {
@@ -413,7 +413,7 @@ func TestPollUntilCode_ParentDeadlineWins(t *testing.T) {
 		cfg.PollTimeout = time.Second
 		cfg.PollInterval = 5 * time.Millisecond
 	})
-	dc := DeviceCodeFromParts("daid", "UC", c.VerificationURL(), 5*time.Millisecond)
+	dc := deviceCodeForTest("daid", "UC", c.VerificationURL(), 5*time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()

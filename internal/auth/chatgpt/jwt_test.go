@@ -3,7 +3,6 @@ package chatgpt
 import (
 	"encoding/base64"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 )
@@ -61,9 +60,6 @@ func TestParseIDToken_AllClaims(t *testing.T) {
 	}
 	if claims.ExpiresAt.Unix() != exp {
 		t.Errorf("ExpiresAt unix = %d, want %d", claims.ExpiresAt.Unix(), exp)
-	}
-	if claims.RawJWT != jwt {
-		t.Errorf("RawJWT not preserved")
 	}
 }
 
@@ -200,8 +196,5 @@ func TestParseIDToken_RealWorldShape(t *testing.T) {
 	}
 	if claims.ExpiresAt.Unix() != 1700003600 {
 		t.Errorf("ExpiresAt unix = %d, want 1700003600", claims.ExpiresAt.Unix())
-	}
-	if !strings.Contains(claims.RawJWT, ".") {
-		t.Error("RawJWT not preserved")
 	}
 }

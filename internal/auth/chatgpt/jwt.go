@@ -16,7 +16,6 @@ type IDTokenClaims struct {
 	PlanType  string
 	IsFedRAMP bool
 	ExpiresAt time.Time
-	RawJWT    string
 }
 
 // rawClaims mirrors the Codex IdClaims/StandardJwtClaims struct shape so that a
@@ -63,8 +62,7 @@ func ParseIDToken(token string) (IDTokenClaims, error) {
 	}
 
 	claims := IDTokenClaims{
-		Email:  raw.Email,
-		RawJWT: token,
+		Email: raw.Email,
 	}
 	if claims.Email == "" && raw.Profile != nil {
 		claims.Email = raw.Profile.Email

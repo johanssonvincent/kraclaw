@@ -26,24 +26,6 @@ type DeviceCode struct {
 	deviceAuthID string
 }
 
-// DeviceAuthID exposes the opaque server-issued id used to poll for the
-// authorization code. Callers that need to persist the device flow across
-// process boundaries can stash this and rebuild a DeviceCode later via
-// DeviceCodeFromParts.
-func (d *DeviceCode) DeviceAuthID() string { return d.deviceAuthID }
-
-// DeviceCodeFromParts reconstructs a DeviceCode from previously persisted
-// fields. Useful when the polling loop runs in a different goroutine or
-// process than the one that requested the code.
-func DeviceCodeFromParts(deviceAuthID, userCode, verificationURL string, interval time.Duration) *DeviceCode {
-	return &DeviceCode{
-		deviceAuthID:    deviceAuthID,
-		UserCode:        userCode,
-		VerificationURL: verificationURL,
-		Interval:        interval,
-	}
-}
-
 // AuthorizationCode is the intermediate artefact returned by the device-token
 // poll once the user has approved. It is exchanged at /oauth/token via
 // ExchangeCode for the final token bundle.
