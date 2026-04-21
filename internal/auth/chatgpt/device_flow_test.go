@@ -559,24 +559,47 @@ func TestExchangeCode_Errors(t *testing.T) {
 	}
 }
 
-func TestNewClient_Defaults(t *testing.T) {
-	c, err := NewClient(Config{})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+func TestNewClient(t *testing.T) {
+	tests := map[string]struct {
+		config  Config
+		wantErr bool
+		check   func(t *testing.T, c *Client)
+	}{
+		"defaults populate derived URLs": {
+			config:  Config{},
+			wantErr: false,
+			check: func(t *testing.T, c *Client) {
+				if c.Issuer() != DefaultIssuer {
+					t.Errorf("Issuer() = %q, want %q", c.Issuer(), DefaultIssuer)
+				}
+				if !strings.HasSuffix(c.VerificationURL(), "/codex/device") {
+					t.Errorf("VerificationURL() = %q, want suffix /codex/device", c.VerificationURL())
+				}
+				if !strings.HasSuffix(c.RedirectURI(), "/deviceauth/callback") {
+					t.Errorf("RedirectURI() = %q, want suffix /deviceauth/callback", c.RedirectURI())
+				}
+			},
+		},
+		"rejects non-http issuer scheme": {
+			config:  Config{Issuer: "ftp://nope"},
+			wantErr: true,
+		},
 	}
-	if c.Issuer() != DefaultIssuer {
-		t.Errorf("Issuer = %q", c.Issuer())
-	}
-	if !strings.HasSuffix(c.VerificationURL(), "/codex/device") {
-		t.Errorf("VerificationURL = %q", c.VerificationURL())
-	}
-	if !strings.HasSuffix(c.RedirectURI(), "/deviceauth/callback") {
-		t.Errorf("RedirectURI = %q", c.RedirectURI())
-	}
-}
-
-func TestNewClient_RejectsBadIssuer(t *testing.T) {
-	if _, err := NewClient(Config{Issuer: "ftp://nope"}); err == nil {
-		t.Fatal("expected error for non-http issuer")
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			c, err := NewClient(tc.config)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("NewClient(%+v) = nil error, want error", tc.config)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			if tc.check != nil {
+				tc.check(t, c)
+			}
+		})
 	}
 }
