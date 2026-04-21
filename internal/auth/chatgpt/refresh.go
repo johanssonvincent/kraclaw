@@ -82,19 +82,13 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 		return nil, &RefreshError{Permanent: false, Status: resp.StatusCode, Reason: RefreshFailureUnknown, cause: err}
 	}
 
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, &RefreshError{
-			Permanent: true,
-			Status:    resp.StatusCode,
-			Reason:    classifyRefreshFailure(respBody),
-			Body:      string(respBody),
-		}
-	}
 	if resp.StatusCode/100 != 2 {
+		reason := classifyRefreshFailure(respBody)
+		permanent := resp.StatusCode == http.StatusUnauthorized || isPermanentBadRequest(resp.StatusCode, respBody, reason)
 		return nil, &RefreshError{
-			Permanent: false,
+			Permanent: permanent,
 			Status:    resp.StatusCode,
-			Reason:    RefreshFailureUnknown,
+			Reason:    reason,
 			Body:      string(respBody),
 		}
 	}
@@ -166,4 +160,21 @@ func classifyRefreshFailure(body []byte) RefreshFailureReason {
 		}
 	}
 	return RefreshFailureUnknown
+}
+
+// isPermanentBadRequest returns true for 400 responses whose body carries an
+// OAuth error code that indicates the refresh token itself is dead. RFC 6749
+// §5.2 uses 400 for these; any other 4xx/5xx we treat as transient.
+func isPermanentBadRequest(status int, body []byte, reason RefreshFailureReason) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	if reason != RefreshFailureUnknown {
+		return true
+	}
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	return strings.EqualFold(strings.TrimSpace(parsed.Error), "invalid_grant")
 }
