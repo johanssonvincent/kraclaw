@@ -128,54 +128,64 @@ func TestRequestDeviceCode_ResponseParsing(t *testing.T) {
 	}
 }
 
-func TestRequestDeviceCode_404IsDisabledError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "not found", http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv)
-	_, err := c.RequestDeviceCode(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "not enabled") {
-		t.Fatalf("expected 'not enabled' error, got %v", err)
-	}
-}
-
-func TestRequestDeviceCode_5xxIsBadStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv)
-	_, err := c.RequestDeviceCode(context.Background())
-	var bad *errBadStatus
-	if !errors.As(err, &bad) {
-		t.Fatalf("expected errBadStatus, got %v", err)
-	}
-	if bad.Status != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", bad.Status)
-	}
-}
-
-func TestRequestDeviceCode_MissingFields(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
+func TestRequestDeviceCode_Errors(t *testing.T) {
+	tests := map[string]struct {
+		handler http.HandlerFunc
+		// wantErrCheck asserts on the returned error. Required (non-nil).
+		wantErrCheck func(t *testing.T, err error)
 	}{
-		{"missing device_auth_id", `{"user_code":"UC","interval":"5"}`},
-		{"missing user_code", `{"device_auth_id":"d","interval":"5"}`},
+		"404 is surfaced as 'not enabled'": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "not found", http.StatusNotFound)
+			},
+			wantErrCheck: func(t *testing.T, err error) {
+				if err == nil || !strings.Contains(err.Error(), "not enabled") {
+					t.Fatalf("err = %v, want substring 'not enabled'", err)
+				}
+			},
+		},
+		"5xx wraps as errBadStatus": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "boom", http.StatusInternalServerError)
+			},
+			wantErrCheck: func(t *testing.T, err error) {
+				var bad *errBadStatus
+				if !errors.As(err, &bad) {
+					t.Fatalf("err = %v, want *errBadStatus", err)
+				}
+				if bad.Status != http.StatusInternalServerError {
+					t.Fatalf("Status = %d, want 500", bad.Status)
+				}
+			},
+		},
+		"missing device_auth_id errors": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"user_code":"UC","interval":"5"}`))
+			},
+			wantErrCheck: func(t *testing.T, err error) {
+				if err == nil {
+					t.Fatal("err = nil, want error")
+				}
+			},
+		},
+		"missing user_code errors": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"device_auth_id":"d","interval":"5"}`))
+			},
+			wantErrCheck: func(t *testing.T, err error) {
+				if err == nil {
+					t.Fatal("err = nil, want error")
+				}
+			},
+		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte(tc.body))
-			}))
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
 			defer srv.Close()
 			c := newTestClient(t, srv)
-			if _, err := c.RequestDeviceCode(context.Background()); err == nil {
-				t.Fatalf("expected error for %s", tc.name)
-			}
+			_, err := c.RequestDeviceCode(context.Background())
+			tc.wantErrCheck(t, err)
 		})
 	}
 }
