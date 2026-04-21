@@ -229,6 +229,22 @@ func TestRefresh_TransientFailures(t *testing.T) {
 	}
 }
 
+func TestRefresh_MalformedIDTokenIsTransient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r","id_token":"not.a.jwt"}`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	_, err := c.Refresh(context.Background(), "rt")
+	var re *RefreshError
+	if !errors.As(err, &re) {
+		t.Fatal(err)
+	}
+	if re.Permanent() {
+		t.Fatalf("malformed id_token in 2xx must be transient; got %+v", re)
+	}
+}
+
 func TestRefresh_NoExpiryIsObservable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r"}`))

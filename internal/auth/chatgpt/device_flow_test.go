@@ -89,6 +89,35 @@ func TestRequestDeviceCode_NumericInterval(t *testing.T) {
 	}
 }
 
+func TestRequestDeviceCode_IntervalFallbacks(t *testing.T) {
+	cases := []struct{ name, interval string }{
+		{"null", `null`},
+		{"empty string", `""`},
+		{"missing", ``}, // field absent
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"device_auth_id":"d","user_code":"UC"`
+			if tc.interval != "" {
+				body += `,"interval":` + tc.interval
+			}
+			body += `}`
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			c := newTestClient(t, srv)
+			dc, err := c.RequestDeviceCode(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dc.Interval != DefaultPollInterval {
+				t.Fatalf("Interval = %v, want DefaultPollInterval (%v)", dc.Interval, DefaultPollInterval)
+			}
+		})
+	}
+}
+
 func TestRequestDeviceCode_UserCodeAlias(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"device_auth_id":"d","usercode":"ABCD","interval":"5"}`))
@@ -136,14 +165,24 @@ func TestRequestDeviceCode_5xxIsBadStatus(t *testing.T) {
 }
 
 func TestRequestDeviceCode_MissingFields(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"interval":"5"}`))
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv)
-	if _, err := c.RequestDeviceCode(context.Background()); err == nil {
-		t.Fatal("expected error when device_auth_id and user_code missing")
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing device_auth_id", `{"user_code":"UC","interval":"5"}`},
+		{"missing user_code", `{"device_auth_id":"d","interval":"5"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			c := newTestClient(t, srv)
+			if _, err := c.RequestDeviceCode(context.Background()); err == nil {
+				t.Fatalf("expected error for %s", tc.name)
+			}
+		})
 	}
 }
 
@@ -252,14 +291,25 @@ func TestPollOnce_OtherErrorIsBadStatus(t *testing.T) {
 }
 
 func TestPollOnce_MissingFields(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"authorization_code":"a"}`))
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-	dc := DeviceCodeFromParts("dev", "USER", "", 5*time.Millisecond)
-	if _, err := c.PollOnce(context.Background(), dc); err == nil {
-		t.Fatal("expected error when code_verifier missing")
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing code_verifier", `{"authorization_code":"a"}`},
+		{"missing authorization_code", `{"code_verifier":"v"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			c := newTestClient(t, srv)
+			dc := DeviceCodeFromParts("dev", "USER", "", 5*time.Millisecond)
+			if _, err := c.PollOnce(context.Background(), dc); err == nil {
+				t.Fatalf("expected error for %s", tc.name)
+			}
+		})
 	}
 }
 
@@ -330,6 +380,25 @@ func TestPollUntilCode_TimesOut(t *testing.T) {
 	_, err := c.PollUntilCode(context.Background(), dc, nil)
 	if !errors.Is(err, ErrDeviceAuthTimeout) {
 		t.Fatalf("expected ErrDeviceAuthTimeout, got %v", err)
+	}
+}
+
+func TestPollUntilCode_NonPendingErrorReturnsImmediately(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	dc := DeviceCodeFromParts("daid", "UC", c.VerificationURL(), time.Millisecond)
+	_, err := c.PollUntilCode(context.Background(), dc, nil)
+	var bad *errBadStatus
+	if !errors.As(err, &bad) {
+		t.Fatalf("expected errBadStatus, got %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected immediate return, got %d calls", got)
 	}
 }
 
@@ -416,9 +485,10 @@ func TestExchangeCode_Success(t *testing.T) {
 
 func TestExchangeCode_Errors(t *testing.T) {
 	tests := []struct {
-		name    string
-		handler http.HandlerFunc
-		input   *AuthorizationCode
+		name      string
+		handler   http.HandlerFunc
+		input     *AuthorizationCode
+		errSubstr string
 	}{
 		{
 			name:  "empty code",
@@ -435,6 +505,31 @@ func TestExchangeCode_Errors(t *testing.T) {
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write([]byte(`{"id_token":"x.y.z","refresh_token":"r"}`))
 			},
+			errSubstr: "missing access_token",
+		},
+		{
+			name:  "missing refresh_token",
+			input: &AuthorizationCode{Code: "a", CodeVerifier: "v"},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"access_token":"a","id_token":"x.y.z"}`))
+			},
+			errSubstr: "missing refresh_token",
+		},
+		{
+			name:  "missing id_token",
+			input: &AuthorizationCode{Code: "a", CodeVerifier: "v"},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r"}`))
+			},
+			errSubstr: "missing id_token",
+		},
+		{
+			name:  "malformed id_token",
+			input: &AuthorizationCode{Code: "a", CodeVerifier: "v"},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r","id_token":"nope"}`))
+			},
+			errSubstr: "parse id_token",
 		},
 	}
 	for _, tt := range tests {
@@ -444,12 +539,18 @@ func TestExchangeCode_Errors(t *testing.T) {
 				srv = httptest.NewServer(tt.handler)
 				defer srv.Close()
 			} else {
-				srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+				srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					t.Error("handler should not be called; ExchangeCode must short-circuit on invalid input")
+				}))
 				defer srv.Close()
 			}
 			c := newTestClient(t, srv)
-			if _, err := c.ExchangeCode(context.Background(), tt.input); err == nil {
+			_, err := c.ExchangeCode(context.Background(), tt.input)
+			if err == nil {
 				t.Fatal("expected error")
+			}
+			if tt.errSubstr != "" && !strings.Contains(err.Error(), tt.errSubstr) {
+				t.Fatalf("error %q does not contain %q", err, tt.errSubstr)
 			}
 		})
 	}
