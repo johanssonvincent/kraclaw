@@ -103,7 +103,6 @@ func TestRefresh_PermanentFailures(t *testing.T) {
 		{"reused-error-code", `{"error_code":"refresh_token_reused"}`, RefreshFailureReused},
 		{"invalidated", `{"error":"refresh_token_invalidated"}`, RefreshFailureRevoked},
 		{"unknown", `{"error":"something_else"}`, RefreshFailureUnknown},
-		{"empty body", ``, RefreshFailureUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -165,6 +164,24 @@ func TestRefresh_Permanent400InvalidGrant(t *testing.T) {
 	}
 }
 
+func TestRefresh_401WithHTMLBodyIsTransient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`<html><body>Cloudflare challenge</body></html>`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	_, err := c.Refresh(context.Background(), "rt")
+	var re *RefreshError
+	if !errors.As(err, &re) {
+		t.Fatal(err)
+	}
+	if re.Permanent() {
+		t.Fatalf("401 with unparseable body must not force re-auth; got %+v", re)
+	}
+}
+
 func TestRefresh_TransientFailures(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -186,6 +203,12 @@ func TestRefresh_TransientFailures(t *testing.T) {
 			name: "missing access_token",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write([]byte(`{"refresh_token":"r"}`))
+			},
+		},
+		{
+			name: "401 with empty body",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
 			},
 		},
 	}

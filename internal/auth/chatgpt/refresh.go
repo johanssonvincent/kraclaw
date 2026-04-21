@@ -106,8 +106,10 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	}
 
 	if resp.StatusCode/100 != 2 {
-		reason := classifyRefreshFailure(respBody)
-		if resp.StatusCode == http.StatusUnauthorized || isPermanentBadRequest(resp.StatusCode, respBody, reason) {
+		reason, parsed := classifyRefreshFailure(respBody)
+		permanent := (resp.StatusCode == http.StatusUnauthorized && parsed) ||
+			isPermanentBadRequest(resp.StatusCode, respBody, reason, parsed)
+		if permanent {
 			return nil, newPermanentRefresh(resp.StatusCode, string(respBody), reason)
 		}
 		return nil, newTransientRefresh(resp.StatusCode, string(respBody), nil)
@@ -146,41 +148,46 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	return tokens, nil
 }
 
-// classifyRefreshFailure inspects the JSON error body returned with a 401 and
-// maps the OpenAI-specific error codes to a RefreshFailureReason.
-func classifyRefreshFailure(body []byte) RefreshFailureReason {
+// classifyRefreshFailure inspects the JSON error body returned by /oauth/token
+// and maps recognized OpenAI codes to a RefreshFailureReason.
+// The bool return is true iff the body was valid JSON with at least one of
+// error / error_code / error_description populated.
+func classifyRefreshFailure(body []byte) (RefreshFailureReason, bool) {
 	var parsed struct {
 		Error            string `json:"error"`
 		ErrorCode        string `json:"error_code"`
 		ErrorDescription string `json:"error_description"`
 	}
-	_ = json.Unmarshal(body, &parsed)
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return RefreshFailureUnknown, false
+	}
+	parsedAny := parsed.Error != "" || parsed.ErrorCode != "" || parsed.ErrorDescription != ""
 	for _, candidate := range []string{parsed.ErrorCode, parsed.Error, parsed.ErrorDescription} {
 		switch strings.ToLower(strings.TrimSpace(candidate)) {
 		case "refresh_token_expired":
-			return RefreshFailureExpired
+			return RefreshFailureExpired, parsedAny
 		case "refresh_token_reused":
-			return RefreshFailureReused
+			return RefreshFailureReused, parsedAny
 		case "refresh_token_invalidated":
-			return RefreshFailureRevoked
+			return RefreshFailureRevoked, parsedAny
 		}
 	}
-	return RefreshFailureUnknown
+	return RefreshFailureUnknown, parsedAny
 }
 
 // isPermanentBadRequest returns true for 400 responses whose body carries an
 // OAuth error code that indicates the refresh token itself is dead. RFC 6749
 // §5.2 uses 400 for these; any other 4xx/5xx we treat as transient.
-func isPermanentBadRequest(status int, body []byte, reason RefreshFailureReason) bool {
-	if status != http.StatusBadRequest {
+func isPermanentBadRequest(status int, body []byte, reason RefreshFailureReason, parsed bool) bool {
+	if status != http.StatusBadRequest || !parsed {
 		return false
 	}
 	if reason != RefreshFailureUnknown {
 		return true
 	}
-	var parsed struct {
+	var body2 struct {
 		Error string `json:"error"`
 	}
-	_ = json.Unmarshal(body, &parsed)
-	return strings.EqualFold(strings.TrimSpace(parsed.Error), "invalid_grant")
+	_ = json.Unmarshal(body, &body2)
+	return strings.EqualFold(strings.TrimSpace(body2.Error), "invalid_grant")
 }
