@@ -17,12 +17,13 @@ const (
 	// DefaultIssuer is the OAuth issuer hosting the ChatGPT auth endpoints.
 	DefaultIssuer = "https://auth.openai.com"
 
-	// ClientID is the public OAuth client id used by the Codex CLI; we reuse
-	// it because there is no other public client id for ChatGPT subscriptions.
+	// ClientID is the OAuth client id shared with the Codex CLI. ChatGPT's
+	// device flow does not publish an alternative client id for third-party
+	// use.
 	ClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
-	// DefaultPollTimeout is the maximum total time PollUntilCode will spend
-	// polling the device-code endpoint, matching the Codex CLI default.
+	// DefaultPollTimeout caps total polling at 15 minutes (upper bound on how
+	// long a user has to approve the device code).
 	DefaultPollTimeout = 15 * time.Minute
 
 	// DefaultPollInterval is the fallback polling interval when the server

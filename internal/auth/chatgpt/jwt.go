@@ -18,8 +18,8 @@ type IDTokenClaims struct {
 	ExpiresAt time.Time
 }
 
-// rawClaims mirrors the Codex IdClaims/StandardJwtClaims struct shape so that a
-// single json.Unmarshal pass extracts every field we care about.
+// rawClaims is the shape of the id_token payload; a single json.Unmarshal
+// pass extracts every field we care about.
 type rawClaims struct {
 	Email   string             `json:"email,omitempty"`
 	Exp     int64              `json:"exp,omitempty"`

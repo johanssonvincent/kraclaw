@@ -49,9 +49,9 @@ type Tokens struct {
 	HasExpiry bool
 }
 
-// userCodeResponse mirrors the Codex UserCodeResp struct. interval is sent
-// either as a JSON string or number depending on backend version, so we
-// accept both via a custom decoder.
+// userCodeResponse is the device-auth/usercode JSON envelope. interval is
+// decoded via intervalString because observed responses encode it as either
+// a JSON number or string.
 type userCodeResponse struct {
 	DeviceAuthID string         `json:"device_auth_id"`
 	UserCode     string         `json:"user_code"`
@@ -89,14 +89,14 @@ func (i *intervalString) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// codeSuccessResponse mirrors the Codex CodeSuccessResp.
+// codeSuccessResponse is the device-token success JSON body.
 type codeSuccessResponse struct {
 	AuthorizationCode string `json:"authorization_code"`
 	CodeChallenge     string `json:"code_challenge"`
 	CodeVerifier      string `json:"code_verifier"`
 }
 
-// tokenResponse mirrors the Codex /oauth/token success body.
+// tokenResponse is the /oauth/token success JSON body.
 type tokenResponse struct {
 	IDToken      string `json:"id_token"`
 	AccessToken  string `json:"access_token"`
