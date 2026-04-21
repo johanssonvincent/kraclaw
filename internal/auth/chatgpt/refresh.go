@@ -27,25 +27,48 @@ const (
 	RefreshFailureUnknown RefreshFailureReason = "unknown"
 )
 
-// RefreshError describes a token-refresh failure. Permanent errors mean the
-// caller must trigger a fresh device-flow sign-in; transient errors should be
-// retried later.
+// RefreshErrorKind discriminates permanent vs transient refresh failures.
+type RefreshErrorKind int
+
+const (
+	// RefreshErrorTransient — caller should retry after backoff.
+	RefreshErrorTransient RefreshErrorKind = iota + 1
+	// RefreshErrorPermanent — caller must trigger a fresh device-flow sign-in.
+	RefreshErrorPermanent
+)
+
+// RefreshError describes a token-refresh failure.
 type RefreshError struct {
-	Permanent bool
-	Reason    RefreshFailureReason
-	Status    int
-	Body      string
-	cause     error
+	Kind   RefreshErrorKind
+	Reason RefreshFailureReason // meaningful when Kind == RefreshErrorPermanent; otherwise RefreshFailureUnknown
+	Status int
+	Body   string
+	cause  error
 }
 
+// Permanent reports whether the caller must trigger a new device-flow sign-in.
+func (e *RefreshError) Permanent() bool { return e.Kind == RefreshErrorPermanent }
+
 func (e *RefreshError) Error() string {
-	if e.cause != nil {
-		return fmt.Sprintf("chatgpt: refresh failed (status=%d, reason=%s): %v", e.Status, e.Reason, e.cause)
+	kind := "transient"
+	if e.Kind == RefreshErrorPermanent {
+		kind = "permanent"
 	}
-	return fmt.Sprintf("chatgpt: refresh failed (status=%d, reason=%s): %s", e.Status, e.Reason, truncate(e.Body, 200))
+	if e.cause != nil {
+		return fmt.Sprintf("chatgpt: refresh failed (kind=%s, status=%d, reason=%s): %v", kind, e.Status, e.Reason, e.cause)
+	}
+	return fmt.Sprintf("chatgpt: refresh failed (kind=%s, status=%d, reason=%s): %s", kind, e.Status, e.Reason, truncate(e.Body, 200))
 }
 
 func (e *RefreshError) Unwrap() error { return e.cause }
+
+func newTransientRefresh(status int, body string, cause error) *RefreshError {
+	return &RefreshError{Kind: RefreshErrorTransient, Reason: RefreshFailureUnknown, Status: status, Body: body, cause: cause}
+}
+
+func newPermanentRefresh(status int, body string, reason RefreshFailureReason) *RefreshError {
+	return &RefreshError{Kind: RefreshErrorPermanent, Reason: reason, Status: status, Body: body}
+}
 
 // Refresh exchanges a refresh token for a new ChatGPT OAuth bundle. The
 // returned Tokens may carry the same refresh_token as the input if the server
@@ -73,34 +96,26 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, &RefreshError{Permanent: false, Reason: RefreshFailureUnknown, cause: err}
+		return nil, newTransientRefresh(0, "", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, &RefreshError{Permanent: false, Status: resp.StatusCode, Reason: RefreshFailureUnknown, cause: err}
+		return nil, newTransientRefresh(resp.StatusCode, "", err)
 	}
 
 	if resp.StatusCode/100 != 2 {
 		reason := classifyRefreshFailure(respBody)
-		permanent := resp.StatusCode == http.StatusUnauthorized || isPermanentBadRequest(resp.StatusCode, respBody, reason)
-		return nil, &RefreshError{
-			Permanent: permanent,
-			Status:    resp.StatusCode,
-			Reason:    reason,
-			Body:      string(respBody),
+		if resp.StatusCode == http.StatusUnauthorized || isPermanentBadRequest(resp.StatusCode, respBody, reason) {
+			return nil, newPermanentRefresh(resp.StatusCode, string(respBody), reason)
 		}
+		return nil, newTransientRefresh(resp.StatusCode, string(respBody), nil)
 	}
 
 	var parsed tokenResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, &RefreshError{
-			Permanent: false,
-			Status:    resp.StatusCode,
-			Reason:    RefreshFailureUnknown,
-			cause:     fmt.Errorf("decode refresh response: %w", err),
-		}
+		return nil, newTransientRefresh(resp.StatusCode, "", fmt.Errorf("decode refresh response: %w", err))
 	}
 
 	// Server may rotate refresh_token (and re-issue id_token) but is allowed to
@@ -109,12 +124,7 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 		parsed.RefreshToken = refreshToken
 	}
 	if parsed.AccessToken == "" {
-		return nil, &RefreshError{
-			Permanent: false,
-			Status:    resp.StatusCode,
-			Reason:    RefreshFailureUnknown,
-			cause:     fmt.Errorf("refresh response missing access_token"),
-		}
+		return nil, newTransientRefresh(resp.StatusCode, "", fmt.Errorf("refresh response missing access_token"))
 	}
 	tokens := &Tokens{
 		AccessToken:  parsed.AccessToken,
@@ -124,12 +134,7 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	if parsed.IDToken != "" {
 		claims, err := ParseIDToken(parsed.IDToken)
 		if err != nil {
-			return nil, &RefreshError{
-				Permanent: false,
-				Status:    resp.StatusCode,
-				Reason:    RefreshFailureUnknown,
-				cause:     fmt.Errorf("parse refreshed id_token: %w", err),
-			}
+			return nil, newTransientRefresh(resp.StatusCode, "", fmt.Errorf("parse refreshed id_token: %w", err))
 		}
 		tokens.IDClaims = claims
 		tokens.ExpiresAt = claims.ExpiresAt

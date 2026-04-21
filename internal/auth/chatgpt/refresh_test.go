@@ -118,7 +118,7 @@ func TestRefresh_PermanentFailures(t *testing.T) {
 			if !errors.As(err, &re) {
 				t.Fatalf("expected RefreshError, got %v", err)
 			}
-			if !re.Permanent {
+			if !re.Permanent() {
 				t.Fatalf("expected permanent error, got %+v", re)
 			}
 			if re.Reason != tt.want {
@@ -152,7 +152,7 @@ func TestRefresh_Permanent400InvalidGrant(t *testing.T) {
 			if !errors.As(err, &re) {
 				t.Fatalf("expected RefreshError, got %v", err)
 			}
-			if !re.Permanent {
+			if !re.Permanent() {
 				t.Fatalf("400 invalid_grant must be permanent, got %+v", re)
 			}
 			if re.Reason != tt.want {
@@ -199,7 +199,7 @@ func TestRefresh_TransientFailures(t *testing.T) {
 			if !errors.As(err, &re) {
 				t.Fatalf("expected RefreshError, got %v", err)
 			}
-			if re.Permanent {
+			if re.Permanent() {
 				t.Fatalf("expected transient error, got %+v", re)
 			}
 		})
@@ -228,7 +228,7 @@ func TestRefresh_TransportError(t *testing.T) {
 	if !errors.As(err, &re) {
 		t.Fatalf("expected RefreshError, got %v", err)
 	}
-	if re.Permanent {
+	if re.Permanent() {
 		t.Fatalf("transport error should be transient, got %+v", re)
 	}
 }
