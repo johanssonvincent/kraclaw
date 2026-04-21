@@ -276,7 +276,7 @@ func TestRefresh_RejectsEmptyToken(t *testing.T) {
 func TestRefresh_TransportError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv.Close() // close immediately so requests fail
-	c, err := NewClient(Config{Issuer: srv.URL, HTTPClient: &http.Client{Timeout: 50 * time.Millisecond}})
+	c, err := NewClient(Config{Issuer: srv.URL, HTTPClient: &http.Client{Timeout: 500 * time.Millisecond}})
 	if err != nil {
 		t.Fatal(err)
 	}

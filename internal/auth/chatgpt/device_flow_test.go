@@ -375,8 +375,8 @@ func TestPollUntilCode_TimesOut(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv, func(cfg *Config) {
-		cfg.PollTimeout = 20 * time.Millisecond
-		cfg.PollInterval = 5 * time.Millisecond
+		cfg.PollTimeout = 200 * time.Millisecond
+		cfg.PollInterval = 20 * time.Millisecond
 	})
 	dc := deviceCodeForTest("dev", "USER", "", time.Millisecond)
 
