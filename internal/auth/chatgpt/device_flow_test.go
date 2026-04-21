@@ -314,119 +314,170 @@ func TestPollOnce_Errors(t *testing.T) {
 	}
 }
 
-func TestPollUntilCode_SucceedsAfterPending(t *testing.T) {
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := calls.Add(1)
-		if n < 3 {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"authorization_code":"a","code_challenge":"c","code_verifier":"v"}`))
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv)
-	dc := deviceCodeForTest("dev", "USER", "", time.Millisecond)
-
-	var ticks atomic.Int32
-	ac, err := c.PollUntilCode(context.Background(), dc, func() { ticks.Add(1) })
-	if err != nil {
-		t.Fatalf("PollUntilCode: %v", err)
+func TestPollUntilCode(t *testing.T) {
+	tests := map[string]struct {
+		handlerFactory func(calls *atomic.Int32) http.HandlerFunc
+		configOpts     []func(*Config)
+		// ctxFactory returns the ctx used for PollUntilCode and a cancel to
+		// defer. If nil, context.Background() is used.
+		ctxFactory func(t *testing.T) (context.Context, context.CancelFunc)
+		// wantTicks >= 0 asserts onTick was invoked exactly this many times.
+		// -1 means "do not check ticks".
+		wantTicks int32
+		// wantCalls >= 1 asserts handler was invoked exactly this many times.
+		// 0 means "do not check call count".
+		wantCalls int32
+		// wantCode is the expected AuthorizationCode.Code ("" = don't check).
+		wantCode string
+		// check runs last; receives err verbatim from PollUntilCode.
+		check func(t *testing.T, err error)
+	}{
+		"succeeds after two pending polls": {
+			handlerFactory: func(calls *atomic.Int32) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					n := calls.Add(1)
+					if n < 3 {
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+						return
+					}
+					_, _ = w.Write([]byte(`{"authorization_code":"a","code_challenge":"c","code_verifier":"v"}`))
+				}
+			},
+			wantTicks: 2,
+			wantCalls: 3,
+			wantCode:  "a",
+			check: func(t *testing.T, err error) {
+				if err != nil {
+					t.Fatalf("PollUntilCode: %v", err)
+				}
+			},
+		},
+		"respects pre-cancelled context": {
+			handlerFactory: func(calls *atomic.Int32) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+				}
+			},
+			ctxFactory: func(t *testing.T) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, func() {}
+			},
+			wantTicks: -1,
+			check: func(t *testing.T, err error) {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("err = %v, want context.Canceled", err)
+				}
+			},
+		},
+		"times out via PollTimeout when parent has no deadline": {
+			handlerFactory: func(calls *atomic.Int32) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+				}
+			},
+			configOpts: []func(*Config){
+				func(cfg *Config) {
+					cfg.PollTimeout = 200 * time.Millisecond
+					cfg.PollInterval = 20 * time.Millisecond
+				},
+			},
+			wantTicks: -1,
+			check: func(t *testing.T, err error) {
+				if !errors.Is(err, ErrDeviceAuthTimeout) {
+					t.Fatalf("err = %v, want ErrDeviceAuthTimeout", err)
+				}
+			},
+		},
+		"non-pending error returns immediately on first call": {
+			handlerFactory: func(calls *atomic.Int32) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					http.Error(w, "boom", http.StatusInternalServerError)
+				}
+			},
+			wantTicks: -1,
+			wantCalls: 1,
+			check: func(t *testing.T, err error) {
+				var bad *errBadStatus
+				if !errors.As(err, &bad) {
+					t.Fatalf("err = %v, want *errBadStatus", err)
+				}
+			},
+		},
+		"parent deadline wins over PollTimeout": {
+			handlerFactory: func(calls *atomic.Int32) http.HandlerFunc {
+				return func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+				}
+			},
+			configOpts: []func(*Config){
+				func(cfg *Config) {
+					cfg.PollTimeout = time.Second
+					cfg.PollInterval = 5 * time.Millisecond
+				},
+			},
+			ctxFactory: func(t *testing.T) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 20*time.Millisecond)
+			},
+			wantTicks: -1,
+			check: func(t *testing.T, err error) {
+				if errors.Is(err, ErrDeviceAuthTimeout) {
+					t.Fatalf("err = %v, parent deadline must surface as ctx.Err(), not ErrDeviceAuthTimeout", err)
+				}
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+				}
+			},
+		},
 	}
-	if ac.Code != "a" {
-		t.Fatalf("code = %q", ac.Code)
-	}
-	// Handler returns pending on calls 1 and 2, then success on call 3.
-	// onTick fires once per pending response → must equal 2, not >= 1
-	// (which would mask a regression where onTick runs only once).
-	if got := ticks.Load(); got != 2 {
-		t.Errorf("onTick = %d, want 2 (one per pending poll)", got)
-	}
-	if got := calls.Load(); got != 3 {
-		t.Errorf("poll calls = %d, want 3", got)
-	}
-}
 
-func TestPollUntilCode_RespectsContextCancel(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
-	}))
-	defer srv.Close()
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(tc.handlerFactory(&calls))
+			defer srv.Close()
 
-	c := newTestClient(t, srv)
-	dc := deviceCodeForTest("dev", "USER", "", time.Millisecond)
+			c := newTestClient(t, srv, tc.configOpts...)
+			dc := deviceCodeForTest("dev", "USER", c.VerificationURL(), time.Millisecond)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+			ctx := context.Background()
+			if tc.ctxFactory != nil {
+				var cancel context.CancelFunc
+				ctx, cancel = tc.ctxFactory(t)
+				defer cancel()
+			}
 
-	_, err := c.PollUntilCode(ctx, dc, nil)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
-}
+			var ticks atomic.Int32
+			ac, err := c.PollUntilCode(ctx, dc, func() { ticks.Add(1) })
+			tc.check(t, err)
 
-func TestPollUntilCode_TimesOut(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv, func(cfg *Config) {
-		cfg.PollTimeout = 200 * time.Millisecond
-		cfg.PollInterval = 20 * time.Millisecond
-	})
-	dc := deviceCodeForTest("dev", "USER", "", time.Millisecond)
-
-	_, err := c.PollUntilCode(context.Background(), dc, nil)
-	if !errors.Is(err, ErrDeviceAuthTimeout) {
-		t.Fatalf("expected ErrDeviceAuthTimeout, got %v", err)
-	}
-}
-
-func TestPollUntilCode_NonPendingErrorReturnsImmediately(t *testing.T) {
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-	dc := deviceCodeForTest("daid", "UC", c.VerificationURL(), time.Millisecond)
-	_, err := c.PollUntilCode(context.Background(), dc, nil)
-	var bad *errBadStatus
-	if !errors.As(err, &bad) {
-		t.Fatalf("expected errBadStatus, got %v", err)
-	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("expected immediate return, got %d calls", got)
-	}
-}
-
-func TestPollUntilCode_ParentDeadlineWins(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv, func(cfg *Config) {
-		cfg.PollTimeout = time.Second
-		cfg.PollInterval = 5 * time.Millisecond
-	})
-	dc := deviceCodeForTest("daid", "UC", c.VerificationURL(), 5*time.Millisecond)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	_, err := c.PollUntilCode(ctx, dc, nil)
-	if errors.Is(err, ErrDeviceAuthTimeout) {
-		t.Fatalf("parent deadline must surface as ctx.Err(), not ErrDeviceAuthTimeout; got %v", err)
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+			if tc.wantCode != "" {
+				if ac == nil {
+					t.Fatalf("ac = nil, want code %q", tc.wantCode)
+				}
+				if ac.Code != tc.wantCode {
+					t.Fatalf("Code = %q, want %q", ac.Code, tc.wantCode)
+				}
+			}
+			if tc.wantTicks >= 0 {
+				if got := ticks.Load(); got != tc.wantTicks {
+					t.Errorf("onTick calls = %d, want %d", got, tc.wantTicks)
+				}
+			}
+			if tc.wantCalls > 0 {
+				if got := calls.Load(); got != tc.wantCalls {
+					t.Errorf("handler calls = %d, want %d", got, tc.wantCalls)
+				}
+			}
+		})
 	}
 }
 
