@@ -268,7 +268,13 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 			return code, nil
 		}
 		if !errors.Is(err, ErrAuthorizationPending) {
-			if errors.Is(pollCtx.Err(), context.DeadlineExceeded) && !errors.Is(ctx.Err(), context.Canceled) {
+			// Parent ctx takes precedence: if the caller's ctx is already
+			// done, surface their error rather than attributing it to our
+			// internal PollTimeout.
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if errors.Is(pollCtx.Err(), context.DeadlineExceeded) {
 				return nil, ErrDeviceAuthTimeout
 			}
 			return nil, err
@@ -282,6 +288,9 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-pollCtx.Done():
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			return nil, ErrDeviceAuthTimeout
 		case <-time.After(interval):
 		}

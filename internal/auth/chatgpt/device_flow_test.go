@@ -333,6 +333,30 @@ func TestPollUntilCode_TimesOut(t *testing.T) {
 	}
 }
 
+func TestPollUntilCode_ParentDeadlineWins(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, func(cfg *Config) {
+		cfg.PollTimeout = time.Second
+		cfg.PollInterval = 5 * time.Millisecond
+	})
+	dc := DeviceCodeFromParts("daid", "UC", c.VerificationURL(), 5*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := c.PollUntilCode(ctx, dc, nil)
+	if errors.Is(err, ErrDeviceAuthTimeout) {
+		t.Fatalf("parent deadline must surface as ctx.Err(), not ErrDeviceAuthTimeout; got %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+}
+
 func TestExchangeCode_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/oauth/token" {
