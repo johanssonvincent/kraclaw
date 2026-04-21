@@ -217,19 +217,34 @@ func TestPollOnce_Success(t *testing.T) {
 	}
 }
 
-func TestPollOnce_PendingStatuses(t *testing.T) {
-	statuses := []int{http.StatusForbidden, http.StatusNotFound, http.StatusBadRequest}
-	for _, status := range statuses {
-		t.Run(http.StatusText(status), func(t *testing.T) {
+func TestPollOnce_Pending(t *testing.T) {
+	const pendingBody = `{"error":"authorization_pending"}`
+	const slowDownBody = `{"error":"slow_down"}`
+
+	tests := map[string]struct {
+		status int
+		body   string
+	}{
+		// Status-driven: any of these statuses paired with a pending body
+		// must classify as pending.
+		"400 authorization_pending": {status: http.StatusBadRequest, body: pendingBody},
+		"403 authorization_pending": {status: http.StatusForbidden, body: pendingBody},
+		"404 authorization_pending": {status: http.StatusNotFound, body: pendingBody},
+		// Body-code-driven: RFC 8628 slow_down is also pending, regardless of
+		// the status the server picked.
+		"400 slow_down": {status: http.StatusBadRequest, body: slowDownBody},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(status)
-				_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer srv.Close()
 			c := newTestClient(t, srv)
 			dc := deviceCodeForTest("dev", "USER", "", 5*time.Millisecond)
 			if _, err := c.PollOnce(context.Background(), dc); !errors.Is(err, ErrAuthorizationPending) {
-				t.Fatalf("status %d with pending body: expected ErrAuthorizationPending, got %v", status, err)
+				t.Fatalf("status=%d body=%s: err = %v, want ErrAuthorizationPending", tc.status, tc.body, err)
 			}
 		})
 	}
@@ -250,33 +265,6 @@ func TestPollOnce_404WithoutPendingCodeIsBadStatus(t *testing.T) {
 	var bad *errBadStatus
 	if !errors.As(err, &bad) {
 		t.Fatalf("expected errBadStatus, got %v", err)
-	}
-}
-
-func TestPollOnce_PendingByCodeNotStatus(t *testing.T) {
-	tests := []struct {
-		name   string
-		status int
-		body   string
-	}{
-		{"400 authorization_pending", http.StatusBadRequest, `{"error":"authorization_pending"}`},
-		{"400 slow_down", http.StatusBadRequest, `{"error":"slow_down"}`},
-		{"403 authorization_pending (legacy)", http.StatusForbidden, `{"error":"authorization_pending"}`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tt.status)
-				_, _ = w.Write([]byte(tt.body))
-			}))
-			defer srv.Close()
-			c := newTestClient(t, srv)
-			dc := deviceCodeForTest("daid", "UC", c.VerificationURL(), time.Second)
-			_, err := c.PollOnce(context.Background(), dc)
-			if !errors.Is(err, ErrAuthorizationPending) {
-				t.Fatalf("expected ErrAuthorizationPending, got %v", err)
-			}
-		})
 	}
 }
 
