@@ -7,6 +7,7 @@ package chatgpt
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -53,6 +54,10 @@ type Config struct {
 	// PollInterval overrides the server-provided polling interval. Useful in
 	// tests to make the loop tight; in production leave at zero.
 	PollInterval time.Duration
+
+	// Logger is the structured logger used for warnings (provider drift, parse
+	// failures). Defaults to slog.Default() when nil.
+	Logger *slog.Logger
 }
 
 // Client speaks the ChatGPT OAuth device flow.
@@ -63,6 +68,7 @@ type Client struct {
 	now          func() time.Time
 	pollTimeout  time.Duration
 	pollOverride time.Duration
+	logger       *slog.Logger
 }
 
 // NewClient builds a Client and validates the configuration.
@@ -92,6 +98,11 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	if c.pollTimeout <= 0 {
 		c.pollTimeout = DefaultPollTimeout
+	}
+	if cfg.Logger == nil {
+		c.logger = slog.Default()
+	} else {
+		c.logger = cfg.Logger
 	}
 	return c, nil
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -152,6 +153,10 @@ func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 		return nil, fmt.Errorf("chatgpt: device-code login is not enabled by the auth server (status 404)")
 	}
 	if resp.StatusCode/100 != 2 {
+		c.logger.Warn("chatgpt: device-code request returned non-2xx",
+			slog.Int("status", resp.StatusCode),
+			slog.String("url", endpoint),
+			slog.String("body_preview", truncate(string(respBody), 200)))
 		return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 	}
 
@@ -224,6 +229,10 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 	case isPollPending(resp.StatusCode, respBody):
 		return nil, ErrAuthorizationPending
 	default:
+		c.logger.Warn("chatgpt: poll returned non-pending non-success status",
+			slog.Int("status", resp.StatusCode),
+			slog.String("url", endpoint),
+			slog.String("body_preview", truncate(string(respBody), 200)))
 		return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 	}
 }
@@ -332,6 +341,10 @@ func (c *Client) ExchangeCode(ctx context.Context, code *AuthorizationCode) (*To
 		return nil, fmt.Errorf("chatgpt: read token-exchange response: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
+		c.logger.Warn("chatgpt: token-exchange returned non-2xx",
+			slog.Int("status", resp.StatusCode),
+			slog.String("url", endpoint),
+			slog.String("body_preview", truncate(string(respBody), 200)))
 		return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 	}
 

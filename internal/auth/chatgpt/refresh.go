@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -110,6 +111,11 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 
 	if resp.StatusCode/100 != 2 {
 		reason, parsed := classifyRefreshFailure(respBody)
+		if resp.StatusCode == http.StatusUnauthorized && !parsed {
+			c.logger.Warn("chatgpt: refresh response body unparseable",
+				slog.Int("status", resp.StatusCode),
+				slog.String("body_preview", truncate(string(respBody), 200)))
+		}
 		permanent := (resp.StatusCode == http.StatusUnauthorized && parsed) ||
 			isPermanentBadRequest(resp.StatusCode, respBody, reason, parsed)
 		if permanent {
@@ -120,6 +126,10 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 
 	var parsed tokenResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		c.logger.Warn("chatgpt: refresh 2xx body failed to decode",
+			slog.Int("status", resp.StatusCode),
+			slog.String("body_preview", truncate(string(respBody), 200)),
+			slog.String("error", err.Error()))
 		return nil, newTransientRefresh(resp.StatusCode, "", fmt.Errorf("decode refresh response: %w", err))
 	}
 
@@ -139,6 +149,9 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	if parsed.IDToken != "" {
 		claims, err := ParseIDToken(parsed.IDToken)
 		if err != nil {
+			c.logger.Warn("chatgpt: refresh returned malformed id_token",
+				slog.Int("status", resp.StatusCode),
+				slog.String("error", err.Error()))
 			return nil, newTransientRefresh(resp.StatusCode, "", fmt.Errorf("parse refreshed id_token: %w", err))
 		}
 		tokens.IDClaims = claims
