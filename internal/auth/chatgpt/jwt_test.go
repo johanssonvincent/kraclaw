@@ -189,19 +189,18 @@ func TestParseIDToken(t *testing.T) {
 }
 
 func TestParseIDToken_Errors(t *testing.T) {
-	tests := []struct {
-		name  string
+	tests := map[string]struct {
 		token string
 	}{
-		{"empty", ""},
-		{"two segments", "aGVsbG8.aGVsbG8"},
-		{"bad base64", "aGVsbG8.@@@@.sig"},
-		{"non-json payload", "aGVsbG8." + base64.RawURLEncoding.EncodeToString([]byte("not json")) + ".sig"},
+		"empty":            {token: ""},
+		"two segments":     {token: "aGVsbG8.aGVsbG8"},
+		"bad base64":       {token: "aGVsbG8.@@@@.sig"},
+		"non-json payload": {token: "aGVsbG8." + base64.RawURLEncoding.EncodeToString([]byte("not json")) + ".sig"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, err := ParseIDToken(tt.token); err == nil {
-				t.Fatal("expected error")
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseIDToken(tc.token); err == nil {
+				t.Fatalf("ParseIDToken(%q) = nil error, want error", tc.token)
 			}
 		})
 	}
