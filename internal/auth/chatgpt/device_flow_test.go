@@ -539,47 +539,40 @@ func TestExchangeCode_Success(t *testing.T) {
 }
 
 func TestExchangeCode_Errors(t *testing.T) {
-	tests := []struct {
-		name      string
+	tests := map[string]struct {
 		handler   http.HandlerFunc
 		input     *AuthorizationCode
 		errSubstr string
 	}{
-		{
-			name:  "empty code",
+		"empty code": {
 			input: &AuthorizationCode{},
 		},
-		{
-			name:    "non-2xx",
+		"non-2xx": {
 			input:   &AuthorizationCode{Code: "a", CodeVerifier: "v"},
 			handler: func(w http.ResponseWriter, r *http.Request) { http.Error(w, "bad", http.StatusBadRequest) },
 		},
-		{
-			name:  "missing access_token",
+		"missing access_token": {
 			input: &AuthorizationCode{Code: "a", CodeVerifier: "v"},
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write([]byte(`{"id_token":"x.y.z","refresh_token":"r"}`))
 			},
 			errSubstr: "missing access_token",
 		},
-		{
-			name:  "missing refresh_token",
+		"missing refresh_token": {
 			input: &AuthorizationCode{Code: "a", CodeVerifier: "v"},
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write([]byte(`{"access_token":"a","id_token":"x.y.z"}`))
 			},
 			errSubstr: "missing refresh_token",
 		},
-		{
-			name:  "missing id_token",
+		"missing id_token": {
 			input: &AuthorizationCode{Code: "a", CodeVerifier: "v"},
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r"}`))
 			},
 			errSubstr: "missing id_token",
 		},
-		{
-			name:  "malformed id_token",
+		"malformed id_token": {
 			input: &AuthorizationCode{Code: "a", CodeVerifier: "v"},
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r","id_token":"nope"}`))
@@ -587,25 +580,24 @@ func TestExchangeCode_Errors(t *testing.T) {
 			errSubstr: "parse id_token",
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
 			var srv *httptest.Server
-			if tt.handler != nil {
-				srv = httptest.NewServer(tt.handler)
-				defer srv.Close()
+			if tc.handler != nil {
+				srv = httptest.NewServer(tc.handler)
 			} else {
 				srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					t.Error("handler should not be called; ExchangeCode must short-circuit on invalid input")
+					t.Error("handler must not be called; ExchangeCode must short-circuit on invalid input")
 				}))
-				defer srv.Close()
 			}
+			defer srv.Close()
 			c := newTestClient(t, srv)
-			_, err := c.ExchangeCode(context.Background(), tt.input)
+			_, err := c.ExchangeCode(context.Background(), tc.input)
 			if err == nil {
-				t.Fatal("expected error")
+				t.Fatal("err = nil, want error")
 			}
-			if tt.errSubstr != "" && !strings.Contains(err.Error(), tt.errSubstr) {
-				t.Fatalf("error %q does not contain %q", err, tt.errSubstr)
+			if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
+				t.Fatalf("err = %q, want substring %q", err, tc.errSubstr)
 			}
 		})
 	}
