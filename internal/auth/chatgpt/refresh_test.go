@@ -200,84 +200,43 @@ func TestRefresh_PermanentFailures(t *testing.T) {
 	}
 }
 
-func TestRefresh_401WithHTMLBodyIsTransient(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`<html><body>Cloudflare challenge</body></html>`))
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-	_, err := c.Refresh(context.Background(), "rt")
-	var re *RefreshError
-	if !errors.As(err, &re) {
-		t.Fatal(err)
-	}
-	if re.Permanent() {
-		t.Fatalf("401 with unparseable body must not force re-auth; got %+v", re)
-	}
-}
-
 func TestRefresh_TransientFailures(t *testing.T) {
-	tests := []struct {
-		name    string
-		handler http.HandlerFunc
-	}{
-		{
-			name: "5xx",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				http.Error(w, "boom", http.StatusInternalServerError)
-			},
+	tests := map[string]http.HandlerFunc{
+		"5xx server error": func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "boom", http.StatusInternalServerError)
 		},
-		{
-			name: "bad json",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte(`{not-json`))
-			},
+		"bad json": func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{not-json`))
 		},
-		{
-			name: "missing access_token",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte(`{"refresh_token":"r"}`))
-			},
+		"missing access_token": func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"refresh_token":"r"}`))
 		},
-		{
-			name: "401 with empty body",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusUnauthorized)
-			},
+		"401 empty body": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		},
+		"401 with HTML body (Cloudflare challenge)": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`<html><body>Cloudflare challenge</body></html>`))
+		},
+		"2xx with malformed id_token": func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r","id_token":"not.a.jwt"}`))
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(tt.handler)
+	for name, handler := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(handler)
 			defer srv.Close()
 			c := newTestClient(t, srv)
 			_, err := c.Refresh(context.Background(), "rt")
 			var re *RefreshError
 			if !errors.As(err, &re) {
-				t.Fatalf("expected RefreshError, got %v", err)
+				t.Fatalf("err = %v, want *RefreshError", err)
 			}
 			if re.Permanent() {
-				t.Fatalf("expected transient error, got %+v", re)
+				t.Fatalf("Permanent() = true, want false (err=%+v)", re)
 			}
 		})
-	}
-}
-
-func TestRefresh_MalformedIDTokenIsTransient(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r","id_token":"not.a.jwt"}`))
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-	_, err := c.Refresh(context.Background(), "rt")
-	var re *RefreshError
-	if !errors.As(err, &re) {
-		t.Fatal(err)
-	}
-	if re.Permanent() {
-		t.Fatalf("malformed id_token in 2xx must be transient; got %+v", re)
 	}
 }
 
