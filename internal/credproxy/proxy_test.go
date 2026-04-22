@@ -821,3 +821,46 @@ func TestDefaultResolver_RequestedProviderNotConfigured_ReturnsError(t *testing.
 		})
 	}
 }
+
+func TestDefaultResolver_ChatGPTAuthModeNotSupported(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	accessEnc, _ := enc.Encrypt("access")
+	refreshEnc, _ := enc.Encrypt("refresh")
+	expiresAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	rows := sqlmock.NewRows([]string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id",
+		"oauth_expires_at", "oauth_is_fedramp",
+	}).AddRow("openai", string(AuthModeChatGPT), nil, accessEnc, refreshEnc, nil, "acct", expiresAt, false)
+	mock.ExpectQuery("SELECT").WithArgs("discord:chatgpt").WillReturnRows(rows)
+
+	resolver := NewDefaultResolver(store, config.ProxyConfig{
+		OpenAIAPIKey:      "platform-openai-key",
+		OpenAIUpstreamURL: "https://api.openai.com",
+	})
+
+	rc, err := resolver.Resolve(context.Background(), "discord:chatgpt", provider.ProviderOpenAI)
+	if err == nil {
+		t.Errorf("Resolve(chatgpt cred) err = nil, want error; got %+v", rc)
+	}
+	if rc != nil {
+		t.Errorf("Resolve(chatgpt cred) rc = %+v, want nil", rc)
+	}
+	if err != nil && !strings.Contains(err.Error(), "chatgpt auth mode") {
+		t.Errorf("Resolve(chatgpt cred) err = %v, want error mentioning chatgpt auth mode", err)
+	}
+}

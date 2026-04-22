@@ -51,6 +51,12 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 			return nil, fmt.Errorf("resolve credential: %w", err)
 		}
 		if cred != nil {
+			if cred.AuthMode == AuthModeChatGPT {
+				// Router-side ChatGPT OAuth support lands in a follow-up PR.
+				// Until then, refuse the request rather than silently injecting
+				// an empty API key or falling through to platform credentials.
+				return nil, fmt.Errorf("resolve credential: chatgpt auth mode not yet supported by router for group %q", groupJID)
+			}
 			if requestedProvider != "" && cred.Provider != requestedProvider {
 				slog.Debug("per-group credential provider mismatch, falling through to platform",
 					"group", groupJID,
