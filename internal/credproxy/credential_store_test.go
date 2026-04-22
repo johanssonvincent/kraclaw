@@ -278,17 +278,88 @@ func TestGetCredential(t *testing.T) {
 	}
 }
 
-func TestUpsertChatGPTCredential_AndGet(t *testing.T) {
+func TestUpsertChatGPTCredential(t *testing.T) {
+	t.Parallel()
+
+	expiresAt := time.Now().Add(45 * time.Minute).UTC().Truncate(time.Second)
+
+	tests := map[string]struct {
+		tokens      *ChatGPTTokens
+		wantIDEnc   driver.Value
+		wantFedRAMP bool
+	}{
+		"full bundle with id token and fedramp": {
+			tokens: &ChatGPTTokens{
+				AccessToken:  "access-token-XYZ",
+				RefreshToken: "refresh-token-ABC",
+				IDToken:      "id-token-PQR",
+				AccountID:    "acct_42",
+				ExpiresAt:    expiresAt,
+				IsFedRAMP:    true,
+			},
+			wantIDEnc:   sqlmock.AnyArg(),
+			wantFedRAMP: true,
+		},
+		"omits id token when empty": {
+			tokens: &ChatGPTTokens{
+				AccessToken:  "a",
+				RefreshToken: "r",
+				AccountID:    "acct",
+				ExpiresAt:    expiresAt,
+			},
+			wantIDEnc:   sql.NullString{},
+			wantFedRAMP: false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+
+			enc := newTestEncryptor(t)
+			store, err := NewCredentialStore(db, enc)
+			if err != nil {
+				t.Fatalf("NewCredentialStore: %v", err)
+			}
+
+			mock.ExpectExec("REPLACE INTO credentials").
+				WithArgs(
+					"g", "openai", string(AuthModeChatGPT),
+					sqlmock.AnyArg(), sqlmock.AnyArg(), tt.wantIDEnc,
+					tt.tokens.AccountID, expiresAt, tt.wantFedRAMP,
+				).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+
+			if err := store.UpsertChatGPTCredential(context.Background(), "g", "openai", tt.tokens); err != nil {
+				t.Errorf("UpsertChatGPTCredential(%+v) err = %v, want nil", tt.tokens, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("sqlmock expectations not met: %v", err)
+			}
+		})
+	}
+}
+
+func TestUpsertChatGPTCredential_Roundtrip(t *testing.T) {
 	t.Parallel()
 
 	db, mock, err := sqlmock.New()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("sqlmock: %v", err)
 	}
-	defer func() { _ = db.Close() }()
+	t.Cleanup(func() { _ = db.Close() })
 
 	enc := newTestEncryptor(t)
-	store, _ := NewCredentialStore(db, enc)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
 
 	expiresAt := time.Now().Add(45 * time.Minute).UTC().Truncate(time.Second)
 	tokens := &ChatGPTTokens{
@@ -299,102 +370,66 @@ func TestUpsertChatGPTCredential_AndGet(t *testing.T) {
 		ExpiresAt:    expiresAt,
 		IsFedRAMP:    true,
 	}
-
 	mock.ExpectExec("REPLACE INTO credentials").
-		WithArgs(
-			"discord:42",
-			"openai",
-			string(AuthModeChatGPT),
-			sqlmock.AnyArg(), // access enc
-			sqlmock.AnyArg(), // refresh enc
-			sqlmock.AnyArg(), // id enc (NullString)
-			"acct_42",
-			expiresAt,
-			true,
-		).
+		WithArgs("discord:42", "openai", string(AuthModeChatGPT),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"acct_42", expiresAt, true).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := store.UpsertChatGPTCredential(context.Background(), "discord:42", "openai", tokens); err != nil {
-		t.Errorf("upsert chatgpt: %v", err)
+		t.Fatalf("upsert: %v", err)
 	}
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("expectations: %v", err)
+	accessEnc, err := enc.Encrypt("access-token-XYZ")
+	if err != nil {
+		t.Fatalf("encrypt access: %v", err)
 	}
-
-	accessEnc, _ := enc.Encrypt("access-token-XYZ")
-	refreshEnc, _ := enc.Encrypt("refresh-token-ABC")
-	idEnc, _ := enc.Encrypt("id-token-PQR")
-	rows := sqlmock.NewRows([]string{"provider", "auth_mode", "api_key_encrypted", "oauth_access_token_encrypted", "oauth_refresh_token_encrypted", "oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp"}).
-		AddRow("openai", string(AuthModeChatGPT), nil, accessEnc, refreshEnc, idEnc, "acct_42", expiresAt, true)
-	mock.ExpectQuery("SELECT").
-		WithArgs("discord:42").
-		WillReturnRows(rows)
+	refreshEnc, err := enc.Encrypt("refresh-token-ABC")
+	if err != nil {
+		t.Fatalf("encrypt refresh: %v", err)
+	}
+	idEnc, err := enc.Encrypt("id-token-PQR")
+	if err != nil {
+		t.Fatalf("encrypt id: %v", err)
+	}
+	rows := sqlmock.NewRows([]string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id",
+		"oauth_expires_at", "oauth_is_fedramp",
+	}).AddRow("openai", string(AuthModeChatGPT), nil, accessEnc, refreshEnc, idEnc, "acct_42", expiresAt, true)
+	mock.ExpectQuery("SELECT").WithArgs("discord:42").WillReturnRows(rows)
 
 	got, err := store.GetCredential(context.Background(), "discord:42")
 	if err != nil {
-		t.Errorf("get chatgpt: %v", err)
+		t.Fatalf("get: %v", err)
 	}
-	if got == nil {
-		t.Errorf("GetCredential(%q) = nil, want non-nil chatgpt credential", "discord:42")
+	if got == nil || got.ChatGPT == nil {
+		t.Fatalf("GetCredential returned incomplete credential: %+v", got)
 	}
-	if got != nil && got.AuthMode != AuthModeChatGPT {
-		t.Errorf("GetCredential(%q).AuthMode = %q, want %q", "discord:42", got.AuthMode, AuthModeChatGPT)
-	}
-	if got != nil && got.APIKey != "" {
-		t.Errorf("GetCredential(%q).APIKey = %q, want %q (empty in chatgpt mode)", "discord:42", got.APIKey, "")
-	}
-	if got != nil && got.ChatGPT == nil {
-		t.Errorf("GetCredential(%q).ChatGPT = nil, want non-nil tokens", "discord:42")
-	}
-	if got != nil && got.ChatGPT != nil && got.ChatGPT.AccessToken != "access-token-XYZ" {
-		t.Errorf("GetCredential(%q).ChatGPT.AccessToken = %q, want %q", "discord:42", got.ChatGPT.AccessToken, "access-token-XYZ")
-	}
-	if got != nil && got.ChatGPT != nil && got.ChatGPT.RefreshToken != "refresh-token-ABC" {
-		t.Errorf("GetCredential(%q).ChatGPT.RefreshToken = %q, want %q", "discord:42", got.ChatGPT.RefreshToken, "refresh-token-ABC")
-	}
-	if got != nil && got.ChatGPT != nil && got.ChatGPT.IDToken != "id-token-PQR" {
-		t.Errorf("GetCredential(%q).ChatGPT.IDToken = %q, want %q", "discord:42", got.ChatGPT.IDToken, "id-token-PQR")
-	}
-	if got != nil && got.ChatGPT != nil && got.ChatGPT.AccountID != "acct_42" {
-		t.Errorf("GetCredential(%q).ChatGPT.AccountID = %q, want %q", "discord:42", got.ChatGPT.AccountID, "acct_42")
-	}
-	if got != nil && got.ChatGPT != nil && !got.ChatGPT.IsFedRAMP {
-		t.Errorf("GetCredential(%q).ChatGPT.IsFedRAMP = false, want true", "discord:42")
-	}
-	if got != nil && got.ChatGPT != nil && !got.ChatGPT.ExpiresAt.Equal(expiresAt) {
-		t.Errorf("GetCredential(%q).ChatGPT.ExpiresAt = %v, want %v", "discord:42", got.ChatGPT.ExpiresAt, expiresAt)
-	}
-}
 
-func TestUpsertChatGPTCredential_OmitsIDToken(t *testing.T) {
-	t.Parallel()
-
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
+	checks := map[string]struct{ got, want string }{
+		"access token":  {got.ChatGPT.AccessToken, "access-token-XYZ"},
+		"refresh token": {got.ChatGPT.RefreshToken, "refresh-token-ABC"},
+		"id token":      {got.ChatGPT.IDToken, "id-token-PQR"},
+		"account id":    {got.ChatGPT.AccountID, "acct_42"},
 	}
-	defer func() { _ = db.Close() }()
-	enc := newTestEncryptor(t)
-	store, _ := NewCredentialStore(db, enc)
-
-	expiresAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	tokens := &ChatGPTTokens{
-		AccessToken:  "a",
-		RefreshToken: "r",
-		AccountID:    "acct",
-		ExpiresAt:    expiresAt,
+	for name, c := range checks {
+		if c.got != c.want {
+			t.Errorf("roundtrip %s = %q, want %q", name, c.got, c.want)
+		}
 	}
-	mock.ExpectExec("REPLACE INTO credentials").
-		WithArgs("g", "openai", string(AuthModeChatGPT),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sql.NullString{}, "acct", expiresAt, false).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	if err := store.UpsertChatGPTCredential(context.Background(), "g", "openai", tokens); err != nil {
-		t.Errorf("upsert: %v", err)
+	if !got.ChatGPT.IsFedRAMP {
+		t.Errorf("roundtrip IsFedRAMP = false, want true")
+	}
+	if !got.ChatGPT.ExpiresAt.Equal(expiresAt) {
+		t.Errorf("roundtrip ExpiresAt = %v, want %v", got.ChatGPT.ExpiresAt, expiresAt)
+	}
+	if got.APIKey != "" {
+		t.Errorf("roundtrip APIKey = %q, want empty", got.APIKey)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("expectations: %v", err)
+		t.Errorf("sqlmock expectations not met: %v", err)
 	}
 }
 
