@@ -142,7 +142,7 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 		"SELECT "+selectCredentialColumns+" FROM credentials WHERE group_jid = ?",
 		groupJID,
 	).Scan(&provider, &authMode, &apiKeyEnc, &accessEnc, &refreshEnc, &idEnc, &accountID, &expiresAt, &isFedRAMP); err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get credential: %w", err)
