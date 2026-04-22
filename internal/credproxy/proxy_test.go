@@ -837,8 +837,14 @@ func TestDefaultResolver_ChatGPTAuthModeNotSupported(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 
-	accessEnc, _ := enc.Encrypt("access")
-	refreshEnc, _ := enc.Encrypt("refresh")
+	accessEnc, err := enc.Encrypt("access")
+	if err != nil {
+		t.Fatalf("encrypt access: %v", err)
+	}
+	refreshEnc, err := enc.Encrypt("refresh")
+	if err != nil {
+		t.Fatalf("encrypt refresh: %v", err)
+	}
 	expiresAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	rows := sqlmock.NewRows([]string{
 		"provider", "auth_mode", "api_key_encrypted",
