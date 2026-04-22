@@ -53,11 +53,14 @@ func TestRefresh_Success(t *testing.T) {
 				}
 			},
 			check: func(t *testing.T, tokens *Tokens) {
-				if tokens.AccessToken != "acc_new" || tokens.RefreshToken != "rt_new" {
-					t.Fatalf("tokens = %+v", tokens)
+				if tokens.AccessToken != "acc_new" {
+					t.Errorf("AccessToken = %q, want acc_new", tokens.AccessToken)
+				}
+				if tokens.RefreshToken != "rt_new" {
+					t.Errorf("RefreshToken = %q, want rt_new", tokens.RefreshToken)
 				}
 				if tokens.IDClaims.AccountID != "acct_42" {
-					t.Fatalf("IDClaims.AccountID = %q, want acct_42", tokens.IDClaims.AccountID)
+					t.Errorf("IDClaims.AccountID = %q, want acct_42", tokens.IDClaims.AccountID)
 				}
 			},
 		},
@@ -72,7 +75,7 @@ func TestRefresh_Success(t *testing.T) {
 			},
 			check: func(t *testing.T, tokens *Tokens) {
 				if tokens.RefreshToken != "rt_keep" {
-					t.Fatalf("RefreshToken = %q, want rt_keep preserved", tokens.RefreshToken)
+					t.Errorf("RefreshToken = %q, want rt_keep preserved", tokens.RefreshToken)
 				}
 			},
 		},
@@ -83,7 +86,7 @@ func TestRefresh_Success(t *testing.T) {
 			check: func(t *testing.T, tokens *Tokens) {
 				want := time.Unix(1_700_000_000, 0).UTC().Add(600 * time.Second)
 				if !tokens.ExpiresAt.Equal(want) {
-					t.Fatalf("ExpiresAt = %v, want %v", tokens.ExpiresAt, want)
+					t.Errorf("ExpiresAt = %v, want %v", tokens.ExpiresAt, want)
 				}
 			},
 		},
@@ -92,10 +95,10 @@ func TestRefresh_Success(t *testing.T) {
 			respBody:     `{"access_token":"a","refresh_token":"r"}`,
 			check: func(t *testing.T, tokens *Tokens) {
 				if tokens.HasExpiry {
-					t.Fatalf("HasExpiry = true, want false when neither id_token.exp nor expires_in present; tokens=%+v", tokens)
+					t.Errorf("HasExpiry = true, want false when neither id_token.exp nor expires_in present; tokens=%+v", tokens)
 				}
 				if !tokens.ExpiresAt.IsZero() {
-					t.Fatalf("ExpiresAt = %v, want zero", tokens.ExpiresAt)
+					t.Errorf("ExpiresAt = %v, want zero", tokens.ExpiresAt)
 				}
 			},
 		},
@@ -188,13 +191,13 @@ func TestRefresh_PermanentFailures(t *testing.T) {
 				t.Fatalf("err = %v, want *RefreshError", err)
 			}
 			if !re.Permanent() {
-				t.Fatalf("Permanent() = false, want true (status=%d body=%s err=%+v)", tc.status, tc.body, re)
+				t.Errorf("Permanent() = false, want true (status=%d body=%s err=%+v)", tc.status, tc.body, re)
 			}
 			if re.Reason != tc.wantReason {
-				t.Fatalf("Reason = %q, want %q (status=%d body=%s)", re.Reason, tc.wantReason, tc.status, tc.body)
+				t.Errorf("Reason = %q, want %q (status=%d body=%s)", re.Reason, tc.wantReason, tc.status, tc.body)
 			}
 			if re.Status != tc.status {
-				t.Fatalf("Status = %d, want %d", re.Status, tc.status)
+				t.Errorf("Status = %d, want %d", re.Status, tc.status)
 			}
 		})
 	}
@@ -234,7 +237,7 @@ func TestRefresh_TransientFailures(t *testing.T) {
 				t.Fatalf("err = %v, want *RefreshError", err)
 			}
 			if re.Permanent() {
-				t.Fatalf("Permanent() = true, want false (err=%+v)", re)
+				t.Errorf("Permanent() = true, want false (err=%+v)", re)
 			}
 		})
 	}
@@ -283,7 +286,7 @@ func TestRefresh_PreflightAndTransport(t *testing.T) {
 					t.Fatalf("err = %v, want *RefreshError", err)
 				}
 				if re.Permanent() != *tc.wantPermanent {
-					t.Fatalf("Permanent() = %v, want %v (err=%+v)", re.Permanent(), *tc.wantPermanent, re)
+					t.Errorf("Permanent() = %v, want %v (err=%+v)", re.Permanent(), *tc.wantPermanent, re)
 				}
 			}
 		})

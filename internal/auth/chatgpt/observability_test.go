@@ -26,12 +26,12 @@ func TestRefresh_LogsOnUnparseable401(t *testing.T) {
 	}
 	_, _ = c.Refresh(context.Background(), "rt")
 	if !strings.Contains(buf.String(), "refresh response body unparseable") {
-		t.Fatalf("expected warn log, got: %s", buf.String())
+		t.Errorf("expected warn log, got: %s", buf.String())
 	}
 	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
 		var m map[string]any
 		if err := json.Unmarshal([]byte(line), &m); err != nil {
-			t.Fatalf("log line not JSON: %s", line)
+			t.Errorf("log line not JSON: %s", line)
 		}
 	}
 }

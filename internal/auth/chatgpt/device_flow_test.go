@@ -59,7 +59,7 @@ func TestRequestDeviceCode_ResponseParsing(t *testing.T) {
 			body: `{"device_auth_id":"d","user_code":"C","interval":3}`,
 			check: func(t *testing.T, dc *DeviceCode) {
 				if dc.Interval != 3*time.Second {
-					t.Fatalf("Interval = %v, want 3s", dc.Interval)
+					t.Errorf("Interval = %v, want 3s", dc.Interval)
 				}
 			},
 		},
@@ -67,7 +67,7 @@ func TestRequestDeviceCode_ResponseParsing(t *testing.T) {
 			body: `{"device_auth_id":"d","usercode":"ABCD","interval":"5"}`,
 			check: func(t *testing.T, dc *DeviceCode) {
 				if dc.UserCode != "ABCD" {
-					t.Fatalf("UserCode = %q, want ABCD via alias", dc.UserCode)
+					t.Errorf("UserCode = %q, want ABCD via alias", dc.UserCode)
 				}
 			},
 		},
@@ -75,7 +75,7 @@ func TestRequestDeviceCode_ResponseParsing(t *testing.T) {
 			body: `{"device_auth_id":"d","user_code":"UC","interval":null}`,
 			check: func(t *testing.T, dc *DeviceCode) {
 				if dc.Interval != DefaultPollInterval {
-					t.Fatalf("Interval = %v, want DefaultPollInterval %v", dc.Interval, DefaultPollInterval)
+					t.Errorf("Interval = %v, want DefaultPollInterval %v", dc.Interval, DefaultPollInterval)
 				}
 			},
 		},
@@ -83,7 +83,7 @@ func TestRequestDeviceCode_ResponseParsing(t *testing.T) {
 			body: `{"device_auth_id":"d","user_code":"UC","interval":""}`,
 			check: func(t *testing.T, dc *DeviceCode) {
 				if dc.Interval != DefaultPollInterval {
-					t.Fatalf("Interval = %v, want DefaultPollInterval %v", dc.Interval, DefaultPollInterval)
+					t.Errorf("Interval = %v, want DefaultPollInterval %v", dc.Interval, DefaultPollInterval)
 				}
 			},
 		},
@@ -91,7 +91,7 @@ func TestRequestDeviceCode_ResponseParsing(t *testing.T) {
 			body: `{"device_auth_id":"d","user_code":"UC"}`,
 			check: func(t *testing.T, dc *DeviceCode) {
 				if dc.Interval != DefaultPollInterval {
-					t.Fatalf("Interval = %v, want DefaultPollInterval %v", dc.Interval, DefaultPollInterval)
+					t.Errorf("Interval = %v, want DefaultPollInterval %v", dc.Interval, DefaultPollInterval)
 				}
 			},
 		},
@@ -140,7 +140,7 @@ func TestRequestDeviceCode_Errors(t *testing.T) {
 			},
 			wantErrCheck: func(t *testing.T, err error) {
 				if err == nil || !strings.Contains(err.Error(), "not enabled") {
-					t.Fatalf("err = %v, want substring 'not enabled'", err)
+					t.Errorf("err = %v, want substring 'not enabled'", err)
 				}
 			},
 		},
@@ -154,7 +154,7 @@ func TestRequestDeviceCode_Errors(t *testing.T) {
 					t.Fatalf("err = %v, want *errBadStatus", err)
 				}
 				if bad.Status != http.StatusInternalServerError {
-					t.Fatalf("Status = %d, want 500", bad.Status)
+					t.Errorf("Status = %d, want 500", bad.Status)
 				}
 			},
 		},
@@ -164,7 +164,7 @@ func TestRequestDeviceCode_Errors(t *testing.T) {
 			},
 			wantErrCheck: func(t *testing.T, err error) {
 				if err == nil {
-					t.Fatal("err = nil, want error")
+					t.Error("err = nil, want error")
 				}
 			},
 		},
@@ -174,7 +174,7 @@ func TestRequestDeviceCode_Errors(t *testing.T) {
 			},
 			wantErrCheck: func(t *testing.T, err error) {
 				if err == nil {
-					t.Fatal("err = nil, want error")
+					t.Error("err = nil, want error")
 				}
 			},
 		},
@@ -273,7 +273,7 @@ func TestPollOnce_Pending(t *testing.T) {
 			c := newTestClient(t, srv)
 			dc := deviceCodeForTest("dev", "USER", "", 5*time.Millisecond)
 			if _, err := c.PollOnce(context.Background(), dc); !errors.Is(err, ErrAuthorizationPending) {
-				t.Fatalf("status=%d body=%s: err = %v, want ErrAuthorizationPending", tc.status, tc.body, err)
+				t.Errorf("status=%d body=%s: err = %v, want ErrAuthorizationPending", tc.status, tc.body, err)
 			}
 		})
 	}
@@ -291,11 +291,11 @@ func TestPollOnce_Errors(t *testing.T) {
 			},
 			check: func(t *testing.T, err error) {
 				if errors.Is(err, ErrAuthorizationPending) {
-					t.Fatalf("err = %v, must not be ErrAuthorizationPending when body is device_code_expired", err)
+					t.Errorf("err = %v, must not be ErrAuthorizationPending when body is device_code_expired", err)
 				}
 				var bad *errBadStatus
 				if !errors.As(err, &bad) {
-					t.Fatalf("err = %v, want *errBadStatus", err)
+					t.Errorf("err = %v, want *errBadStatus", err)
 				}
 			},
 		},
@@ -306,7 +306,7 @@ func TestPollOnce_Errors(t *testing.T) {
 			check: func(t *testing.T, err error) {
 				var bad *errBadStatus
 				if !errors.As(err, &bad) || bad.Status != http.StatusInternalServerError {
-					t.Fatalf("err = %v, want *errBadStatus with Status=500", err)
+					t.Errorf("err = %v, want *errBadStatus with Status=500", err)
 				}
 			},
 		},
@@ -316,7 +316,7 @@ func TestPollOnce_Errors(t *testing.T) {
 			},
 			check: func(t *testing.T, err error) {
 				if err == nil {
-					t.Fatal("err = nil, want error")
+					t.Error("err = nil, want error")
 				}
 			},
 		},
@@ -326,7 +326,7 @@ func TestPollOnce_Errors(t *testing.T) {
 			},
 			check: func(t *testing.T, err error) {
 				if err == nil {
-					t.Fatal("err = nil, want error")
+					t.Error("err = nil, want error")
 				}
 			},
 		},
@@ -398,7 +398,7 @@ func TestPollUntilCode(t *testing.T) {
 			wantTicks: -1,
 			check: func(t *testing.T, err error) {
 				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("err = %v, want context.Canceled", err)
+					t.Errorf("err = %v, want context.Canceled", err)
 				}
 			},
 		},
@@ -419,7 +419,7 @@ func TestPollUntilCode(t *testing.T) {
 			wantTicks: -1,
 			check: func(t *testing.T, err error) {
 				if !errors.Is(err, ErrDeviceAuthTimeout) {
-					t.Fatalf("err = %v, want ErrDeviceAuthTimeout", err)
+					t.Errorf("err = %v, want ErrDeviceAuthTimeout", err)
 				}
 			},
 		},
@@ -435,7 +435,7 @@ func TestPollUntilCode(t *testing.T) {
 			check: func(t *testing.T, err error) {
 				var bad *errBadStatus
 				if !errors.As(err, &bad) {
-					t.Fatalf("err = %v, want *errBadStatus", err)
+					t.Errorf("err = %v, want *errBadStatus", err)
 				}
 			},
 		},
@@ -459,10 +459,10 @@ func TestPollUntilCode(t *testing.T) {
 			wantTicks: -1,
 			check: func(t *testing.T, err error) {
 				if errors.Is(err, ErrDeviceAuthTimeout) {
-					t.Fatalf("err = %v, parent deadline must surface as ctx.Err(), not ErrDeviceAuthTimeout", err)
+					t.Errorf("err = %v, parent deadline must surface as ctx.Err(), not ErrDeviceAuthTimeout", err)
 				}
 				if !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+					t.Errorf("err = %v, want context.DeadlineExceeded", err)
 				}
 			},
 		},
@@ -534,7 +534,7 @@ func TestPollUntilCode(t *testing.T) {
 					t.Fatalf("ac = nil, want code %q", tc.wantCode)
 				}
 				if ac.Code != tc.wantCode {
-					t.Fatalf("Code = %q, want %q", ac.Code, tc.wantCode)
+					t.Errorf("Code = %q, want %q", ac.Code, tc.wantCode)
 				}
 			}
 			if tc.wantTicks >= 0 {
@@ -713,7 +713,7 @@ func TestExchangeCode_Errors(t *testing.T) {
 				t.Fatal("err = nil, want error")
 			}
 			if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
-				t.Fatalf("err = %q, want substring %q", err, tc.errSubstr)
+				t.Errorf("err = %q, want substring %q", err, tc.errSubstr)
 			}
 		})
 	}
@@ -750,7 +750,7 @@ func TestNewClient(t *testing.T) {
 			c, err := NewClient(tc.config)
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("NewClient(%+v) = nil error, want error", tc.config)
+					t.Errorf("NewClient(%+v) = nil error, want error", tc.config)
 				}
 				return
 			}

@@ -200,7 +200,7 @@ func TestParseIDToken_Errors(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			if _, err := ParseIDToken(tc.token); err == nil {
-				t.Fatalf("ParseIDToken(%q) = nil error, want error", tc.token)
+				t.Errorf("ParseIDToken(%q) = nil error, want error", tc.token)
 			}
 		})
 	}
