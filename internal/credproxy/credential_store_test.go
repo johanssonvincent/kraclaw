@@ -815,3 +815,73 @@ func TestGetCredential_DecryptErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestGetCredential_ChatGPTNullFieldGuards(t *testing.T) {
+	t.Parallel()
+
+	columns := []string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id",
+		"oauth_expires_at", "oauth_is_fedramp",
+	}
+	enc := newTestEncryptor(t)
+	access, err := enc.Encrypt("a")
+	if err != nil {
+		t.Fatalf("encrypt access: %v", err)
+	}
+	refresh, err := enc.Encrypt("r")
+	if err != nil {
+		t.Fatalf("encrypt refresh: %v", err)
+	}
+	expiry := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+
+	tests := map[string]struct {
+		row     []driver.Value
+		wantMsg string
+	}{
+		"access NULL, refresh set": {
+			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, nil, refresh, nil, "acct", expiry, false},
+			wantMsg: "oauth tokens are missing",
+		},
+		"refresh NULL, access set": {
+			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, access, nil, nil, "acct", expiry, false},
+			wantMsg: "oauth tokens are missing",
+		},
+		"account id NULL with tokens present": {
+			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, access, refresh, nil, nil, expiry, false},
+			wantMsg: "oauth_account_id is missing",
+		},
+		"expires_at NULL with tokens present": {
+			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, access, refresh, nil, "acct", nil, false},
+			wantMsg: "oauth_expires_at is NULL",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			store, err := NewCredentialStore(db, enc)
+			if err != nil {
+				t.Fatalf("NewCredentialStore: %v", err)
+			}
+			mock.ExpectQuery("SELECT").WithArgs("g").WillReturnRows(sqlmock.NewRows(columns).AddRow(tt.row...))
+
+			_, err = store.GetCredential(context.Background(), "g")
+			if err == nil {
+				t.Errorf("GetCredential(%s) err = nil, want error containing %q", name, tt.wantMsg)
+				return
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("GetCredential(%s) err = %v, want message containing %q", name, err, tt.wantMsg)
+			}
+		})
+	}
+}
+
