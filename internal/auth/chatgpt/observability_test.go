@@ -13,6 +13,7 @@ import (
 )
 
 func TestRefresh_LogsOnUnparseable401(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = io.WriteString(w, "<html>blocked</html>")

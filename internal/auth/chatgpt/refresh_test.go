@@ -13,6 +13,7 @@ import (
 )
 
 func TestRefresh_Success(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		// respBody is the raw /oauth/token response body. Exactly one of
 		// respBody or respBodyFn must be set; respBodyFn lets a case mint a
@@ -106,6 +107,7 @@ func TestRefresh_Success(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/oauth/token" {
 					t.Errorf("path = %s, want /oauth/token", r.URL.Path)
@@ -161,6 +163,7 @@ func mintJWTNow(payload map[string]any) string {
 }
 
 func TestRefresh_PermanentFailures(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		status     int
 		body       string
@@ -179,6 +182,7 @@ func TestRefresh_PermanentFailures(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.body))
@@ -204,6 +208,7 @@ func TestRefresh_PermanentFailures(t *testing.T) {
 }
 
 func TestRefresh_TransientFailures(t *testing.T) {
+	t.Parallel()
 	tests := map[string]http.HandlerFunc{
 		"5xx server error": func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "boom", http.StatusInternalServerError)
@@ -228,6 +233,7 @@ func TestRefresh_TransientFailures(t *testing.T) {
 	}
 	for name, handler := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(handler)
 			defer srv.Close()
 			c := newTestClient(t, srv)
@@ -244,6 +250,7 @@ func TestRefresh_TransientFailures(t *testing.T) {
 }
 
 func TestRefresh_PreflightAndTransport(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		// setup returns a ready-to-use Client and the refresh_token argument.
 		setup func(t *testing.T) (*Client, string)
@@ -275,6 +282,7 @@ func TestRefresh_PreflightAndTransport(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			c, token := tc.setup(t)
 			_, err := c.Refresh(context.Background(), token)
 			if err == nil {

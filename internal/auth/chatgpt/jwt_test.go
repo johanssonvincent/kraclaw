@@ -27,6 +27,7 @@ func mintJWT(t *testing.T, payload map[string]any) string {
 }
 
 func TestParseIDToken(t *testing.T) {
+	t.Parallel()
 	expAllClaims := time.Now().Add(time.Hour).Unix()
 
 	tests := map[string]struct {
@@ -172,6 +173,7 @@ func TestParseIDToken(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			var jwt string
 			switch {
 			case tc.build != nil:
@@ -189,6 +191,7 @@ func TestParseIDToken(t *testing.T) {
 }
 
 func TestParseIDToken_Errors(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		token string
 	}{
@@ -199,6 +202,7 @@ func TestParseIDToken_Errors(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if _, err := ParseIDToken(tc.token); err == nil {
 				t.Errorf("ParseIDToken(%q) = nil error, want error", tc.token)
 			}

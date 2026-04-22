@@ -34,6 +34,7 @@ func newTestClient(t *testing.T, server *httptest.Server, opts ...func(*Config))
 }
 
 func TestRequestDeviceCode_ResponseParsing(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		body  string
 		check func(t *testing.T, dc *DeviceCode)
@@ -98,6 +99,7 @@ func TestRequestDeviceCode_ResponseParsing(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/accounts/deviceauth/usercode" {
 					t.Errorf("unexpected path %s", r.URL.Path)
@@ -129,6 +131,7 @@ func TestRequestDeviceCode_ResponseParsing(t *testing.T) {
 }
 
 func TestRequestDeviceCode_Errors(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		handler http.HandlerFunc
 		// wantErrCheck asserts on the returned error. Required (non-nil).
@@ -181,6 +184,7 @@ func TestRequestDeviceCode_Errors(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(tc.handler)
 			defer srv.Close()
 			c := newTestClient(t, srv)
@@ -191,6 +195,7 @@ func TestRequestDeviceCode_Errors(t *testing.T) {
 }
 
 func TestPollOnce_Success(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		respBody      string
 		wantCode      string
@@ -212,6 +217,7 @@ func TestPollOnce_Success(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/accounts/deviceauth/token" {
 					t.Errorf("path = %q, want /api/accounts/deviceauth/token", r.URL.Path)
@@ -247,6 +253,7 @@ func TestPollOnce_Success(t *testing.T) {
 }
 
 func TestPollOnce_Pending(t *testing.T) {
+	t.Parallel()
 	const pendingBody = `{"error":"authorization_pending"}`
 	const slowDownBody = `{"error":"slow_down"}`
 
@@ -265,6 +272,7 @@ func TestPollOnce_Pending(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.body))
@@ -280,6 +288,7 @@ func TestPollOnce_Pending(t *testing.T) {
 }
 
 func TestPollOnce_Errors(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		handler http.HandlerFunc
 		check   func(t *testing.T, err error)
@@ -333,6 +342,7 @@ func TestPollOnce_Errors(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(tc.handler)
 			defer srv.Close()
 			c := newTestClient(t, srv)
@@ -344,6 +354,7 @@ func TestPollOnce_Errors(t *testing.T) {
 }
 
 func TestPollUntilCode(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		handlerFactory func(calls *atomic.Int32) http.HandlerFunc
 		configOpts     []func(*Config)
@@ -511,6 +522,7 @@ func TestPollUntilCode(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			var calls atomic.Int32
 			srv := httptest.NewServer(tc.handlerFactory(&calls))
 			defer srv.Close()
@@ -552,6 +564,7 @@ func TestPollUntilCode(t *testing.T) {
 }
 
 func TestExchangeCode_Success(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		input    *AuthorizationCode
 		respBody func(t *testing.T) string
@@ -613,6 +626,7 @@ func TestExchangeCode_Success(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/oauth/token" {
 					t.Errorf("path = %q, want /oauth/token", r.URL.Path)
@@ -655,6 +669,7 @@ func TestExchangeCode_Success(t *testing.T) {
 }
 
 func TestExchangeCode_Errors(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		handler   http.HandlerFunc
 		input     *AuthorizationCode
@@ -698,6 +713,7 @@ func TestExchangeCode_Errors(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			var srv *httptest.Server
 			if tc.handler != nil {
 				srv = httptest.NewServer(tc.handler)
@@ -720,6 +736,7 @@ func TestExchangeCode_Errors(t *testing.T) {
 }
 
 func TestNewClient(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		config  Config
 		wantErr bool
@@ -747,6 +764,7 @@ func TestNewClient(t *testing.T) {
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			c, err := NewClient(tc.config)
 			if tc.wantErr {
 				if err == nil {
