@@ -398,71 +398,83 @@ func TestUpsertChatGPTCredential_OmitsIDToken(t *testing.T) {
 	}
 }
 
-func TestRefreshChatGPTTokens_Success(t *testing.T) {
+func TestRefreshChatGPTTokens(t *testing.T) {
 	t.Parallel()
-
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	enc := newTestEncryptor(t)
-	store, _ := NewCredentialStore(db, enc)
 
 	expiresAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	mock.ExpectExec("UPDATE credentials").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "acct_99", expiresAt, false, "g1", string(AuthModeChatGPT)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	if err := store.RefreshChatGPTTokens(context.Background(), "g1", &ChatGPTTokens{
-		AccessToken: "new-a", RefreshToken: "new-r", IDToken: "new-id",
-		AccountID: "acct_99", ExpiresAt: expiresAt,
-	}); err != nil {
-		t.Errorf("refresh: %v", err)
+	validTokens := func() *ChatGPTTokens {
+		return &ChatGPTTokens{
+			AccessToken:  "new-a",
+			RefreshToken: "new-r",
+			IDToken:      "new-id",
+			AccountID:    "acct_99",
+			ExpiresAt:    expiresAt,
+		}
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("expectations: %v", err)
+
+	tests := map[string]struct {
+		groupJID    string
+		tokens      *ChatGPTTokens
+		setupMock   func(m sqlmock.Sqlmock)
+		wantErr     bool
+		wantMockMet bool
+	}{
+		"success updates existing row": {
+			groupJID: "g1",
+			tokens:   validTokens(),
+			setupMock: func(m sqlmock.Sqlmock) {
+				m.ExpectExec("UPDATE credentials").
+					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+						"acct_99", expiresAt, false, "g1", string(AuthModeChatGPT)).
+					WillReturnResult(sqlmock.NewResult(0, 1))
+			},
+			wantErr:     false,
+			wantMockMet: true,
+		},
+		"rejects empty group jid": {
+			groupJID:    "",
+			tokens:      validTokens(),
+			setupMock:   func(m sqlmock.Sqlmock) {},
+			wantErr:     true,
+			wantMockMet: false,
+		},
+		"rejects empty token bundle": {
+			groupJID:    "g",
+			tokens:      &ChatGPTTokens{},
+			setupMock:   func(m sqlmock.Sqlmock) {},
+			wantErr:     true,
+			wantMockMet: false,
+		},
 	}
-}
 
-func TestRefreshChatGPTTokens_NoRow(t *testing.T) {
-	t.Parallel()
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	enc := newTestEncryptor(t)
-	store, _ := NewCredentialStore(db, enc)
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
 
-	mock.ExpectExec("UPDATE credentials").
-		WillReturnResult(sqlmock.NewResult(0, 0))
+			enc := newTestEncryptor(t)
+			store, err := NewCredentialStore(db, enc)
+			if err != nil {
+				t.Fatalf("NewCredentialStore: %v", err)
+			}
+			tt.setupMock(mock)
 
-	err = store.RefreshChatGPTTokens(context.Background(), "missing", &ChatGPTTokens{
-		AccessToken: "a", RefreshToken: "r", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour),
-	})
-	if err == nil {
-		t.Errorf("RefreshChatGPTTokens(%q, &ChatGPTTokens{}) err = nil, want error (no row matched)", "g1")
-	}
-}
-
-func TestRefreshChatGPTTokens_RejectsInvalid(t *testing.T) {
-	t.Parallel()
-
-	db, _, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	enc := newTestEncryptor(t)
-	store, _ := NewCredentialStore(db, enc)
-
-	if err := store.RefreshChatGPTTokens(context.Background(), "", &ChatGPTTokens{}); err == nil {
-		t.Errorf("RefreshChatGPTTokens(%q, &ChatGPTTokens{}) err = nil, want error", "")
-	}
-	if err := store.RefreshChatGPTTokens(context.Background(), "g", &ChatGPTTokens{}); err == nil {
-		t.Errorf("RefreshChatGPTTokens(%q, &ChatGPTTokens{}) err = nil, want error (invalid token bundle)", "g")
+			err = store.RefreshChatGPTTokens(context.Background(), tt.groupJID, tt.tokens)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("RefreshChatGPTTokens(%q, %+v) err = %v, wantErr %v",
+					tt.groupJID, tt.tokens, err, tt.wantErr)
+			}
+			if tt.wantMockMet {
+				if err := mock.ExpectationsWereMet(); err != nil {
+					t.Errorf("sqlmock expectations not met: %v", err)
+				}
+			}
+		})
 	}
 }
 
