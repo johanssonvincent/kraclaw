@@ -89,6 +89,9 @@ func (t *ChatGPTTokens) validate() error {
 	if t.ExpiresAt.IsZero() {
 		return fmt.Errorf("chatgpt tokens: expires_at is required")
 	}
+	if !t.ExpiresAt.After(time.Now()) {
+		return fmt.Errorf("chatgpt tokens: expires_at %s is not in the future", t.ExpiresAt.UTC().Format(time.RFC3339))
+	}
 	return nil
 }
 

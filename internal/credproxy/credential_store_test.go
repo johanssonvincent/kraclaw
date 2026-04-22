@@ -515,6 +515,25 @@ func TestEncryptor_RoundtripsMultipleSecrets(t *testing.T) {
 	}
 }
 
+func TestCredential_Validate_RejectsExpiredChatGPTToken(t *testing.T) {
+	t.Parallel()
+
+	cred := Credential{
+		GroupJID: "g",
+		Provider: "openai",
+		AuthMode: AuthModeChatGPT,
+		ChatGPT: &ChatGPTTokens{
+			AccessToken:  "a",
+			RefreshToken: "r",
+			AccountID:    "acct",
+			ExpiresAt:    time.Now().Add(-time.Minute),
+		},
+	}
+	if err := cred.Validate(); err == nil {
+		t.Errorf("Validate(expired token) err = nil, want error")
+	}
+}
+
 func TestRefreshChatGPTTokens_NoRow_ReturnsSentinel(t *testing.T) {
 	t.Parallel()
 
