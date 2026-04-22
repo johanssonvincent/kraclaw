@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -238,6 +239,11 @@ func (s *CredentialStore) decryptChatGPTTokens(
 		if err != nil {
 			return nil, fmt.Errorf("decrypt id token: %w", err)
 		}
+	}
+	if !isFedRAMP.Valid {
+		slog.Warn("oauth_is_fedramp NULL on chatgpt row — schema drift, coercing to false",
+			"account_id", accountID.String,
+		)
 	}
 	return &ChatGPTTokens{
 		AccessToken:  access,
