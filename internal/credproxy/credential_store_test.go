@@ -48,11 +48,11 @@ func TestCredentialStore_UpsertAndGet_APIKey(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := store.UpsertCredential(context.Background(), cred); err != nil {
-		t.Fatalf("upsert: %v", err)
+		t.Errorf("upsert: %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("expectations: %v", err)
+		t.Errorf("expectations: %v", err)
 	}
 }
 
@@ -76,11 +76,11 @@ func TestCredentialStore_Delete(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := store.DeleteCredential(context.Background(), "discord:123"); err != nil {
-		t.Fatalf("delete: %v", err)
+		t.Errorf("delete: %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("expectations: %v", err)
+		t.Errorf("expectations: %v", err)
 	}
 }
 
@@ -119,7 +119,7 @@ func TestCredential_Validate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if err := tt.cred.Validate(); (err != nil) != tt.wantErr {
-				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -144,7 +144,7 @@ func TestUpsertCredential_RejectsEmptyAPIKey(t *testing.T) {
 		GroupJID: "discord:123",
 		Provider: "openai",
 	}); err == nil {
-		t.Fatal("expected error for credential with no API key")
+		t.Errorf("expected error for credential with no API key")
 	}
 }
 
@@ -172,22 +172,22 @@ func TestGetCredential_Found_APIKey(t *testing.T) {
 
 	cred, err := store.GetCredential(context.Background(), "discord:123")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Errorf("unexpected error: %v", err)
 	}
 	if cred == nil {
-		t.Fatal("expected non-nil credential")
+		t.Errorf("expected non-nil credential")
 	}
-	if cred.Provider != "openai" {
-		t.Fatalf("expected provider openai, got %q", cred.Provider)
+	if cred != nil && cred.Provider != "openai" {
+		t.Errorf("expected provider openai, got %q", cred.Provider)
 	}
-	if cred.AuthMode != AuthModeAPIKey {
-		t.Fatalf("expected AuthMode api_key, got %q", cred.AuthMode)
+	if cred != nil && cred.AuthMode != AuthModeAPIKey {
+		t.Errorf("expected AuthMode api_key, got %q", cred.AuthMode)
 	}
-	if cred.APIKey != "sk-test-key" {
-		t.Fatalf("expected API key sk-test-key, got %q", cred.APIKey)
+	if cred != nil && cred.APIKey != "sk-test-key" {
+		t.Errorf("expected API key sk-test-key, got %q", cred.APIKey)
 	}
-	if cred.ChatGPT != nil {
-		t.Fatal("expected nil ChatGPT tokens for api_key auth mode")
+	if cred != nil && cred.ChatGPT != nil {
+		t.Errorf("expected nil ChatGPT tokens for api_key auth mode")
 	}
 }
 
@@ -209,13 +209,13 @@ func TestGetCredential_LegacyEmptyAuthMode(t *testing.T) {
 
 	cred, err := store.GetCredential(context.Background(), "discord:legacy")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Errorf("unexpected error: %v", err)
 	}
-	if cred.AuthMode != AuthModeAPIKey {
-		t.Fatalf("expected legacy empty auth_mode to map to api_key, got %q", cred.AuthMode)
+	if cred != nil && cred.AuthMode != AuthModeAPIKey {
+		t.Errorf("expected legacy empty auth_mode to map to api_key, got %q", cred.AuthMode)
 	}
-	if cred.APIKey != "sk-legacy" {
-		t.Fatalf("unexpected api key: %q", cred.APIKey)
+	if cred != nil && cred.APIKey != "sk-legacy" {
+		t.Errorf("unexpected api key: %q", cred.APIKey)
 	}
 }
 
@@ -240,10 +240,10 @@ func TestGetCredential_NotFound(t *testing.T) {
 
 	cred, err := store.GetCredential(context.Background(), "unknown:123")
 	if err != nil {
-		t.Fatalf("expected nil error for not found, got: %v", err)
+		t.Errorf("expected nil error for not found, got: %v", err)
 	}
 	if cred != nil {
-		t.Fatal("expected nil credential for not found")
+		t.Errorf("expected nil credential for not found")
 	}
 }
 
@@ -271,16 +271,16 @@ func TestGetCredential_Anthropic(t *testing.T) {
 
 	cred, err := store.GetCredential(context.Background(), "discord:456")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Errorf("unexpected error: %v", err)
 	}
 	if cred == nil {
-		t.Fatal("expected non-nil credential")
+		t.Errorf("expected non-nil credential")
 	}
-	if cred.Provider != "anthropic" {
-		t.Fatalf("expected anthropic provider, got %q", cred.Provider)
+	if cred != nil && cred.Provider != "anthropic" {
+		t.Errorf("expected anthropic provider, got %q", cred.Provider)
 	}
-	if cred.APIKey != "sk-ant-test-key" {
-		t.Fatalf("expected API key sk-ant-test-key, got %q", cred.APIKey)
+	if cred != nil && cred.APIKey != "sk-ant-test-key" {
+		t.Errorf("expected API key sk-ant-test-key, got %q", cred.APIKey)
 	}
 }
 
@@ -321,11 +321,11 @@ func TestUpsertChatGPTCredential_AndGet(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := store.UpsertChatGPTCredential(context.Background(), "discord:42", "openai", tokens); err != nil {
-		t.Fatalf("upsert chatgpt: %v", err)
+		t.Errorf("upsert chatgpt: %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("expectations: %v", err)
+		t.Errorf("expectations: %v", err)
 	}
 
 	accessEnc, _ := enc.Encrypt("access-token-XYZ")
@@ -339,37 +339,37 @@ func TestUpsertChatGPTCredential_AndGet(t *testing.T) {
 
 	got, err := store.GetCredential(context.Background(), "discord:42")
 	if err != nil {
-		t.Fatalf("get chatgpt: %v", err)
+		t.Errorf("get chatgpt: %v", err)
 	}
 	if got == nil {
-		t.Fatal("expected non-nil chatgpt credential")
+		t.Errorf("expected non-nil chatgpt credential")
 	}
-	if got.AuthMode != AuthModeChatGPT {
-		t.Fatalf("AuthMode = %q, want chatgpt", got.AuthMode)
+	if got != nil && got.AuthMode != AuthModeChatGPT {
+		t.Errorf("AuthMode = %q, want chatgpt", got.AuthMode)
 	}
-	if got.APIKey != "" {
-		t.Fatalf("APIKey should be empty in chatgpt mode, got %q", got.APIKey)
+	if got != nil && got.APIKey != "" {
+		t.Errorf("APIKey should be empty in chatgpt mode, got %q", got.APIKey)
 	}
-	if got.ChatGPT == nil {
-		t.Fatal("ChatGPT tokens missing")
+	if got != nil && got.ChatGPT == nil {
+		t.Errorf("ChatGPT tokens missing")
 	}
-	if got.ChatGPT.AccessToken != "access-token-XYZ" {
-		t.Fatalf("access token roundtrip mismatch: %q", got.ChatGPT.AccessToken)
+	if got != nil && got.ChatGPT != nil && got.ChatGPT.AccessToken != "access-token-XYZ" {
+		t.Errorf("access token roundtrip mismatch: %q", got.ChatGPT.AccessToken)
 	}
-	if got.ChatGPT.RefreshToken != "refresh-token-ABC" {
-		t.Fatalf("refresh token roundtrip mismatch: %q", got.ChatGPT.RefreshToken)
+	if got != nil && got.ChatGPT != nil && got.ChatGPT.RefreshToken != "refresh-token-ABC" {
+		t.Errorf("refresh token roundtrip mismatch: %q", got.ChatGPT.RefreshToken)
 	}
-	if got.ChatGPT.IDToken != "id-token-PQR" {
-		t.Fatalf("id token roundtrip mismatch: %q", got.ChatGPT.IDToken)
+	if got != nil && got.ChatGPT != nil && got.ChatGPT.IDToken != "id-token-PQR" {
+		t.Errorf("id token roundtrip mismatch: %q", got.ChatGPT.IDToken)
 	}
-	if got.ChatGPT.AccountID != "acct_42" {
-		t.Fatalf("account id mismatch: %q", got.ChatGPT.AccountID)
+	if got != nil && got.ChatGPT != nil && got.ChatGPT.AccountID != "acct_42" {
+		t.Errorf("account id mismatch: %q", got.ChatGPT.AccountID)
 	}
-	if !got.ChatGPT.IsFedRAMP {
-		t.Fatal("expected IsFedRAMP true")
+	if got != nil && got.ChatGPT != nil && !got.ChatGPT.IsFedRAMP {
+		t.Errorf("expected IsFedRAMP true")
 	}
-	if !got.ChatGPT.ExpiresAt.Equal(expiresAt) {
-		t.Fatalf("expires at mismatch: got %v want %v", got.ChatGPT.ExpiresAt, expiresAt)
+	if got != nil && got.ChatGPT != nil && !got.ChatGPT.ExpiresAt.Equal(expiresAt) {
+		t.Errorf("expires at mismatch: got %v want %v", got.ChatGPT.ExpiresAt, expiresAt)
 	}
 }
 
@@ -397,10 +397,10 @@ func TestUpsertChatGPTCredential_OmitsIDToken(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := store.UpsertChatGPTCredential(context.Background(), "g", "openai", tokens); err != nil {
-		t.Fatalf("upsert: %v", err)
+		t.Errorf("upsert: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("expectations: %v", err)
+		t.Errorf("expectations: %v", err)
 	}
 }
 
@@ -424,10 +424,10 @@ func TestRefreshChatGPTTokens_Success(t *testing.T) {
 		AccessToken: "new-a", RefreshToken: "new-r", IDToken: "new-id",
 		AccountID: "acct_99", ExpiresAt: expiresAt,
 	}); err != nil {
-		t.Fatalf("refresh: %v", err)
+		t.Errorf("refresh: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("expectations: %v", err)
+		t.Errorf("expectations: %v", err)
 	}
 }
 
@@ -449,7 +449,7 @@ func TestRefreshChatGPTTokens_NoRow(t *testing.T) {
 		AccessToken: "a", RefreshToken: "r", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour),
 	})
 	if err == nil {
-		t.Fatal("expected error when no chatgpt credential matched")
+		t.Errorf("expected error when no chatgpt credential matched")
 	}
 }
 
@@ -465,10 +465,10 @@ func TestRefreshChatGPTTokens_RejectsInvalid(t *testing.T) {
 	store, _ := NewCredentialStore(db, enc)
 
 	if err := store.RefreshChatGPTTokens(context.Background(), "", &ChatGPTTokens{}); err == nil {
-		t.Fatal("expected error for empty group jid")
+		t.Errorf("expected error for empty group jid")
 	}
 	if err := store.RefreshChatGPTTokens(context.Background(), "g", &ChatGPTTokens{}); err == nil {
-		t.Fatal("expected error for empty token bundle")
+		t.Errorf("expected error for empty token bundle")
 	}
 }
 
@@ -488,7 +488,7 @@ func TestGetCredential_ChatGPT_MissingTokens(t *testing.T) {
 	mock.ExpectQuery("SELECT").WithArgs("g").WillReturnRows(rows)
 
 	if _, err := store.GetCredential(context.Background(), "g"); err == nil {
-		t.Fatal("expected error when chatgpt row has missing oauth tokens")
+		t.Errorf("expected error when chatgpt row has missing oauth tokens")
 	}
 }
 
@@ -508,7 +508,7 @@ func TestGetCredential_APIKey_NullEncryptedKey(t *testing.T) {
 	mock.ExpectQuery("SELECT").WithArgs("g").WillReturnRows(rows)
 
 	if _, err := store.GetCredential(context.Background(), "g"); err == nil {
-		t.Fatal("expected error when api_key auth mode but key column is NULL")
+		t.Errorf("expected error when api_key auth mode but key column is NULL")
 	}
 }
 
@@ -526,7 +526,7 @@ func TestEncryptor_RoundtripsMultipleSecrets(t *testing.T) {
 			t.Fatalf("decrypt: %v", err)
 		}
 		if got != plain {
-			t.Fatalf("roundtrip mismatch: got %q want %q", got, plain)
+			t.Errorf("roundtrip mismatch: got %q want %q", got, plain)
 		}
 	}
 }
@@ -599,7 +599,7 @@ func TestRefreshChatGPTTokens_NoRow_ReturnsSentinel(t *testing.T) {
 		ExpiresAt:    time.Now().Add(time.Hour),
 	})
 	if err == nil {
-		t.Fatal("RefreshChatGPTTokens(no row) err = nil, want sentinel")
+		t.Errorf("RefreshChatGPTTokens(no row) err = nil, want sentinel")
 	}
 	if !errors.Is(err, ErrNoChatGPTCredential) {
 		t.Errorf("errors.Is(%v, ErrNoChatGPTCredential) = false, want true", err)
