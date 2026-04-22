@@ -191,29 +191,58 @@ func TestRequestDeviceCode_Errors(t *testing.T) {
 }
 
 func TestPollOnce_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/accounts/deviceauth/token" {
-			t.Errorf("unexpected path %s", r.URL.Path)
-		}
-		body, _ := io.ReadAll(r.Body)
-		var got map[string]string
-		_ = json.Unmarshal(body, &got)
-		if got["device_auth_id"] != "dev" || got["user_code"] != "USER" {
-			t.Errorf("unexpected body %s", body)
-		}
-		_, _ = w.Write([]byte(`{"authorization_code":"ac_1","code_challenge":"cc_1","code_verifier":"cv_1"}`))
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv)
-	dc := deviceCodeForTest("dev", "USER", c.VerificationURL(), 5*time.Millisecond)
-
-	ac, err := c.PollOnce(context.Background(), dc)
-	if err != nil {
-		t.Fatalf("PollOnce: %v", err)
+	tests := map[string]struct {
+		respBody      string
+		wantCode      string
+		wantVerifier  string
+		wantChallenge string
+	}{
+		"full triple": {
+			respBody:      `{"authorization_code":"ac_1","code_challenge":"cc_1","code_verifier":"cv_1"}`,
+			wantCode:      "ac_1",
+			wantVerifier:  "cv_1",
+			wantChallenge: "cc_1",
+		},
+		"no code_challenge": {
+			respBody:      `{"authorization_code":"ac_2","code_verifier":"cv_2"}`,
+			wantCode:      "ac_2",
+			wantVerifier:  "cv_2",
+			wantChallenge: "",
+		},
 	}
-	if ac.Code != "ac_1" || ac.CodeVerifier != "cv_1" || ac.CodeChallenge != "cc_1" {
-		t.Fatalf("AuthorizationCode = %+v", ac)
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/accounts/deviceauth/token" {
+					t.Errorf("path = %q, want /api/accounts/deviceauth/token", r.URL.Path)
+				}
+				body, _ := io.ReadAll(r.Body)
+				var got map[string]string
+				_ = json.Unmarshal(body, &got)
+				if got["device_auth_id"] != "dev" || got["user_code"] != "USER" {
+					t.Errorf("body = %q, want device_auth_id=dev & user_code=USER", body)
+				}
+				_, _ = w.Write([]byte(tc.respBody))
+			}))
+			defer srv.Close()
+
+			c := newTestClient(t, srv)
+			dc := deviceCodeForTest("dev", "USER", c.VerificationURL(), 5*time.Millisecond)
+
+			ac, err := c.PollOnce(context.Background(), dc)
+			if err != nil {
+				t.Fatalf("PollOnce(%q) err = %v, want nil", tc.respBody, err)
+			}
+			if ac.Code != tc.wantCode {
+				t.Errorf("PollOnce(%q) Code = %q, want %q", tc.respBody, ac.Code, tc.wantCode)
+			}
+			if ac.CodeVerifier != tc.wantVerifier {
+				t.Errorf("PollOnce(%q) CodeVerifier = %q, want %q", tc.respBody, ac.CodeVerifier, tc.wantVerifier)
+			}
+			if ac.CodeChallenge != tc.wantChallenge {
+				t.Errorf("PollOnce(%q) CodeChallenge = %q, want %q", tc.respBody, ac.CodeChallenge, tc.wantChallenge)
+			}
+		})
 	}
 }
 
@@ -523,59 +552,105 @@ func TestPollUntilCode(t *testing.T) {
 }
 
 func TestExchangeCode_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/oauth/token" {
-			t.Errorf("path = %s", r.URL.Path)
-		}
-		if got := r.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
-			t.Errorf("Content-Type = %q", got)
-		}
-		body, _ := io.ReadAll(r.Body)
-		form, err := url.ParseQuery(string(body))
-		if err != nil {
-			t.Fatalf("parse form: %v", err)
-		}
-		if form.Get("grant_type") != "authorization_code" {
-			t.Errorf("grant_type = %q", form.Get("grant_type"))
-		}
-		if form.Get("code") != "ac_1" {
-			t.Errorf("code = %q", form.Get("code"))
-		}
-		if form.Get("code_verifier") != "cv_1" {
-			t.Errorf("code_verifier = %q", form.Get("code_verifier"))
-		}
-		if form.Get("client_id") != ClientID {
-			t.Errorf("client_id = %q", form.Get("client_id"))
-		}
-		if !strings.HasSuffix(form.Get("redirect_uri"), "/deviceauth/callback") {
-			t.Errorf("redirect_uri = %q", form.Get("redirect_uri"))
-		}
-		idTok := mintJWT(t, map[string]any{
-			"exp": time.Now().Add(time.Hour).Unix(),
-			"https://api.openai.com/auth": map[string]any{
-				"chatgpt_account_id": "acct_42",
-				"chatgpt_plan_type":  "plus",
+	tests := map[string]struct {
+		input    *AuthorizationCode
+		respBody func(t *testing.T) string
+		check    func(t *testing.T, tokens *Tokens)
+	}{
+		"id_token exp populates ExpiresAt": {
+			input: &AuthorizationCode{Code: "ac_1", CodeVerifier: "cv_1"},
+			respBody: func(t *testing.T) string {
+				idTok := mintJWT(t, map[string]any{
+					"exp": time.Now().Add(time.Hour).Unix(),
+					"https://api.openai.com/auth": map[string]any{
+						"chatgpt_account_id": "acct_42",
+						"chatgpt_plan_type":  "plus",
+					},
+				})
+				return `{"id_token":"` + idTok + `","access_token":"acc_1","refresh_token":"ref_1"}`
 			},
-		})
-		_, _ = w.Write([]byte(`{"id_token":"` + idTok + `","access_token":"acc_1","refresh_token":"ref_1"}`))
-	}))
-	defer srv.Close()
+			check: func(t *testing.T, tokens *Tokens) {
+				if tokens.AccessToken != "acc_1" {
+					t.Errorf("AccessToken = %q, want acc_1", tokens.AccessToken)
+				}
+				if tokens.RefreshToken != "ref_1" {
+					t.Errorf("RefreshToken = %q, want ref_1", tokens.RefreshToken)
+				}
+				if tokens.IDClaims.AccountID != "acct_42" {
+					t.Errorf("IDClaims.AccountID = %q, want acct_42", tokens.IDClaims.AccountID)
+				}
+				if tokens.IDClaims.PlanType != "plus" {
+					t.Errorf("IDClaims.PlanType = %q, want plus", tokens.IDClaims.PlanType)
+				}
+				if tokens.ExpiresAt.IsZero() {
+					t.Errorf("ExpiresAt = zero, want populated from id_token exp")
+				}
+				if !tokens.HasExpiry {
+					t.Errorf("HasExpiry = false, want true when id_token exp is present")
+				}
+			},
+		},
+		"expires_in fallback when id_token has no exp": {
+			input: &AuthorizationCode{Code: "ac_2", CodeVerifier: "cv_2"},
+			respBody: func(t *testing.T) string {
+				idTok := mintJWT(t, map[string]any{
+					"https://api.openai.com/auth": map[string]any{
+						"chatgpt_account_id": "acct_7",
+					},
+				})
+				return `{"id_token":"` + idTok + `","access_token":"acc_2","refresh_token":"ref_2","expires_in":600}`
+			},
+			check: func(t *testing.T, tokens *Tokens) {
+				if tokens.ExpiresAt.IsZero() {
+					t.Errorf("ExpiresAt = zero, want populated from expires_in")
+				}
+				if !tokens.HasExpiry {
+					t.Errorf("HasExpiry = false, want true when expires_in is present")
+				}
+			},
+		},
+	}
 
-	c := newTestClient(t, srv)
-	tokens, err := c.ExchangeCode(context.Background(), &AuthorizationCode{
-		Code: "ac_1", CodeVerifier: "cv_1",
-	})
-	if err != nil {
-		t.Fatalf("ExchangeCode: %v", err)
-	}
-	if tokens.AccessToken != "acc_1" || tokens.RefreshToken != "ref_1" {
-		t.Fatalf("tokens = %+v", tokens)
-	}
-	if tokens.IDClaims.AccountID != "acct_42" || tokens.IDClaims.PlanType != "plus" {
-		t.Fatalf("IDClaims = %+v", tokens.IDClaims)
-	}
-	if tokens.ExpiresAt.IsZero() {
-		t.Fatal("expected ExpiresAt populated from id_token exp")
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/oauth/token" {
+					t.Errorf("path = %q, want /oauth/token", r.URL.Path)
+				}
+				if got := r.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
+					t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", got)
+				}
+				body, _ := io.ReadAll(r.Body)
+				form, err := url.ParseQuery(string(body))
+				if err != nil {
+					t.Fatalf("parse form %q: %v", body, err)
+				}
+				if got := form.Get("grant_type"); got != "authorization_code" {
+					t.Errorf("grant_type = %q, want authorization_code", got)
+				}
+				if got := form.Get("code"); got != tc.input.Code {
+					t.Errorf("code = %q, want %q", got, tc.input.Code)
+				}
+				if got := form.Get("code_verifier"); got != tc.input.CodeVerifier {
+					t.Errorf("code_verifier = %q, want %q", got, tc.input.CodeVerifier)
+				}
+				if got := form.Get("client_id"); got != ClientID {
+					t.Errorf("client_id = %q, want %q", got, ClientID)
+				}
+				if got := form.Get("redirect_uri"); !strings.HasSuffix(got, "/deviceauth/callback") {
+					t.Errorf("redirect_uri = %q, want suffix /deviceauth/callback", got)
+				}
+				_, _ = w.Write([]byte(tc.respBody(t)))
+			}))
+			defer srv.Close()
+
+			c := newTestClient(t, srv)
+			tokens, err := c.ExchangeCode(context.Background(), tc.input)
+			if err != nil {
+				t.Fatalf("ExchangeCode: %v", err)
+			}
+			tc.check(t, tokens)
+		})
 	}
 }
 
