@@ -743,3 +743,75 @@ func TestRefreshChatGPTTokens_NilTokensErrors(t *testing.T) {
 		t.Errorf("RefreshChatGPTTokens(nil tokens) err = nil, want error")
 	}
 }
+
+func TestGetCredential_DecryptErrors(t *testing.T) {
+	t.Parallel()
+
+	columns := []string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id",
+		"oauth_expires_at", "oauth_is_fedramp",
+	}
+	badCipher := "NOT_A_VALID_CIPHERTEXT"
+	goodExpiry := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+
+	enc := newTestEncryptor(t)
+	validAccess, err := enc.Encrypt("access")
+	if err != nil {
+		t.Fatalf("encrypt access: %v", err)
+	}
+	validRefresh, err := enc.Encrypt("refresh")
+	if err != nil {
+		t.Fatalf("encrypt refresh: %v", err)
+	}
+
+	tests := map[string]struct {
+		row     []driver.Value
+		wantMsg string
+	}{
+		"api_key decrypt fails": {
+			row:     []driver.Value{"openai", string(AuthModeAPIKey), badCipher, nil, nil, nil, nil, nil, false},
+			wantMsg: "decrypt api key",
+		},
+		"access token decrypt fails": {
+			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, badCipher, "ignored", nil, "acct", goodExpiry, false},
+			wantMsg: "decrypt access token",
+		},
+		"refresh token decrypt fails": {
+			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, validAccess, badCipher, nil, "acct", goodExpiry, false},
+			wantMsg: "decrypt refresh token",
+		},
+		"id token decrypt fails": {
+			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, validAccess, validRefresh, badCipher, "acct", goodExpiry, false},
+			wantMsg: "decrypt id token",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+
+			store, err := NewCredentialStore(db, enc)
+			if err != nil {
+				t.Fatalf("NewCredentialStore: %v", err)
+			}
+			mock.ExpectQuery("SELECT").WithArgs("g").WillReturnRows(sqlmock.NewRows(columns).AddRow(tt.row...))
+
+			_, err = store.GetCredential(context.Background(), "g")
+			if err == nil {
+				t.Errorf("GetCredential(bad ciphertext %q) err = nil, want error containing %q", name, tt.wantMsg)
+				return
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("GetCredential(%q) err = %v, want message containing %q", name, err, tt.wantMsg)
+			}
+		})
+	}
+}
