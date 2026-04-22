@@ -2,9 +2,7 @@ package credproxy
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -12,19 +10,6 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
-
-func testEncryptor(t *testing.T) *Encryptor {
-	t.Helper()
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		t.Fatal(err)
-	}
-	enc, err := NewEncryptor(hex.EncodeToString(key))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return enc
-}
 
 func newTestEncryptor(t *testing.T) *Encryptor {
 	t.Helper()
@@ -43,7 +28,7 @@ func TestCredentialStore_UpsertAndGet_APIKey(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	enc := testEncryptor(t)
+	enc := newTestEncryptor(t)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +61,7 @@ func TestCredentialStore_Delete(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	enc := testEncryptor(t)
+	enc := newTestEncryptor(t)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
