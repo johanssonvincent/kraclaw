@@ -517,18 +517,28 @@ func TestEncryptor_RoundtripsMultipleSecrets(t *testing.T) {
 	t.Parallel()
 
 	enc := newTestEncryptor(t)
-	for _, plain := range []string{"sk-1", "rt-2", "id-3", strings.Repeat("z", 4096), ""} {
-		ct, err := enc.Encrypt(plain)
-		if err != nil {
-			t.Fatalf("encrypt %q: %v", plain, err)
-		}
-		got, err := enc.Decrypt(ct)
-		if err != nil {
-			t.Fatalf("decrypt: %v", err)
-		}
-		if got != plain {
-			t.Errorf("roundtrip mismatch: got %q want %q", got, plain)
-		}
+	tests := map[string]string{
+		"short":     "sk-1",
+		"refresh":   "rt-2",
+		"id token":  "id-3",
+		"4KiB blob": strings.Repeat("z", 4096),
+		"empty":     "",
+	}
+	for name, plain := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ct, err := enc.Encrypt(plain)
+			if err != nil {
+				t.Fatalf("Encrypt(%q): %v", plain, err)
+			}
+			got, err := enc.Decrypt(ct)
+			if err != nil {
+				t.Fatalf("Decrypt(ciphertext of %q): %v", plain, err)
+			}
+			if got != plain {
+				t.Errorf("Decrypt(Encrypt(%q)) = %q, want %q", plain, got, plain)
+			}
+		})
 	}
 }
 
