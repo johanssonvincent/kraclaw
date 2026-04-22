@@ -3,6 +3,7 @@ package credproxy
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"strings"
 	"testing"
@@ -148,139 +149,132 @@ func TestUpsertCredential_RejectsEmptyAPIKey(t *testing.T) {
 	}
 }
 
-func TestGetCredential_Found_APIKey(t *testing.T) {
+func TestGetCredential(t *testing.T) {
 	t.Parallel()
 
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-
 	enc := newTestEncryptor(t)
-	store, err := NewCredentialStore(db, enc)
+	encAPIKey, err := enc.Encrypt("sk-test-key")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("encrypt setup: %v", err)
 	}
-
-	encKey, _ := enc.Encrypt("sk-test-key")
-	rows := sqlmock.NewRows([]string{"provider", "auth_mode", "api_key_encrypted", "oauth_access_token_encrypted", "oauth_refresh_token_encrypted", "oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp"}).
-		AddRow("openai", string(AuthModeAPIKey), encKey, nil, nil, nil, nil, nil, false)
-	mock.ExpectQuery("SELECT").
-		WithArgs("discord:123").
-		WillReturnRows(rows)
-
-	cred, err := store.GetCredential(context.Background(), "discord:123")
+	encAntKey, err := enc.Encrypt("sk-ant-test-key")
 	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+		t.Fatalf("encrypt setup: %v", err)
 	}
-	if cred == nil {
-		t.Errorf("GetCredential(%q) = nil, want non-nil credential", "discord:123")
-	}
-	if cred != nil && cred.Provider != "openai" {
-		t.Errorf("GetCredential(%q).Provider = %q, want %q", "discord:123", cred.Provider, "openai")
-	}
-	if cred != nil && cred.AuthMode != AuthModeAPIKey {
-		t.Errorf("GetCredential(%q).AuthMode = %q, want %q", "discord:123", cred.AuthMode, AuthModeAPIKey)
-	}
-	if cred != nil && cred.APIKey != "sk-test-key" {
-		t.Errorf("GetCredential(%q).APIKey = %q, want %q", "discord:123", cred.APIKey, "sk-test-key")
-	}
-	if cred != nil && cred.ChatGPT != nil {
-		t.Errorf("GetCredential(%q).ChatGPT = %+v, want nil", "discord:123", cred.ChatGPT)
-	}
-}
-
-func TestGetCredential_LegacyEmptyAuthMode(t *testing.T) {
-	t.Parallel()
-
-	db, mock, err := sqlmock.New()
+	encAccess, err := enc.Encrypt("a")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("encrypt setup: %v", err)
 	}
-	defer func() { _ = db.Close() }()
-
-	enc := newTestEncryptor(t)
-	store, _ := NewCredentialStore(db, enc)
-	encKey, _ := enc.Encrypt("sk-legacy")
-	rows := sqlmock.NewRows([]string{"provider", "auth_mode", "api_key_encrypted", "oauth_access_token_encrypted", "oauth_refresh_token_encrypted", "oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp"}).
-		AddRow("openai", "", encKey, nil, nil, nil, nil, nil, false)
-	mock.ExpectQuery("SELECT").WithArgs("discord:legacy").WillReturnRows(rows)
-
-	cred, err := store.GetCredential(context.Background(), "discord:legacy")
+	encRefresh, err := enc.Encrypt("r")
 	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+		t.Fatalf("encrypt setup: %v", err)
 	}
-	if cred != nil && cred.AuthMode != AuthModeAPIKey {
-		t.Errorf("GetCredential(%q).AuthMode = %q, want %q (legacy empty maps to api_key)", "discord:legacy", cred.AuthMode, AuthModeAPIKey)
-	}
-	if cred != nil && cred.APIKey != "sk-legacy" {
-		t.Errorf("GetCredential(%q).APIKey = %q, want %q", "discord:legacy", cred.APIKey, "sk-legacy")
-	}
-}
+	expiresAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 
-func TestGetCredential_NotFound(t *testing.T) {
-	t.Parallel()
-
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-
-	enc := newTestEncryptor(t)
-	store, err := NewCredentialStore(db, enc)
-	if err != nil {
-		t.Fatal(err)
+	columns := []string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id",
+		"oauth_expires_at", "oauth_is_fedramp",
 	}
 
-	mock.ExpectQuery("SELECT").
-		WithArgs("unknown:123").
-		WillReturnError(sql.ErrNoRows)
+	tests := map[string]struct {
+		groupJID    string
+		row         []driver.Value // nil means ExpectQuery returns ErrNoRows
+		wantErr     bool
+		wantNil     bool
+		wantMode    AuthMode
+		wantKey     string
+		wantChatGPT bool
+	}{
+		"api_key openai found": {
+			groupJID: "discord:123",
+			row:      []driver.Value{"openai", string(AuthModeAPIKey), encAPIKey, nil, nil, nil, nil, nil, false},
+			wantMode: AuthModeAPIKey,
+			wantKey:  "sk-test-key",
+		},
+		"api_key anthropic found": {
+			groupJID: "discord:456",
+			row:      []driver.Value{"anthropic", string(AuthModeAPIKey), encAntKey, nil, nil, nil, nil, nil, false},
+			wantMode: AuthModeAPIKey,
+			wantKey:  "sk-ant-test-key",
+		},
+		"legacy empty auth_mode maps to api_key": {
+			groupJID: "discord:legacy",
+			row:      []driver.Value{"openai", "", encAPIKey, nil, nil, nil, nil, nil, false},
+			wantMode: AuthModeAPIKey,
+			wantKey:  "sk-test-key",
+		},
+		"not found returns nil": {
+			groupJID: "unknown:123",
+			row:      nil,
+			wantNil:  true,
+		},
+		"chatgpt with oauth fields": {
+			groupJID:    "discord:42",
+			row:         []driver.Value{"openai", string(AuthModeChatGPT), nil, encAccess, encRefresh, nil, "acct_42", expiresAt, false},
+			wantMode:    AuthModeChatGPT,
+			wantChatGPT: true,
+		},
+		"chatgpt row missing oauth tokens errors": {
+			groupJID: "g",
+			row:      []driver.Value{"openai", string(AuthModeChatGPT), nil, nil, nil, nil, nil, nil, false},
+			wantErr:  true,
+		},
+		"api_key row with NULL encrypted key errors": {
+			groupJID: "g",
+			row:      []driver.Value{"openai", string(AuthModeAPIKey), nil, nil, nil, nil, nil, nil, false},
+			wantErr:  true,
+		},
+	}
 
-	cred, err := store.GetCredential(context.Background(), "unknown:123")
-	if err != nil {
-		t.Errorf("expected nil error for not found, got: %v", err)
-	}
-	if cred != nil {
-		t.Errorf("GetCredential(%q) = %+v, want nil", "unknown:123", cred)
-	}
-}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-func TestGetCredential_Anthropic(t *testing.T) {
-	t.Parallel()
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
 
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
+			store, err := NewCredentialStore(db, enc)
+			if err != nil {
+				t.Fatalf("NewCredentialStore: %v", err)
+			}
 
-	enc := newTestEncryptor(t)
-	store, err := NewCredentialStore(db, enc)
-	if err != nil {
-		t.Fatal(err)
-	}
+			if tt.row == nil {
+				mock.ExpectQuery("SELECT").WithArgs(tt.groupJID).WillReturnError(sql.ErrNoRows)
+			} else {
+				mock.ExpectQuery("SELECT").WithArgs(tt.groupJID).WillReturnRows(sqlmock.NewRows(columns).AddRow(tt.row...))
+			}
 
-	encKey, _ := enc.Encrypt("sk-ant-test-key")
-	rows := sqlmock.NewRows([]string{"provider", "auth_mode", "api_key_encrypted", "oauth_access_token_encrypted", "oauth_refresh_token_encrypted", "oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp"}).
-		AddRow("anthropic", string(AuthModeAPIKey), encKey, nil, nil, nil, nil, nil, false)
-	mock.ExpectQuery("SELECT").
-		WithArgs("discord:456").
-		WillReturnRows(rows)
-
-	cred, err := store.GetCredential(context.Background(), "discord:456")
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if cred == nil {
-		t.Errorf("GetCredential(%q) = nil, want non-nil credential", "discord:456")
-	}
-	if cred != nil && cred.Provider != "anthropic" {
-		t.Errorf("GetCredential(%q).Provider = %q, want %q", "discord:456", cred.Provider, "anthropic")
-	}
-	if cred != nil && cred.APIKey != "sk-ant-test-key" {
-		t.Errorf("GetCredential(%q).APIKey = %q, want %q", "discord:456", cred.APIKey, "sk-ant-test-key")
+			cred, err := store.GetCredential(context.Background(), tt.groupJID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetCredential(%q) err = %v, wantErr %v", tt.groupJID, err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if tt.wantNil {
+				if cred != nil {
+					t.Errorf("GetCredential(%q) cred = %+v, want nil", tt.groupJID, cred)
+				}
+				return
+			}
+			if cred == nil {
+				t.Fatalf("GetCredential(%q) cred = nil, want non-nil", tt.groupJID)
+			}
+			if cred.AuthMode != tt.wantMode {
+				t.Errorf("GetCredential(%q).AuthMode = %q, want %q", tt.groupJID, cred.AuthMode, tt.wantMode)
+			}
+			if cred.APIKey != tt.wantKey {
+				t.Errorf("GetCredential(%q).APIKey = %q, want %q", tt.groupJID, cred.APIKey, tt.wantKey)
+			}
+			if (cred.ChatGPT != nil) != tt.wantChatGPT {
+				t.Errorf("GetCredential(%q) has ChatGPT = %v, want %v", tt.groupJID, cred.ChatGPT != nil, tt.wantChatGPT)
+			}
+		})
 	}
 }
 
@@ -469,46 +463,6 @@ func TestRefreshChatGPTTokens_RejectsInvalid(t *testing.T) {
 	}
 	if err := store.RefreshChatGPTTokens(context.Background(), "g", &ChatGPTTokens{}); err == nil {
 		t.Errorf("RefreshChatGPTTokens(%q, &ChatGPTTokens{}) err = nil, want error (invalid token bundle)", "g")
-	}
-}
-
-func TestGetCredential_ChatGPT_MissingTokens(t *testing.T) {
-	t.Parallel()
-
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	enc := newTestEncryptor(t)
-	store, _ := NewCredentialStore(db, enc)
-
-	rows := sqlmock.NewRows([]string{"provider", "auth_mode", "api_key_encrypted", "oauth_access_token_encrypted", "oauth_refresh_token_encrypted", "oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp"}).
-		AddRow("openai", string(AuthModeChatGPT), nil, nil, nil, nil, nil, nil, false)
-	mock.ExpectQuery("SELECT").WithArgs("g").WillReturnRows(rows)
-
-	if _, err := store.GetCredential(context.Background(), "g"); err == nil {
-		t.Errorf("GetCredential(%q) err = nil, want error (row with nil oauth tokens)", "g")
-	}
-}
-
-func TestGetCredential_APIKey_NullEncryptedKey(t *testing.T) {
-	t.Parallel()
-
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	enc := newTestEncryptor(t)
-	store, _ := NewCredentialStore(db, enc)
-
-	rows := sqlmock.NewRows([]string{"provider", "auth_mode", "api_key_encrypted", "oauth_access_token_encrypted", "oauth_refresh_token_encrypted", "oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp"}).
-		AddRow("openai", string(AuthModeAPIKey), nil, nil, nil, nil, nil, nil, false)
-	mock.ExpectQuery("SELECT").WithArgs("g").WillReturnRows(rows)
-
-	if _, err := store.GetCredential(context.Background(), "g"); err == nil {
-		t.Errorf("GetCredential(%q) err = nil, want error (api_key row with NULL api_key_encrypted)", "g")
 	}
 }
 
