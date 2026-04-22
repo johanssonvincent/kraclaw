@@ -588,6 +588,43 @@ func TestRefreshChatGPTTokens_NoRow_ReturnsSentinel(t *testing.T) {
 	}
 }
 
+func TestGetCredential_ValidatesDecryptedShape(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	accessEnc, err := enc.Encrypt("a")
+	if err != nil {
+		t.Fatalf("encrypt access: %v", err)
+	}
+	refreshEnc, err := enc.Encrypt("r")
+	if err != nil {
+		t.Fatalf("encrypt refresh: %v", err)
+	}
+	pastExpiry := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	rows := sqlmock.NewRows([]string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id",
+		"oauth_expires_at", "oauth_is_fedramp",
+	}).AddRow("openai", string(AuthModeChatGPT), nil, accessEnc, refreshEnc, nil, "acct", pastExpiry, false)
+	mock.ExpectQuery("SELECT").WithArgs("g").WillReturnRows(rows)
+
+	if _, err := store.GetCredential(context.Background(), "g"); err == nil {
+		t.Errorf("GetCredential(expired chatgpt row) err = nil, want validation error")
+	}
+}
+
 func TestRefreshChatGPTTokens_NilTokensErrors(t *testing.T) {
 	t.Parallel()
 

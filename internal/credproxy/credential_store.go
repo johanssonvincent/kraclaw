@@ -175,6 +175,9 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 		return nil, fmt.Errorf("get credential: unknown auth mode %q", cred.AuthMode)
 	}
 
+	if err := cred.Validate(); err != nil {
+		return nil, fmt.Errorf("get credential: %w", err)
+	}
 	return cred, nil
 }
 
