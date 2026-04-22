@@ -22,6 +22,8 @@ func newTestEncryptor(t *testing.T) *Encryptor {
 
 
 func TestCredentialStore_UpsertAndGet_APIKey(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +57,8 @@ func TestCredentialStore_UpsertAndGet_APIKey(t *testing.T) {
 }
 
 func TestCredentialStore_Delete(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +85,8 @@ func TestCredentialStore_Delete(t *testing.T) {
 }
 
 func TestCredential_Validate(t *testing.T) {
+	t.Parallel()
+
 	validTokens := func() *ChatGPTTokens {
 		return &ChatGPTTokens{
 			AccessToken:  "access-1",
@@ -111,6 +117,7 @@ func TestCredential_Validate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if err := tt.cred.Validate(); (err != nil) != tt.wantErr {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -119,6 +126,8 @@ func TestCredential_Validate(t *testing.T) {
 }
 
 func TestUpsertCredential_RejectsEmptyAPIKey(t *testing.T) {
+	t.Parallel()
+
 	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +149,8 @@ func TestUpsertCredential_RejectsEmptyAPIKey(t *testing.T) {
 }
 
 func TestGetCredential_Found_APIKey(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -181,6 +192,8 @@ func TestGetCredential_Found_APIKey(t *testing.T) {
 }
 
 func TestGetCredential_LegacyEmptyAuthMode(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -207,6 +220,8 @@ func TestGetCredential_LegacyEmptyAuthMode(t *testing.T) {
 }
 
 func TestGetCredential_NotFound(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -233,6 +248,8 @@ func TestGetCredential_NotFound(t *testing.T) {
 }
 
 func TestGetCredential_Anthropic(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -268,6 +285,8 @@ func TestGetCredential_Anthropic(t *testing.T) {
 }
 
 func TestUpsertChatGPTCredential_AndGet(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -355,6 +374,8 @@ func TestUpsertChatGPTCredential_AndGet(t *testing.T) {
 }
 
 func TestUpsertChatGPTCredential_OmitsIDToken(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -384,6 +405,8 @@ func TestUpsertChatGPTCredential_OmitsIDToken(t *testing.T) {
 }
 
 func TestRefreshChatGPTTokens_Success(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -409,6 +432,8 @@ func TestRefreshChatGPTTokens_Success(t *testing.T) {
 }
 
 func TestRefreshChatGPTTokens_NoRow(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -429,6 +454,8 @@ func TestRefreshChatGPTTokens_NoRow(t *testing.T) {
 }
 
 func TestRefreshChatGPTTokens_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+
 	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -446,6 +473,8 @@ func TestRefreshChatGPTTokens_RejectsInvalid(t *testing.T) {
 }
 
 func TestGetCredential_ChatGPT_MissingTokens(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -464,6 +493,8 @@ func TestGetCredential_ChatGPT_MissingTokens(t *testing.T) {
 }
 
 func TestGetCredential_APIKey_NullEncryptedKey(t *testing.T) {
+	t.Parallel()
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -482,6 +513,8 @@ func TestGetCredential_APIKey_NullEncryptedKey(t *testing.T) {
 }
 
 func TestEncryptor_RoundtripsMultipleSecrets(t *testing.T) {
+	t.Parallel()
+
 	enc := newTestEncryptor(t)
 	for _, plain := range []string{"sk-1", "rt-2", "id-3", strings.Repeat("z", 4096), ""} {
 		ct, err := enc.Encrypt(plain)
