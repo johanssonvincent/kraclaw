@@ -52,6 +52,7 @@ func TestCredentialStore_UpsertAndGet_APIKey(t *testing.T) {
 	cred := &Credential{
 		GroupJID: "discord:123",
 		Provider: "openai",
+		AuthMode: AuthModeAPIKey,
 		APIKey:   "sk-test-key",
 	}
 
@@ -61,9 +62,6 @@ func TestCredentialStore_UpsertAndGet_APIKey(t *testing.T) {
 
 	if err := store.UpsertCredential(context.Background(), cred); err != nil {
 		t.Fatalf("upsert: %v", err)
-	}
-	if cred.AuthMode != AuthModeAPIKey {
-		t.Fatalf("expected AuthMode auto-populated to api_key, got %q", cred.AuthMode)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -531,6 +529,31 @@ func TestCredential_Validate_RejectsExpiredChatGPTToken(t *testing.T) {
 	}
 	if err := cred.Validate(); err == nil {
 		t.Errorf("Validate(expired token) err = nil, want error")
+	}
+}
+
+func TestUpsertCredential_RejectsEmptyAuthMode(t *testing.T) {
+	t.Parallel()
+
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	err = store.UpsertCredential(context.Background(), &Credential{
+		GroupJID: "g",
+		Provider: "openai",
+		APIKey:   "sk",
+	})
+	if err == nil {
+		t.Errorf("UpsertCredential(empty AuthMode) err = nil, want error")
 	}
 }
 

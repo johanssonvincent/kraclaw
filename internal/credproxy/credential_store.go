@@ -221,7 +221,7 @@ func (s *CredentialStore) decryptChatGPTTokens(
 // UpsertCredential encrypts and stores a credential for a group, routed by AuthMode.
 func (s *CredentialStore) UpsertCredential(ctx context.Context, cred *Credential) error {
 	if cred.AuthMode == "" {
-		cred.AuthMode = AuthModeAPIKey
+		return fmt.Errorf("upsert credential: auth mode is required")
 	}
 	if err := cred.Validate(); err != nil {
 		return err
