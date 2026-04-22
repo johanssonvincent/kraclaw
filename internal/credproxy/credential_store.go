@@ -3,6 +3,7 @@ package credproxy
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -14,6 +15,12 @@ const (
 	AuthModeAPIKey  AuthMode = "api_key"
 	AuthModeChatGPT AuthMode = "chatgpt"
 )
+
+// ErrNoChatGPTCredential is returned when a ChatGPT-mode credential operation
+// targets a group that has no such credential (already deleted or never
+// existed). Callers can use errors.Is to route between "force re-auth" and
+// "retry" paths.
+var ErrNoChatGPTCredential = errors.New("no chatgpt credential for group")
 
 // ChatGPTTokens is the OAuth credential bundle for ChatGPT-mode groups.
 type ChatGPTTokens struct {
@@ -330,7 +337,7 @@ func (s *CredentialStore) RefreshChatGPTTokens(ctx context.Context, groupJID str
 		return fmt.Errorf("refresh chatgpt tokens: rows affected: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("refresh chatgpt tokens: no chatgpt credential found for group %q", groupJID)
+		return fmt.Errorf("refresh chatgpt tokens for group %q: %w", groupJID, ErrNoChatGPTCredential)
 	}
 	return nil
 }

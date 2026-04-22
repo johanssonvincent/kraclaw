@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -511,5 +512,36 @@ func TestEncryptor_RoundtripsMultipleSecrets(t *testing.T) {
 		if got != plain {
 			t.Fatalf("roundtrip mismatch: got %q want %q", got, plain)
 		}
+	}
+}
+
+func TestRefreshChatGPTTokens_NoRow_ReturnsSentinel(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	mock.ExpectExec("UPDATE credentials").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err = store.RefreshChatGPTTokens(context.Background(), "missing", &ChatGPTTokens{
+		AccessToken:  "a",
+		RefreshToken: "r",
+		AccountID:    "acct",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	})
+	if err == nil {
+		t.Fatal("RefreshChatGPTTokens(no row) err = nil, want sentinel")
+	}
+	if !errors.Is(err, ErrNoChatGPTCredential) {
+		t.Errorf("errors.Is(%v, ErrNoChatGPTCredential) = false, want true", err)
 	}
 }
