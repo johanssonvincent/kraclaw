@@ -143,6 +143,18 @@ func (e *errBadStatus) Error() string {
 // and retry.
 var ErrAuthorizationPending = errors.New("chatgpt: authorization pending")
 
+// ErrSlowDown is returned by PollOnce when the server responds with the
+// RFC 8628 "slow_down" error code. It wraps ErrAuthorizationPending, so
+// callers that only distinguish pending vs. non-pending can keep using
+// errors.Is(err, ErrAuthorizationPending). Callers that poll directly must
+// widen their interval by slowDownBackoff per RFC 8628 §3.5; PollUntilCode
+// does this automatically.
+var ErrSlowDown = fmt.Errorf("%w: slow_down", ErrAuthorizationPending)
+
+// slowDownBackoff is the RFC 8628 §3.5 mandatory interval bump applied on
+// each slow_down response.
+const slowDownBackoff = 5 * time.Second
+
 // ErrDeviceAuthTimeout is returned by PollUntilCode after PollTimeout elapses
 // without a successful response.
 var ErrDeviceAuthTimeout = errors.New("chatgpt: device authorization timed out")

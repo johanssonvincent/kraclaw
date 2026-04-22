@@ -161,9 +161,11 @@ func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	return dc, nil
 }
 
-// PollOnce performs a single poll of the device-token endpoint. It returns the
-// authorization code on success or ErrAuthorizationPending when the user has
-// not yet approved (HTTP 403 or 404). Any other failure is returned wrapped.
+// PollOnce performs a single poll of the device-token endpoint. It returns
+// the authorization code on success, ErrAuthorizationPending when the user
+// has not yet approved, or ErrSlowDown when the server asks the client to
+// back off. See pollPendingCode for the status codes treated as pending.
+// Any other failure is returned wrapped.
 func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCode, error) {
 	if dc == nil || dc.deviceAuthID == "" || dc.UserCode == "" {
 		return nil, fmt.Errorf("chatgpt: device code is empty")
@@ -194,8 +196,7 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 		return nil, fmt.Errorf("chatgpt: read poll response: %w", err)
 	}
 
-	switch {
-	case resp.StatusCode/100 == 2:
+	if resp.StatusCode/100 == 2 {
 		var parsed codeSuccessResponse
 		if err := json.Unmarshal(respBody, &parsed); err != nil {
 			return nil, fmt.Errorf("chatgpt: decode poll success response: %w", err)
@@ -208,33 +209,39 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 			CodeChallenge: parsed.CodeChallenge,
 			CodeVerifier:  parsed.CodeVerifier,
 		}, nil
-	case isPollPending(resp.StatusCode, respBody):
-		return nil, ErrAuthorizationPending
-	default:
-		c.logger.Warn("chatgpt: poll returned non-pending non-success status",
-			slog.Int("status", resp.StatusCode),
-			slog.String("url", endpoint),
-			slog.String("body_preview", truncate(string(respBody), 200)))
-		return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 	}
+	switch pollPendingCode(resp.StatusCode, respBody) {
+	case "authorization_pending":
+		return nil, ErrAuthorizationPending
+	case "slow_down":
+		return nil, ErrSlowDown
+	}
+	c.logger.Warn("chatgpt: poll returned non-pending non-success status",
+		slog.Int("status", resp.StatusCode),
+		slog.String("url", endpoint),
+		slog.String("body_preview", truncate(string(respBody), 200)))
+	return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 }
 
-// isPollPending returns true when the device-token response represents an
-// RFC 8628 pending state: HTTP 400 with error=authorization_pending|slow_down,
-// or — for older Codex backends — 403/404 with the same body code.
-func isPollPending(status int, body []byte) bool {
+// pollPendingCode returns the RFC 8628 pending error code
+// ("authorization_pending" or "slow_down") from a device-token response, or
+// "" if the response is not a pending error. HTTP 400 is the RFC-conformant
+// status; 403/404 are accepted for older Codex backends that used the same
+// body code at different status values.
+func pollPendingCode(status int, body []byte) string {
 	if status != http.StatusBadRequest && status != http.StatusForbidden && status != http.StatusNotFound {
-		return false
+		return ""
 	}
 	var parsed struct {
 		Error string `json:"error"`
 	}
 	_ = json.Unmarshal(body, &parsed)
-	switch strings.ToLower(strings.TrimSpace(parsed.Error)) {
+	code := strings.ToLower(strings.TrimSpace(parsed.Error))
+	switch code {
 	case "authorization_pending", "slow_down":
-		return true
+		return code
 	}
-	return false
+	return ""
 }
 
 // PollUntilCode loops PollOnce on the device-code interval until the user
@@ -271,6 +278,12 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 				return nil, ErrDeviceAuthTimeout
 			}
 			return nil, err
+		}
+
+		// RFC 8628 §3.5: on slow_down the interval MUST be increased by 5s
+		// for this and all subsequent requests.
+		if errors.Is(err, ErrSlowDown) {
+			interval += slowDownBackoff
 		}
 
 		if onTick != nil {

@@ -437,6 +437,47 @@ func TestPollUntilCode(t *testing.T) {
 				}
 			},
 		},
+		// RFC 8628 §3.5: on slow_down the client MUST widen the poll interval
+		// by 5 seconds. Handler returns pending, then slow_down, then success;
+		// the gap between the slow_down response and the next poll must be at
+		// least slowDownBackoff.
+		"slow_down widens the poll interval per RFC 8628 §3.5": {
+			handlerFactory: func(calls *atomic.Int32) http.HandlerFunc {
+				var slowDownAt atomic.Int64
+				return func(w http.ResponseWriter, r *http.Request) {
+					n := calls.Add(1)
+					switch n {
+					case 1:
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+					case 2:
+						slowDownAt.Store(time.Now().UnixNano())
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = w.Write([]byte(`{"error":"slow_down"}`))
+					default:
+						gap := time.Duration(time.Now().UnixNano() - slowDownAt.Load())
+						if gap < 4500*time.Millisecond {
+							t.Errorf("gap between slow_down response and next poll = %v, want >= 4.5s per RFC 8628 §3.5", gap)
+						}
+						_, _ = w.Write([]byte(`{"authorization_code":"a","code_challenge":"c","code_verifier":"v"}`))
+					}
+				}
+			},
+			configOpts: []func(*Config){
+				func(cfg *Config) {
+					cfg.PollTimeout = 10 * time.Second
+					cfg.PollInterval = 5 * time.Millisecond
+				},
+			},
+			wantTicks: 2,
+			wantCalls: 3,
+			wantCode:  "a",
+			check: func(t *testing.T, err error) {
+				if err != nil {
+					t.Fatalf("PollUntilCode: %v", err)
+				}
+			},
+		},
 	}
 
 	for name, tc := range tests {
