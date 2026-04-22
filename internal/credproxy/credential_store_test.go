@@ -588,6 +588,70 @@ func TestRefreshChatGPTTokens_NoRow_ReturnsSentinel(t *testing.T) {
 	}
 }
 
+func TestNewAPIKeyCredential(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		groupJID string
+		provider string
+		apiKey   string
+		wantErr  bool
+	}{
+		"valid":          {"g", "openai", "sk", false},
+		"empty group":    {"", "openai", "sk", true},
+		"empty provider": {"g", "", "sk", true},
+		"empty api key":  {"g", "openai", "", true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cred, err := NewAPIKeyCredential(tt.groupJID, tt.provider, tt.apiKey)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewAPIKeyCredential(%q, %q, %q) err = %v, wantErr %v",
+					tt.groupJID, tt.provider, tt.apiKey, err, tt.wantErr)
+			}
+			if !tt.wantErr && cred.AuthMode != AuthModeAPIKey {
+				t.Errorf("NewAPIKeyCredential(...).AuthMode = %q, want %q", cred.AuthMode, AuthModeAPIKey)
+			}
+		})
+	}
+}
+
+func TestNewChatGPTCredential(t *testing.T) {
+	t.Parallel()
+
+	good := &ChatGPTTokens{
+		AccessToken:  "a",
+		RefreshToken: "r",
+		AccountID:    "acct",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	tests := map[string]struct {
+		groupJID string
+		provider string
+		tokens   *ChatGPTTokens
+		wantErr  bool
+	}{
+		"valid":       {"g", "openai", good, false},
+		"nil tokens":  {"g", "openai", nil, true},
+		"empty group": {"", "openai", good, true},
+		"bad tokens":  {"g", "openai", &ChatGPTTokens{AccessToken: "a"}, true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cred, err := NewChatGPTCredential(tt.groupJID, tt.provider, tt.tokens)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewChatGPTCredential(%q, %q, %+v) err = %v, wantErr %v",
+					tt.groupJID, tt.provider, tt.tokens, err, tt.wantErr)
+			}
+			if !tt.wantErr && cred.AuthMode != AuthModeChatGPT {
+				t.Errorf("NewChatGPTCredential(...).AuthMode = %q, want %q", cred.AuthMode, AuthModeChatGPT)
+			}
+		})
+	}
+}
+
 func TestGetCredential_ValidatesDecryptedShape(t *testing.T) {
 	t.Parallel()
 

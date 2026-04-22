@@ -76,6 +76,34 @@ func (c *Credential) Validate() error {
 	return nil
 }
 
+// NewAPIKeyCredential constructs and validates an api_key credential.
+func NewAPIKeyCredential(groupJID, provider, apiKey string) (*Credential, error) {
+	cred := &Credential{
+		GroupJID: groupJID,
+		Provider: provider,
+		AuthMode: AuthModeAPIKey,
+		APIKey:   apiKey,
+	}
+	if err := cred.Validate(); err != nil {
+		return nil, err
+	}
+	return cred, nil
+}
+
+// NewChatGPTCredential constructs and validates a chatgpt credential.
+func NewChatGPTCredential(groupJID, provider string, tokens *ChatGPTTokens) (*Credential, error) {
+	cred := &Credential{
+		GroupJID: groupJID,
+		Provider: provider,
+		AuthMode: AuthModeChatGPT,
+		ChatGPT:  tokens,
+	}
+	if err := cred.Validate(); err != nil {
+		return nil, err
+	}
+	return cred, nil
+}
+
 func (t *ChatGPTTokens) validate() error {
 	if t.AccessToken == "" {
 		return fmt.Errorf("chatgpt tokens: access token is required")
