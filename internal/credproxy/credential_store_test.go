@@ -587,3 +587,29 @@ func TestRefreshChatGPTTokens_NoRow_ReturnsSentinel(t *testing.T) {
 		t.Errorf("errors.Is(%v, ErrNoChatGPTCredential) = false, want true", err)
 	}
 }
+
+func TestRefreshChatGPTTokens_NilTokensErrors(t *testing.T) {
+	t.Parallel()
+
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("RefreshChatGPTTokens(nil) panicked: %v, want error", r)
+		}
+	}()
+
+	if err := store.RefreshChatGPTTokens(context.Background(), "g", nil); err == nil {
+		t.Errorf("RefreshChatGPTTokens(nil tokens) err = nil, want error")
+	}
+}

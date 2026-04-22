@@ -301,6 +301,9 @@ func (s *CredentialStore) RefreshChatGPTTokens(ctx context.Context, groupJID str
 	if groupJID == "" {
 		return fmt.Errorf("refresh chatgpt tokens: group JID is required")
 	}
+	if tokens == nil {
+		return fmt.Errorf("refresh chatgpt tokens: tokens bundle is required")
+	}
 	if err := tokens.validate(); err != nil {
 		return err
 	}
