@@ -28,11 +28,12 @@ type DeviceCode struct {
 
 // AuthorizationCode is the intermediate artefact returned by the device-token
 // poll once the user has approved. It is exchanged at /oauth/token via
-// ExchangeCode for the final token bundle.
+// ExchangeCode for the final token bundle. CodeVerifier is the PKCE secret
+// sent during the exchange; the server-side challenge is never consumed by
+// this client.
 type AuthorizationCode struct {
-	Code          string
-	CodeChallenge string
-	CodeVerifier  string
+	Code         string
+	CodeVerifier string
 }
 
 // Tokens is the final OAuth bundle plus parsed id_token claims.
@@ -95,10 +96,8 @@ func (i *intervalString) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// codeSuccessResponse is the device-token success JSON body.
 type codeSuccessResponse struct {
 	AuthorizationCode string `json:"authorization_code"`
-	CodeChallenge     string `json:"code_challenge"`
 	CodeVerifier      string `json:"code_verifier"`
 }
 
@@ -211,9 +210,8 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 			return nil, fmt.Errorf("chatgpt: poll success response missing authorization_code or code_verifier")
 		}
 		return &AuthorizationCode{
-			Code:          parsed.AuthorizationCode,
-			CodeChallenge: parsed.CodeChallenge,
-			CodeVerifier:  parsed.CodeVerifier,
+			Code:         parsed.AuthorizationCode,
+			CodeVerifier: parsed.CodeVerifier,
 		}, nil
 	}
 	switch pollPendingCode(resp.StatusCode, respBody) {

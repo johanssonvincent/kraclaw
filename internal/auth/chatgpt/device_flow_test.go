@@ -197,22 +197,19 @@ func TestRequestDeviceCode_Errors(t *testing.T) {
 func TestPollOnce_Success(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
-		respBody      string
-		wantCode      string
-		wantVerifier  string
-		wantChallenge string
+		respBody     string
+		wantCode     string
+		wantVerifier string
 	}{
 		"full triple": {
-			respBody:      `{"authorization_code":"ac_1","code_challenge":"cc_1","code_verifier":"cv_1"}`,
-			wantCode:      "ac_1",
-			wantVerifier:  "cv_1",
-			wantChallenge: "cc_1",
+			respBody:     `{"authorization_code":"ac_1","code_challenge":"cc_1","code_verifier":"cv_1"}`,
+			wantCode:     "ac_1",
+			wantVerifier: "cv_1",
 		},
 		"no code_challenge": {
-			respBody:      `{"authorization_code":"ac_2","code_verifier":"cv_2"}`,
-			wantCode:      "ac_2",
-			wantVerifier:  "cv_2",
-			wantChallenge: "",
+			respBody:     `{"authorization_code":"ac_2","code_verifier":"cv_2"}`,
+			wantCode:     "ac_2",
+			wantVerifier: "cv_2",
 		},
 	}
 	for name, tc := range tests {
@@ -244,9 +241,6 @@ func TestPollOnce_Success(t *testing.T) {
 			}
 			if ac.CodeVerifier != tc.wantVerifier {
 				t.Errorf("PollOnce(%q) CodeVerifier = %q, want %q", tc.respBody, ac.CodeVerifier, tc.wantVerifier)
-			}
-			if ac.CodeChallenge != tc.wantChallenge {
-				t.Errorf("PollOnce(%q) CodeChallenge = %q, want %q", tc.respBody, ac.CodeChallenge, tc.wantChallenge)
 			}
 		})
 	}
