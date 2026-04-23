@@ -1,10 +1,12 @@
 package credproxy
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -873,5 +875,43 @@ func TestDefaultResolver_ChatGPTAuthModeNotSupported(t *testing.T) {
 	}
 	if err != nil && !strings.Contains(err.Error(), "chatgpt auth mode") {
 		t.Errorf("Resolve(chatgpt cred) err = %v, want error mentioning chatgpt auth mode", err)
+	}
+}
+
+func TestDefaultResolver_ChatGPTRejection_LogsError(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+	expectTimezoneProbe(t, mock)
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+
+	accessEnc, _ := enc.Encrypt("a")
+	refreshEnc, _ := enc.Encrypt("r")
+	rows := sqlmock.NewRows([]string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp",
+	}).AddRow("openai", string(AuthModeChatGPT), nil, accessEnc, refreshEnc, nil, "acct", time.Now().Add(time.Hour).UTC(), false)
+	mock.ExpectQuery("SELECT").WithArgs("grp").WillReturnRows(rows)
+
+	var buf bytes.Buffer
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	defer slog.SetDefault(origLogger)
+
+	r := NewDefaultResolver(store, config.ProxyConfig{OpenAIUpstreamURL: "https://api.openai.com"})
+	if _, err := r.Resolve(context.Background(), "grp", ""); err == nil {
+		t.Errorf("Resolve err = nil, want rejection error")
+	}
+	if !strings.Contains(buf.String(), "grp") {
+		t.Errorf("slog output = %q, want error log referencing group %q", buf.String(), "grp")
 	}
 }
