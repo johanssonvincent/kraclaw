@@ -77,7 +77,7 @@ jobs:
           echo "base=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            echo "pr_tag=${BASE_VERSION}-pr${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "pr_tag=${BASE_VERSION}-PR-${PR_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Docker Buildx
