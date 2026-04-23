@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 )
 
@@ -354,18 +353,17 @@ func (s *CredentialStore) decryptChatGPTTokens(
 			return nil, fmt.Errorf("decrypt id token: %w", err)
 		}
 	}
-	if !isFedRAMP.Valid {
-		slog.Warn("oauth_is_fedramp NULL on chatgpt row — schema drift, coercing to false",
-			"account_id", accountID.String,
-		)
-	}
+	// oauth_is_fedramp is declared NOT NULL DEFAULT FALSE in the up migration,
+	// so isFedRAMP.Valid is always true. We read through sql.NullBool only
+	// because the scan target must accept the DB boolean type; the .Bool value
+	// is the source of truth.
 	return &ChatGPTTokens{
 		AccessToken:  access,
 		RefreshToken: refresh,
 		IDToken:      idToken,
 		AccountID:    accountID.String,
 		ExpiresAt:    expiresAt.Time,
-		IsFedRAMP:    isFedRAMP.Valid && isFedRAMP.Bool,
+		IsFedRAMP:    isFedRAMP.Bool,
 	}, nil
 }
 
