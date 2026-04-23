@@ -927,3 +927,95 @@ func TestCredentialStore_AcceptsCipherInterface(t *testing.T) {
 	store := &CredentialStore{db: db, enc: &fakeCipher{}}
 	_ = store
 }
+
+func TestChatGPTTokens_ValidateStructure(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	tests := map[string]struct {
+		tokens  *ChatGPTTokens
+		wantErr bool
+	}{
+		"expired but structurally complete": {
+			tokens: &ChatGPTTokens{
+				AccessToken:  "a",
+				RefreshToken: "r",
+				AccountID:    "acct",
+				ExpiresAt:    now.Add(-1 * time.Hour),
+			},
+			wantErr: false,
+		},
+		"future and complete": {
+			tokens: &ChatGPTTokens{
+				AccessToken:  "a",
+				RefreshToken: "r",
+				AccountID:    "acct",
+				ExpiresAt:    now.Add(1 * time.Hour),
+			},
+			wantErr: false,
+		},
+		"missing access token": {
+			tokens: &ChatGPTTokens{
+				RefreshToken: "r", AccountID: "acct", ExpiresAt: now.Add(1 * time.Hour),
+			},
+			wantErr: true,
+		},
+		"missing refresh token": {
+			tokens: &ChatGPTTokens{
+				AccessToken: "a", AccountID: "acct", ExpiresAt: now.Add(1 * time.Hour),
+			},
+			wantErr: true,
+		},
+		"missing account id": {
+			tokens: &ChatGPTTokens{
+				AccessToken: "a", RefreshToken: "r", ExpiresAt: now.Add(1 * time.Hour),
+			},
+			wantErr: true,
+		},
+		"zero expires_at": {
+			tokens: &ChatGPTTokens{
+				AccessToken: "a", RefreshToken: "r", AccountID: "acct",
+			},
+			wantErr: true,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.tokens.validateStructure()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateStructure(%+v) err = %v, wantErr = %v", tt.tokens, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestChatGPTTokens_ValidateFresh(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	tests := map[string]struct {
+		tokens  *ChatGPTTokens
+		wantErr bool
+	}{
+		"future expiry accepted": {
+			tokens:  &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", AccountID: "acct", ExpiresAt: now.Add(1 * time.Hour)},
+			wantErr: false,
+		},
+		"past expiry rejected": {
+			tokens:  &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", AccountID: "acct", ExpiresAt: now.Add(-1 * time.Hour)},
+			wantErr: true,
+		},
+		"exact-now rejected": {
+			tokens:  &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", AccountID: "acct", ExpiresAt: now},
+			wantErr: true,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.tokens.validateFresh()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateFresh(%+v) err = %v, wantErr = %v", tt.tokens, err, tt.wantErr)
+			}
+		})
+	}
+}

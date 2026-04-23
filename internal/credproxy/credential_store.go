@@ -113,7 +113,7 @@ func NewChatGPTCredential(groupJID, provider string, tokens *ChatGPTTokens) (*Cr
 	return cred, nil
 }
 
-func (t *ChatGPTTokens) validate() error {
+func (t *ChatGPTTokens) validateStructure() error {
 	if t.AccessToken == "" {
 		return fmt.Errorf("chatgpt tokens: access token is required")
 	}
@@ -126,10 +126,25 @@ func (t *ChatGPTTokens) validate() error {
 	if t.ExpiresAt.IsZero() {
 		return fmt.Errorf("chatgpt tokens: expires_at is required")
 	}
+	return nil
+}
+
+func (t *ChatGPTTokens) validateFresh() error {
 	if !t.ExpiresAt.After(time.Now()) {
 		return fmt.Errorf("chatgpt tokens: expires_at %s is not in the future", t.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	return nil
+}
+
+// validate keeps the pre-split contract for the construction path:
+// structure + freshness. Callers that read persisted rows should call
+// validateStructure directly — an expired access token is the normal
+// trigger for the refresh flow, not an error.
+func (t *ChatGPTTokens) validate() error {
+	if err := t.validateStructure(); err != nil {
+		return err
+	}
+	return t.validateFresh()
 }
 
 // CredentialStore manages per-group credentials in MySQL with at-rest encryption.
