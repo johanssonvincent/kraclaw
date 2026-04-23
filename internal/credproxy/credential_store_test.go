@@ -1198,6 +1198,61 @@ func TestGetCredential_DecryptError_IncludesGroupID(t *testing.T) {
 	}
 }
 
+
+func TestUpsertChatGPTCredential_EncryptErrors(t *testing.T) {
+	t.Parallel()
+	tokens := &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", IDToken: "i", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour)}
+
+	tests := map[string]struct {
+		cipher  *fakeCipher
+		wantSub string
+	}{
+		"encrypt access token fails": {cipher: &fakeCipher{encryptErr: errors.New("boom")}, wantSub: "encrypt access token"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			db, _, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New(): %v", err)
+			}
+			defer db.Close()
+			store := &CredentialStore{db: db, enc: tt.cipher}
+			err = store.UpsertChatGPTCredential(context.Background(), "g", "openai", tokens)
+			if err == nil || !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("UpsertChatGPTCredential err = %v, want error containing %q", err, tt.wantSub)
+			}
+		})
+	}
+}
+
+func TestRefreshChatGPTTokens_EncryptErrors(t *testing.T) {
+	t.Parallel()
+	tokens := &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", IDToken: "i", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour)}
+
+	tests := map[string]struct {
+		cipher  *fakeCipher
+		wantSub string
+	}{
+		"encrypt fails": {cipher: &fakeCipher{encryptErr: errors.New("boom")}, wantSub: "encrypt access token"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			db, _, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New(): %v", err)
+			}
+			defer db.Close()
+			store := &CredentialStore{db: db, enc: tt.cipher}
+			err = store.RefreshChatGPTTokens(context.Background(), "g", tokens)
+			if err == nil || !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("RefreshChatGPTTokens err = %v, want error containing %q", err, tt.wantSub)
+			}
+		})
+	}
+}
+
 func TestUpsertCredential_ModeSwitch_WipesCrossModeColumns(t *testing.T) {
 	t.Parallel()
 	db, mock, err := sqlmock.New()
