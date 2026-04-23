@@ -302,3 +302,47 @@ func TestRefresh_PreflightAndTransport(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func TestRefresh_BodyReadError_Transient(t *testing.T) {
+	t.Parallel()
+
+	// Handler writes headers claiming 100 bytes, then sends 10 bytes and
+	// hijacks the connection to close it — io.ReadAll on the response body
+	// returns io.ErrUnexpectedEOF.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"access_to`)) // partial body
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatalf("ResponseWriter is not a Hijacker")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("Hijack: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := NewClient(Config{Issuer: srv.URL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	_, err = c.Refresh(context.Background(), "old-refresh")
+	if err == nil {
+		t.Fatalf("Refresh returned nil error, want transient RefreshError on truncated body")
+	}
+	var re *RefreshError
+	if !errors.As(err, &re) {
+		t.Fatalf("err = %v, want *RefreshError", err)
+	}
+	if re.Permanent() {
+		t.Errorf("Permanent() = true, want false for body-read error: %v", err)
+	}
+	if re.Status() != http.StatusOK {
+		t.Errorf("Status() = %d, want %d (status preserved through body-read failure)", re.Status(), http.StatusOK)
+	}
+}
