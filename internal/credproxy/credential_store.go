@@ -28,10 +28,9 @@ func (m AuthMode) Valid() bool {
 	}
 }
 
-// ErrNoChatGPTCredential is returned when a ChatGPT-mode credential operation
-// targets a group that has no such credential (already deleted or never
-// existed). Callers can use errors.Is to route between "force re-auth" and
-// "retry" paths.
+// ErrNoChatGPTCredential signals that RefreshChatGPTTokens updated zero rows,
+// meaning the target group has no chatgpt-mode credential. Wrapped by the
+// refresh path only; GetCredential returns (nil, nil) for missing rows.
 var ErrNoChatGPTCredential = errors.New("no chatgpt credential for group")
 
 // encrypter is the encryption contract CredentialStore relies on. It exists so
