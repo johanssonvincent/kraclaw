@@ -775,3 +775,49 @@ func TestNewClient(t *testing.T) {
 		})
 	}
 }
+
+func TestPollUntilCode_CancelDuringSleep_ReturnsPromptly(t *testing.T) {
+	t.Parallel()
+
+	// Handler always returns authorization_pending.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := NewClient(Config{
+		Issuer:       srv.URL,
+		PollInterval: 5 * time.Second, // long enough that the test fails if we wait it out
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel ~20ms after PollUntilCode starts — the first PollOnce will
+	// return authorization_pending, then the loop enters its 5s sleep, and
+	// our cancel must interrupt it.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	dc := &DeviceCode{
+		deviceAuthID: "did",
+		UserCode:     "uc",
+		Interval:     5 * time.Second,
+	}
+	start := time.Now()
+	_, err = c.PollUntilCode(ctx, dc, nil)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("PollUntilCode took %v, want < 500ms after ctx cancel mid-sleep", elapsed)
+	}
+}
