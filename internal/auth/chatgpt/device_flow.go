@@ -304,15 +304,18 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 			onTick()
 		}
 
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return nil, ctx.Err()
 		case <-pollCtx.Done():
+			timer.Stop()
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
 			return nil, ErrDeviceAuthTimeout
-		case <-time.After(interval):
+		case <-timer.C:
 		}
 	}
 }
