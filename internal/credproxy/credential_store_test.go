@@ -867,19 +867,19 @@ func TestGetCredential_ChatGPTNullFieldGuards(t *testing.T) {
 	}{
 		"access NULL, refresh set": {
 			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, nil, refresh, nil, "acct", expiry, false},
-			wantMsg: "oauth tokens are missing",
+			wantMsg: "oauth access token is NULL",
 		},
 		"refresh NULL, access set": {
 			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, access, nil, nil, "acct", expiry, false},
-			wantMsg: "oauth tokens are missing",
+			wantMsg: "oauth refresh token is NULL",
 		},
 		"account id NULL with tokens present": {
 			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, access, refresh, nil, nil, expiry, false},
-			wantMsg: "oauth_account_id is missing",
+			wantMsg: "oauth account id is NULL",
 		},
 		"expires_at NULL with tokens present": {
 			row:     []driver.Value{"openai", string(AuthModeChatGPT), nil, access, refresh, nil, "acct", nil, false},
-			wantMsg: "oauth_expires_at is NULL",
+			wantMsg: "oauth expires_at is NULL",
 		},
 	}
 
@@ -1162,5 +1162,38 @@ func TestAuthMode_Valid(t *testing.T) {
 				t.Errorf("AuthMode(%q).Valid() = %v, want %v", tt.m, got, tt.want)
 			}
 		})
+	}
+}
+
+
+func TestGetCredential_DecryptError_IncludesGroupID(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+	expectTimezoneProbe(t, mock)
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+
+	// Well-formed chatgpt row but ciphertext cannot be decrypted (bad payload).
+	rows := sqlmock.NewRows([]string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp",
+	}).AddRow("openai", "chatgpt", nil, "not-a-valid-ciphertext", "bad", "bad", "acct", time.Now().Add(time.Hour).UTC(), false)
+	mock.ExpectQuery("SELECT").WithArgs("group-xyz").WillReturnRows(rows)
+
+	_, err = store.GetCredential(context.Background(), "group-xyz")
+	if err == nil {
+		t.Errorf("GetCredential err = nil, want decrypt error")
+	}
+	if err != nil && !strings.Contains(err.Error(), "group-xyz") {
+		t.Errorf("GetCredential err = %v, want message to include group JID %q", err, "group-xyz")
 	}
 }

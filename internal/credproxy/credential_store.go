@@ -308,7 +308,7 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 		}
 		cred.apiKey = apiKey
 	case AuthModeChatGPT:
-		tokens, err := s.decryptChatGPTTokens(accessEnc, refreshEnc, idEnc, accountID, expiresAt, isFedRAMP)
+		tokens, err := s.decryptChatGPTTokens(groupJID, accessEnc, refreshEnc, idEnc, accountID, expiresAt, isFedRAMP)
 		if err != nil {
 			return nil, err
 		}
@@ -324,33 +324,37 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 }
 
 func (s *CredentialStore) decryptChatGPTTokens(
+	groupJID string,
 	accessEnc, refreshEnc, idEnc sql.NullString,
 	accountID sql.NullString,
 	expiresAt sql.NullTime,
 	isFedRAMP sql.NullBool,
 ) (*ChatGPTTokens, error) {
-	if !accessEnc.Valid || !refreshEnc.Valid {
-		return nil, fmt.Errorf("get credential: chatgpt auth mode but oauth tokens are missing")
+	if !accessEnc.Valid {
+		return nil, fmt.Errorf("get credential for group %q: oauth access token is NULL", groupJID)
+	}
+	if !refreshEnc.Valid {
+		return nil, fmt.Errorf("get credential for group %q: oauth refresh token is NULL", groupJID)
 	}
 	if !accountID.Valid || accountID.String == "" {
-		return nil, fmt.Errorf("get credential: chatgpt auth mode but oauth_account_id is missing")
+		return nil, fmt.Errorf("get credential for group %q: oauth account id is NULL", groupJID)
 	}
 	if !expiresAt.Valid {
-		return nil, fmt.Errorf("get credential: chatgpt auth mode but oauth_expires_at is NULL")
+		return nil, fmt.Errorf("get credential for group %q: oauth expires_at is NULL", groupJID)
 	}
 	access, err := s.enc.Decrypt(accessEnc.String)
 	if err != nil {
-		return nil, fmt.Errorf("decrypt access token: %w", err)
+		return nil, fmt.Errorf("decrypt access token for group %q: %w", groupJID, err)
 	}
 	refresh, err := s.enc.Decrypt(refreshEnc.String)
 	if err != nil {
-		return nil, fmt.Errorf("decrypt refresh token: %w", err)
+		return nil, fmt.Errorf("decrypt refresh token for group %q: %w", groupJID, err)
 	}
 	var idToken string
 	if idEnc.Valid && idEnc.String != "" {
 		idToken, err = s.enc.Decrypt(idEnc.String)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt id token: %w", err)
+			return nil, fmt.Errorf("decrypt id token for group %q: %w", groupJID, err)
 		}
 	}
 	// oauth_is_fedramp is declared NOT NULL DEFAULT FALSE in the up migration,
