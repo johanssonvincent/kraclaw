@@ -39,6 +39,34 @@ func TestObservability_RefreshMissingAccessTokenEmitsWarn(t *testing.T) {
 	}
 }
 
+func TestObservability_DeviceCodeMissingFieldsEmitsWarn(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// device_auth_id present, user_code missing.
+		_, _ = w.Write([]byte(`{"device_auth_id":"abc","interval":5}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	c, err := NewClient(Config{Issuer: srv.URL, Logger: logger})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	if _, err := c.RequestDeviceCode(context.Background()); err == nil {
+		t.Fatalf("RequestDeviceCode returned nil error, want error on missing user_code")
+	}
+
+	if !strings.Contains(buf.String(), "device-code response missing") {
+		t.Errorf("expected warn about missing device-code fields, got: %s", buf.String())
+	}
+}
+
 func TestRefresh_LogsOnUnparseable401(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

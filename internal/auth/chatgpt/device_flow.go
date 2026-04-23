@@ -158,6 +158,12 @@ func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 		Interval:        time.Duration(parsed.Interval),
 	}
 	if dc.deviceAuthID == "" || dc.UserCode == "" {
+		c.logger.Warn("chatgpt: device-code response missing required fields",
+			slog.Int("status", resp.StatusCode),
+			slog.String("url", endpoint),
+			slog.Bool("device_auth_id_empty", dc.deviceAuthID == ""),
+			slog.Bool("user_code_empty", dc.UserCode == ""),
+			slog.String("body_preview", truncate(string(respBody), 200)))
 		return nil, fmt.Errorf("chatgpt: device-code response missing device_auth_id or user_code")
 	}
 	if dc.Interval <= 0 {
