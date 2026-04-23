@@ -885,3 +885,45 @@ func TestGetCredential_ChatGPTNullFieldGuards(t *testing.T) {
 	}
 }
 
+
+type fakeCipher struct {
+	encryptErr error
+	decryptErr error
+	encrypted  string
+	decrypted  string
+}
+
+func (f *fakeCipher) Encrypt(plaintext string) (string, error) {
+	if f.encryptErr != nil {
+		return "", f.encryptErr
+	}
+	if f.encrypted != "" {
+		return f.encrypted, nil
+	}
+	return "enc:" + plaintext, nil
+}
+
+func (f *fakeCipher) Decrypt(ciphertext string) (string, error) {
+	if f.decryptErr != nil {
+		return "", f.decryptErr
+	}
+	if f.decrypted != "" {
+		return f.decrypted, nil
+	}
+	return ciphertext, nil
+}
+
+func TestCredentialStore_AcceptsCipherInterface(t *testing.T) {
+	t.Parallel()
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Compile-time check: *fakeCipher must satisfy the encrypter interface so
+	// that the enc field accepts it. The assignment below fails to compile if
+	// the interface is not satisfied.
+	store := &CredentialStore{db: db, enc: &fakeCipher{}}
+	_ = store
+}

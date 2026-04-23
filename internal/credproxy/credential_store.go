@@ -23,6 +23,14 @@ const (
 // "retry" paths.
 var ErrNoChatGPTCredential = errors.New("no chatgpt credential for group")
 
+// encrypter is the encryption contract CredentialStore relies on. It exists so
+// tests can inject fakes that return errors from Encrypt/Decrypt — the real
+// *Encryptor satisfies this interface.
+type encrypter interface {
+	Encrypt(plaintext string) (string, error)
+	Decrypt(ciphertext string) (string, error)
+}
+
 // ChatGPTTokens is the OAuth credential bundle for ChatGPT-mode groups.
 type ChatGPTTokens struct {
 	AccessToken  string
@@ -127,7 +135,7 @@ func (t *ChatGPTTokens) validate() error {
 // CredentialStore manages per-group credentials in MySQL with at-rest encryption.
 type CredentialStore struct {
 	db  *sql.DB
-	enc *Encryptor
+	enc encrypter
 }
 
 // NewCredentialStore creates a credential store backed by MySQL.
