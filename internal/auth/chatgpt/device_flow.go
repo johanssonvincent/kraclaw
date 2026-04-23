@@ -274,10 +274,12 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 
 	for {
 		code, err := c.PollOnce(pollCtx, dc)
-		if err == nil {
+		switch {
+		case err == nil:
 			return code, nil
-		}
-		if !errors.Is(err, ErrAuthorizationPending) {
+		case errors.Is(err, ErrAuthorizationPending):
+			// fall through to pending-handling below
+		default:
 			// Parent ctx takes precedence: if the caller's ctx is already
 			// done, surface their error rather than attributing it to our
 			// internal PollTimeout.
@@ -289,6 +291,8 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 			}
 			return nil, err
 		}
+
+		// Pending path only from here down.
 
 		// RFC 8628 §3.5: on slow_down the interval MUST be increased by 5s
 		// for this and all subsequent requests.
