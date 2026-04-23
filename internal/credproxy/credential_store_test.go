@@ -1296,3 +1296,75 @@ func TestUpsertCredential_ModeSwitch_WipesCrossModeColumns(t *testing.T) {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
+
+func TestUpsertCredential_APIKey_DBError(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+	expectTimezoneProbe(t, mock)
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+
+	mock.ExpectExec("REPLACE INTO credentials").WillReturnError(errors.New("conn refused"))
+
+	cred, err := NewAPIKeyCredential("g", "openai", "sk-1")
+	if err != nil {
+		t.Fatalf("NewAPIKeyCredential: %v", err)
+	}
+	if err := store.UpsertCredential(context.Background(), cred); err == nil || !strings.Contains(err.Error(), "upsert credential") {
+		t.Errorf("UpsertCredential err = %v, want wrap containing 'upsert credential'", err)
+	}
+}
+
+func TestUpsertChatGPTCredential_DBError(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+	expectTimezoneProbe(t, mock)
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+
+	mock.ExpectExec("REPLACE INTO credentials").WillReturnError(errors.New("conn refused"))
+
+	tokens := &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour)}
+	if err := store.UpsertChatGPTCredential(context.Background(), "g", "openai", tokens); err == nil || !strings.Contains(err.Error(), "upsert chatgpt credential") {
+		t.Errorf("UpsertChatGPTCredential err = %v, want wrap containing 'upsert chatgpt credential'", err)
+	}
+}
+
+func TestRefreshChatGPTTokens_RowsAffectedError(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+	expectTimezoneProbe(t, mock)
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+
+	mock.ExpectExec("UPDATE credentials SET").WillReturnResult(sqlmock.NewErrorResult(errors.New("rows-affected-broken")))
+
+	tokens := &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour)}
+	if err := store.RefreshChatGPTTokens(context.Background(), "g", tokens); err == nil || !strings.Contains(err.Error(), "rows affected") {
+		t.Errorf("RefreshChatGPTTokens err = %v, want wrap containing 'rows affected'", err)
+	}
+}
