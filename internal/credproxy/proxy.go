@@ -66,7 +66,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 			} else {
 				rc := &resolvedCredential{
 					Provider: cred.Provider,
-					APIKey:   cred.APIKey,
+					APIKey:   cred.APIKey(),
 				}
 				switch cred.Provider {
 				case provider.ProviderOpenAI:
@@ -473,3 +473,4 @@ func (rw *responseWriter) Flush() {
 func (rw *responseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
 }
+

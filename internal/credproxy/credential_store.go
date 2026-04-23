@@ -43,14 +43,32 @@ type ChatGPTTokens struct {
 
 // Credential represents per-group provider credentials.
 //
-// Exactly one of APIKey or ChatGPT is populated, matching AuthMode.
+// Construct via NewAPIKeyCredential or NewChatGPTCredential. The payload is
+// intentionally unexported so "both APIKey and ChatGPT populated" is
+// unrepresentable at the type level — the constructors enforce the xor.
 type Credential struct {
 	GroupJID string
 	Provider string
 	AuthMode AuthMode
 
-	APIKey  string
-	ChatGPT *ChatGPTTokens
+	apiKey  string
+	chatGPT *ChatGPTTokens
+}
+
+// APIKey returns the API key for an api_key-mode credential, or "" otherwise.
+func (c *Credential) APIKey() string {
+	if c == nil {
+		return ""
+	}
+	return c.apiKey
+}
+
+// ChatGPT returns the OAuth token bundle for a chatgpt-mode credential, or nil otherwise.
+func (c *Credential) ChatGPT() *ChatGPTTokens {
+	if c == nil {
+		return nil
+	}
+	return c.chatGPT
 }
 
 // Validate checks that required Credential fields are set for the active AuthMode.
@@ -63,20 +81,20 @@ func (c *Credential) Validate() error {
 	}
 	switch c.AuthMode {
 	case "", AuthModeAPIKey:
-		if c.APIKey == "" {
+		if c.apiKey == "" {
 			return fmt.Errorf("credential: API key is required for api_key auth mode")
 		}
-		if c.ChatGPT != nil {
+		if c.chatGPT != nil {
 			return fmt.Errorf("credential: ChatGPT tokens must be nil for api_key auth mode")
 		}
 	case AuthModeChatGPT:
-		if c.ChatGPT == nil {
+		if c.chatGPT == nil {
 			return fmt.Errorf("credential: ChatGPT tokens are required for chatgpt auth mode")
 		}
-		if c.APIKey != "" {
+		if c.apiKey != "" {
 			return fmt.Errorf("credential: APIKey must be empty for chatgpt auth mode")
 		}
-		if err := c.ChatGPT.validate(); err != nil {
+		if err := c.chatGPT.validate(); err != nil {
 			return err
 		}
 	default:
@@ -97,20 +115,20 @@ func (c *Credential) validateForRead() error {
 	}
 	switch c.AuthMode {
 	case "", AuthModeAPIKey:
-		if c.APIKey == "" {
+		if c.apiKey == "" {
 			return fmt.Errorf("credential: API key is required for api_key auth mode")
 		}
-		if c.ChatGPT != nil {
+		if c.chatGPT != nil {
 			return fmt.Errorf("credential: ChatGPT tokens must be nil for api_key auth mode")
 		}
 	case AuthModeChatGPT:
-		if c.ChatGPT == nil {
+		if c.chatGPT == nil {
 			return fmt.Errorf("credential: ChatGPT tokens are required for chatgpt auth mode")
 		}
-		if c.APIKey != "" {
+		if c.apiKey != "" {
 			return fmt.Errorf("credential: APIKey must be empty for chatgpt auth mode")
 		}
-		if err := c.ChatGPT.validateStructure(); err != nil {
+		if err := c.chatGPT.validateStructure(); err != nil {
 			return err
 		}
 	default:
@@ -125,7 +143,7 @@ func NewAPIKeyCredential(groupJID, provider, apiKey string) (*Credential, error)
 		GroupJID: groupJID,
 		Provider: provider,
 		AuthMode: AuthModeAPIKey,
-		APIKey:   apiKey,
+		apiKey:   apiKey,
 	}
 	if err := cred.Validate(); err != nil {
 		return nil, err
@@ -139,7 +157,7 @@ func NewChatGPTCredential(groupJID, provider string, tokens *ChatGPTTokens) (*Cr
 		GroupJID: groupJID,
 		Provider: provider,
 		AuthMode: AuthModeChatGPT,
-		ChatGPT:  tokens,
+		chatGPT:  tokens,
 	}
 	if err := cred.Validate(); err != nil {
 		return nil, err
@@ -277,13 +295,13 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 		if err != nil {
 			return nil, fmt.Errorf("decrypt api key: %w", err)
 		}
-		cred.APIKey = apiKey
+		cred.apiKey = apiKey
 	case AuthModeChatGPT:
 		tokens, err := s.decryptChatGPTTokens(accessEnc, refreshEnc, idEnc, accountID, expiresAt, isFedRAMP)
 		if err != nil {
 			return nil, err
 		}
-		cred.ChatGPT = tokens
+		cred.chatGPT = tokens
 	default:
 		return nil, fmt.Errorf("get credential: unknown auth mode %q", cred.AuthMode)
 	}
@@ -350,7 +368,7 @@ func (s *CredentialStore) UpsertCredential(ctx context.Context, cred *Credential
 
 	switch cred.AuthMode {
 	case AuthModeAPIKey:
-		apiKeyEnc, err := s.enc.Encrypt(cred.APIKey)
+		apiKeyEnc, err := s.enc.Encrypt(cred.apiKey)
 		if err != nil {
 			return fmt.Errorf("encrypt api key: %w", err)
 		}
@@ -363,7 +381,7 @@ func (s *CredentialStore) UpsertCredential(ctx context.Context, cred *Credential
 		}
 		return nil
 	case AuthModeChatGPT:
-		return s.upsertChatGPT(ctx, cred.GroupJID, cred.Provider, cred.ChatGPT)
+		return s.upsertChatGPT(ctx, cred.GroupJID, cred.Provider, cred.chatGPT)
 	default:
 		return fmt.Errorf("upsert credential: unknown auth mode %q", cred.AuthMode)
 	}
@@ -376,7 +394,7 @@ func (s *CredentialStore) UpsertChatGPTCredential(ctx context.Context, groupJID,
 		GroupJID: groupJID,
 		Provider: provider,
 		AuthMode: AuthModeChatGPT,
-		ChatGPT:  tokens,
+		chatGPT:  tokens,
 	}
 	if err := cred.Validate(); err != nil {
 		return err
@@ -479,3 +497,4 @@ func (s *CredentialStore) DeleteCredential(ctx context.Context, groupJID string)
 	}
 	return nil
 }
+

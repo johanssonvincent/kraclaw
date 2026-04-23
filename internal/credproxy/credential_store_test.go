@@ -48,7 +48,7 @@ func TestCredentialStore_UpsertAndGet_APIKey(t *testing.T) {
 		GroupJID: "discord:123",
 		Provider: "openai",
 		AuthMode: AuthModeAPIKey,
-		APIKey:   "sk-test-key",
+		apiKey:   "sk-test-key",
 	}
 
 	mock.ExpectExec("REPLACE INTO credentials").
@@ -109,20 +109,20 @@ func TestCredential_Validate(t *testing.T) {
 		cred    Credential
 		wantErr bool
 	}{
-		{"api_key valid", Credential{GroupJID: "discord:123", Provider: "openai", APIKey: "sk-test"}, false},
-		{"api_key explicit valid", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeAPIKey, APIKey: "sk-test"}, false},
-		{"empty group JID", Credential{GroupJID: "", Provider: "openai", APIKey: "sk-test"}, true},
-		{"empty provider", Credential{GroupJID: "discord:123", Provider: "", APIKey: "sk-test"}, true},
+		{"api_key valid", Credential{GroupJID: "discord:123", Provider: "openai", apiKey: "sk-test"}, false},
+		{"api_key explicit valid", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeAPIKey, apiKey: "sk-test"}, false},
+		{"empty group JID", Credential{GroupJID: "", Provider: "openai", apiKey: "sk-test"}, true},
+		{"empty provider", Credential{GroupJID: "discord:123", Provider: "", apiKey: "sk-test"}, true},
 		{"api_key missing key", Credential{GroupJID: "discord:123", Provider: "openai"}, true},
-		{"api_key with chatgpt tokens set", Credential{GroupJID: "discord:123", Provider: "openai", APIKey: "sk-test", ChatGPT: validTokens()}, true},
-		{"chatgpt valid", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, ChatGPT: validTokens()}, false},
+		{"api_key with chatgpt tokens set", Credential{GroupJID: "discord:123", Provider: "openai", apiKey: "sk-test", chatGPT: validTokens()}, true},
+		{"chatgpt valid", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, chatGPT: validTokens()}, false},
 		{"chatgpt missing tokens", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT}, true},
-		{"chatgpt with api key", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, APIKey: "sk-test", ChatGPT: validTokens()}, true},
-		{"chatgpt missing access token", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, ChatGPT: &ChatGPTTokens{RefreshToken: "r", AccountID: "a", ExpiresAt: time.Now().Add(time.Hour)}}, true},
-		{"chatgpt missing refresh token", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, ChatGPT: &ChatGPTTokens{AccessToken: "a", AccountID: "a", ExpiresAt: time.Now().Add(time.Hour)}}, true},
-		{"chatgpt missing account id", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, ChatGPT: &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", ExpiresAt: time.Now().Add(time.Hour)}}, true},
-		{"chatgpt zero expiry", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, ChatGPT: &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", AccountID: "a"}}, true},
-		{"unknown auth mode", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthMode("magic"), APIKey: "sk-test"}, true},
+		{"chatgpt with api key", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, apiKey: "sk-test", chatGPT: validTokens()}, true},
+		{"chatgpt missing access token", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, chatGPT: &ChatGPTTokens{RefreshToken: "r", AccountID: "a", ExpiresAt: time.Now().Add(time.Hour)}}, true},
+		{"chatgpt missing refresh token", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, chatGPT: &ChatGPTTokens{AccessToken: "a", AccountID: "a", ExpiresAt: time.Now().Add(time.Hour)}}, true},
+		{"chatgpt missing account id", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, chatGPT: &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", ExpiresAt: time.Now().Add(time.Hour)}}, true},
+		{"chatgpt zero expiry", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthModeChatGPT, chatGPT: &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", AccountID: "a"}}, true},
+		{"unknown auth mode", Credential{GroupJID: "discord:123", Provider: "openai", AuthMode: AuthMode("magic"), apiKey: "sk-test"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -278,11 +278,11 @@ func TestGetCredential(t *testing.T) {
 			if cred.AuthMode != tt.wantMode {
 				t.Errorf("GetCredential(%q).AuthMode = %q, want %q", tt.groupJID, cred.AuthMode, tt.wantMode)
 			}
-			if cred.APIKey != tt.wantKey {
-				t.Errorf("GetCredential(%q).APIKey = %q, want %q", tt.groupJID, cred.APIKey, tt.wantKey)
+			if cred.APIKey() != tt.wantKey {
+				t.Errorf("GetCredential(%q).APIKey() = %q, want %q", tt.groupJID, cred.APIKey(), tt.wantKey)
 			}
-			if (cred.ChatGPT != nil) != tt.wantChatGPT {
-				t.Errorf("GetCredential(%q) has ChatGPT = %v, want %v", tt.groupJID, cred.ChatGPT != nil, tt.wantChatGPT)
+			if (cred.ChatGPT() != nil) != tt.wantChatGPT {
+				t.Errorf("GetCredential(%q) has ChatGPT = %v, want %v", tt.groupJID, cred.ChatGPT() != nil, tt.wantChatGPT)
 			}
 		})
 	}
@@ -416,29 +416,29 @@ func TestUpsertChatGPTCredential_Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got == nil || got.ChatGPT == nil {
+	if got == nil || got.ChatGPT() == nil {
 		t.Fatalf("GetCredential returned incomplete credential: %+v", got)
 	}
 
 	checks := map[string]struct{ got, want string }{
-		"access token":  {got.ChatGPT.AccessToken, "access-token-XYZ"},
-		"refresh token": {got.ChatGPT.RefreshToken, "refresh-token-ABC"},
-		"id token":      {got.ChatGPT.IDToken, "id-token-PQR"},
-		"account id":    {got.ChatGPT.AccountID, "acct_42"},
+		"access token":  {got.ChatGPT().AccessToken, "access-token-XYZ"},
+		"refresh token": {got.ChatGPT().RefreshToken, "refresh-token-ABC"},
+		"id token":      {got.ChatGPT().IDToken, "id-token-PQR"},
+		"account id":    {got.ChatGPT().AccountID, "acct_42"},
 	}
 	for name, c := range checks {
 		if c.got != c.want {
 			t.Errorf("roundtrip %s = %q, want %q", name, c.got, c.want)
 		}
 	}
-	if !got.ChatGPT.IsFedRAMP {
+	if !got.ChatGPT().IsFedRAMP {
 		t.Errorf("roundtrip IsFedRAMP = false, want true")
 	}
-	if !got.ChatGPT.ExpiresAt.Equal(expiresAt) {
-		t.Errorf("roundtrip ExpiresAt = %v, want %v", got.ChatGPT.ExpiresAt, expiresAt)
+	if !got.ChatGPT().ExpiresAt.Equal(expiresAt) {
+		t.Errorf("roundtrip ExpiresAt = %v, want %v", got.ChatGPT().ExpiresAt, expiresAt)
 	}
-	if got.APIKey != "" {
-		t.Errorf("roundtrip APIKey = %q, want empty", got.APIKey)
+	if got.APIKey() != "" {
+		t.Errorf("roundtrip APIKey() = %q, want empty", got.APIKey())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sqlmock expectations not met: %v", err)
@@ -562,7 +562,7 @@ func TestCredential_Validate_RejectsExpiredChatGPTToken(t *testing.T) {
 		GroupJID: "g",
 		Provider: "openai",
 		AuthMode: AuthModeChatGPT,
-		ChatGPT: &ChatGPTTokens{
+		chatGPT: &ChatGPTTokens{
 			AccessToken:  "a",
 			RefreshToken: "r",
 			AccountID:    "acct",
@@ -593,7 +593,7 @@ func TestUpsertCredential_RejectsEmptyAuthMode(t *testing.T) {
 	err = store.UpsertCredential(context.Background(), &Credential{
 		GroupJID: "g",
 		Provider: "openai",
-		APIKey:   "sk",
+		apiKey:   "sk",
 	})
 	if err == nil {
 		t.Errorf("UpsertCredential(empty AuthMode) err = nil, want error")
@@ -1109,3 +1109,37 @@ func TestNewCredentialStore_ProbesTimezoneInvariant(t *testing.T) {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
+
+func TestCredential_Getters(t *testing.T) {
+	t.Parallel()
+	tokens := &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour)}
+	apiCred, err := NewAPIKeyCredential("g", "openai", "sk-1")
+	if err != nil {
+		t.Fatalf("NewAPIKeyCredential: %v", err)
+	}
+	chatCred, err := NewChatGPTCredential("g", "openai", tokens)
+	if err != nil {
+		t.Fatalf("NewChatGPTCredential: %v", err)
+	}
+
+	tests := map[string]struct {
+		cred        *Credential
+		wantAPIKey  string
+		wantChatGPT *ChatGPTTokens
+	}{
+		"api_key credential": {cred: apiCred, wantAPIKey: "sk-1", wantChatGPT: nil},
+		"chatgpt credential": {cred: chatCred, wantAPIKey: "", wantChatGPT: tokens},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.cred.APIKey(); got != tt.wantAPIKey {
+				t.Errorf("%s: APIKey() = %q, want %q", name, got, tt.wantAPIKey)
+			}
+			if got := tt.cred.ChatGPT(); got != tt.wantChatGPT {
+				t.Errorf("%s: ChatGPT() = %+v, want %+v", name, got, tt.wantChatGPT)
+			}
+		})
+	}
+}
+
