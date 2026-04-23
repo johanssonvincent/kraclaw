@@ -385,6 +385,9 @@ func (s *CredentialStore) UpsertCredential(ctx context.Context, cred *Credential
 		if err != nil {
 			return fmt.Errorf("encrypt api key: %w", err)
 		}
+		// REPLACE is load-bearing: DELETE+INSERT clears any prior-mode oauth_* columns
+		// when a group switches from chatgpt to api_key mode. ON DUPLICATE KEY UPDATE
+		// would leave stale encrypted tokens in place.
 		if _, err := s.db.ExecContext(ctx, `
             REPLACE INTO credentials (
                 group_jid, provider, auth_mode, api_key_encrypted
@@ -432,6 +435,9 @@ func (s *CredentialStore) upsertChatGPT(ctx context.Context, groupJID, provider 
 		}
 		idEnc = sql.NullString{String: v, Valid: true}
 	}
+	// REPLACE is load-bearing: clearing api_key_encrypted (explicit NULL below)
+	// and any oauth_* columns when the group switches modes. INSERT ...
+	// ON DUPLICATE KEY UPDATE would leave the prior api_key ciphertext in place.
 	if _, err := s.db.ExecContext(ctx, `
         REPLACE INTO credentials (
             group_jid, provider, auth_mode, api_key_encrypted,

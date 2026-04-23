@@ -1197,3 +1197,47 @@ func TestGetCredential_DecryptError_IncludesGroupID(t *testing.T) {
 		t.Errorf("GetCredential err = %v, want message to include group JID %q", err, "group-xyz")
 	}
 }
+
+func TestUpsertCredential_ModeSwitch_WipesCrossModeColumns(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+	expectTimezoneProbe(t, mock)
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+
+	// 1. Upsert a chatgpt credential.
+	tokens := &ChatGPTTokens{AccessToken: "a", RefreshToken: "r", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour)}
+	mock.ExpectExec("REPLACE INTO credentials").
+		WithArgs("g", "openai", string(AuthModeChatGPT),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"acct", sqlmock.AnyArg(), false).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := store.UpsertChatGPTCredential(context.Background(), "g", "openai", tokens); err != nil {
+		t.Fatalf("UpsertChatGPTCredential: %v", err)
+	}
+
+	// 2. Upsert an api_key credential with exactly 4 columns — REPLACE is
+	//    load-bearing: it must NULL all oauth_* columns for the same group.
+	mock.ExpectExec("REPLACE INTO credentials").
+		WithArgs("g", "openai", string(AuthModeAPIKey), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	apiCred, err := NewAPIKeyCredential("g", "openai", "sk-1")
+	if err != nil {
+		t.Fatalf("NewAPIKeyCredential: %v", err)
+	}
+	if err := store.UpsertCredential(context.Background(), apiCred); err != nil {
+		t.Errorf("UpsertCredential api_key after chatgpt err = %v, want nil", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
