@@ -616,6 +616,25 @@ func TestExchangeCode_Success(t *testing.T) {
 				}
 			},
 		},
+		"no exp and no expires_in yields HasExpiry=false": {
+			input: &AuthorizationCode{Code: "ac_3", CodeVerifier: "cv_3"},
+			respBody: func(t *testing.T) string {
+				idTok := mintJWT(t, map[string]any{
+					"https://api.openai.com/auth": map[string]any{
+						"chatgpt_account_id": "acct_9",
+					},
+				})
+				return `{"id_token":"` + idTok + `","access_token":"acc_3","refresh_token":"ref_3"}`
+			},
+			check: func(t *testing.T, tokens *Tokens) {
+				if tokens.HasExpiry() {
+					t.Errorf("HasExpiry() = true, want false when id_token has no exp and response has no expires_in")
+				}
+				if !tokens.ExpiresAt.IsZero() {
+					t.Errorf("ExpiresAt = %v, want zero", tokens.ExpiresAt)
+				}
+			},
+		},
 	}
 
 	for name, tc := range tests {
