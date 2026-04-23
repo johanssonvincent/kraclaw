@@ -598,8 +598,8 @@ func TestExchangeCode_Success(t *testing.T) {
 				if tokens.ExpiresAt.IsZero() {
 					t.Errorf("ExpiresAt = zero, want populated from id_token exp")
 				}
-				if !tokens.HasExpiry {
-					t.Errorf("HasExpiry = false, want true when id_token exp is present")
+				if !tokens.HasExpiry() {
+					t.Errorf("HasExpiry() = false, want true when id_token exp is present")
 				}
 			},
 		},
@@ -617,8 +617,8 @@ func TestExchangeCode_Success(t *testing.T) {
 				if tokens.ExpiresAt.IsZero() {
 					t.Errorf("ExpiresAt = zero, want populated from expires_in")
 				}
-				if !tokens.HasExpiry {
-					t.Errorf("HasExpiry = false, want true when expires_in is present")
+				if !tokens.HasExpiry() {
+					t.Errorf("HasExpiry() = false, want true when expires_in is present")
 				}
 			},
 		},

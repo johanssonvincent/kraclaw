@@ -95,8 +95,8 @@ func TestRefresh_Success(t *testing.T) {
 			refreshToken: "rt",
 			respBody:     `{"access_token":"a","refresh_token":"r"}`,
 			check: func(t *testing.T, tokens *Tokens) {
-				if tokens.HasExpiry {
-					t.Errorf("HasExpiry = true, want false when neither id_token.exp nor expires_in present; tokens=%+v", tokens)
+				if tokens.HasExpiry() {
+					t.Errorf("HasExpiry() = true, want false when neither id_token.exp nor expires_in present; tokens=%+v", tokens)
 				}
 				if !tokens.ExpiresAt.IsZero() {
 					t.Errorf("ExpiresAt = %v, want zero", tokens.ExpiresAt)

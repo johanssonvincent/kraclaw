@@ -160,7 +160,6 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	if tokens.ExpiresAt.IsZero() && parsed.ExpiresIn > 0 {
 		tokens.ExpiresAt = c.now().Add(time.Second * time.Duration(parsed.ExpiresIn))
 	}
-	tokens.HasExpiry = !tokens.ExpiresAt.IsZero()
 	return tokens, nil
 }
 

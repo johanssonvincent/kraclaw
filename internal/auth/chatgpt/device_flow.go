@@ -42,11 +42,17 @@ type Tokens struct {
 	IDToken      string
 	IDClaims     IDTokenClaims
 
-	// ExpiresAt is the absolute token expiry. Valid only when HasExpiry is
-	// true — otherwise the server returned neither id_token.exp nor
-	// expires_in and the absolute expiry is unknown.
+	// ExpiresAt is the absolute token expiry. Zero when the server returned
+	// neither id_token.exp nor expires_in; callers must check HasExpiry
+	// rather than comparing ExpiresAt to time.Now directly.
 	ExpiresAt time.Time
-	HasExpiry bool
+}
+
+// HasExpiry reports whether the server returned a usable expiry for these
+// tokens. False means the absolute expiry is unknown; callers should treat
+// the access token as "validity managed server-side" and refresh proactively.
+func (t *Tokens) HasExpiry() bool {
+	return !t.ExpiresAt.IsZero()
 }
 
 // userCodeResponse is the device-auth/usercode JSON envelope. interval is
@@ -374,7 +380,6 @@ func (c *Client) tokensFromResponse(parsed *tokenResponse) (*Tokens, error) {
 	if tokens.ExpiresAt.IsZero() && parsed.ExpiresIn > 0 {
 		tokens.ExpiresAt = c.now().Add(time.Duration(parsed.ExpiresIn) * time.Second)
 	}
-	tokens.HasExpiry = !tokens.ExpiresAt.IsZero()
 	return tokens, nil
 }
 
