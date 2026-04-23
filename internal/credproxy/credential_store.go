@@ -85,6 +85,40 @@ func (c *Credential) Validate() error {
 	return nil
 }
 
+// validateForRead validates structural invariants only — it does NOT reject
+// expired chatgpt tokens. An expired access token is the normal precondition
+// for a refresh, so reads must succeed for the refresh flow to work.
+func (c *Credential) validateForRead() error {
+	if c.GroupJID == "" {
+		return fmt.Errorf("credential: group JID is required")
+	}
+	if c.Provider == "" {
+		return fmt.Errorf("credential: provider is required")
+	}
+	switch c.AuthMode {
+	case "", AuthModeAPIKey:
+		if c.APIKey == "" {
+			return fmt.Errorf("credential: API key is required for api_key auth mode")
+		}
+		if c.ChatGPT != nil {
+			return fmt.Errorf("credential: ChatGPT tokens must be nil for api_key auth mode")
+		}
+	case AuthModeChatGPT:
+		if c.ChatGPT == nil {
+			return fmt.Errorf("credential: ChatGPT tokens are required for chatgpt auth mode")
+		}
+		if c.APIKey != "" {
+			return fmt.Errorf("credential: APIKey must be empty for chatgpt auth mode")
+		}
+		if err := c.ChatGPT.validateStructure(); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("credential: unknown auth mode %q", c.AuthMode)
+	}
+	return nil
+}
+
 // NewAPIKeyCredential constructs and validates an api_key credential.
 func NewAPIKeyCredential(groupJID, provider, apiKey string) (*Credential, error) {
 	cred := &Credential{
@@ -227,7 +261,7 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 		return nil, fmt.Errorf("get credential: unknown auth mode %q", cred.AuthMode)
 	}
 
-	if err := cred.Validate(); err != nil {
+	if err := cred.validateForRead(); err != nil {
 		return nil, fmt.Errorf("get credential: %w", err)
 	}
 	return cred, nil

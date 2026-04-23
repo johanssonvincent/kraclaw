@@ -713,8 +713,15 @@ func TestGetCredential_ValidatesDecryptedShape(t *testing.T) {
 	}).AddRow("openai", string(AuthModeChatGPT), nil, accessEnc, refreshEnc, nil, "acct", pastExpiry, false)
 	mock.ExpectQuery("SELECT").WithArgs("g").WillReturnRows(rows)
 
-	if _, err := store.GetCredential(context.Background(), "g"); err == nil {
-		t.Errorf("GetCredential(expired chatgpt row) err = nil, want validation error")
+	got, err := store.GetCredential(context.Background(), "g")
+	if err != nil {
+		t.Errorf("GetCredential(expired chatgpt row) err = %v, want nil (refresh flow reads expired rows)", err)
+	}
+	if got == nil || got.AuthMode != AuthModeChatGPT {
+		t.Errorf("GetCredential(expired chatgpt row) = %+v, want non-nil chatgpt credential", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
@@ -1017,5 +1024,44 @@ func TestChatGPTTokens_ValidateFresh(t *testing.T) {
 				t.Errorf("validateFresh(%+v) err = %v, wantErr = %v", tt.tokens, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestGetCredential_ExpiredChatGPTRow_IsReadable(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer db.Close()
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+
+	accessEnc, _ := enc.Encrypt("access")
+	refreshEnc, _ := enc.Encrypt("refresh")
+	idEnc, _ := enc.Encrypt("id")
+	past := time.Now().Add(-1 * time.Hour).UTC()
+
+	rows := sqlmock.NewRows([]string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp",
+	}).AddRow("openai", "chatgpt", nil, accessEnc, refreshEnc, idEnc, "acct_42", past, false)
+
+	mock.ExpectQuery("SELECT").WithArgs("g1").WillReturnRows(rows)
+
+	got, err := store.GetCredential(context.Background(), "g1")
+	if err != nil {
+		t.Errorf("GetCredential with expired chatgpt row err = %v, want nil (refresh flow reads expired rows)", err)
+	}
+	if got == nil || got.AuthMode != AuthModeChatGPT {
+		t.Errorf("GetCredential = %+v, want non-nil chatgpt credential", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
