@@ -188,6 +188,13 @@ type CredentialStore struct {
 }
 
 // NewCredentialStore creates a credential store backed by MySQL.
+//
+// The DSN must include loc=UTC&parseTime=true. oauth_expires_at is stored as
+// DATETIME (timezone-naive at the SQL layer); freshness comparisons rely on
+// round-tripping through UTC. A Local-configured DSN silently shifts stored
+// expiries by the server's offset, which can mis-classify fresh vs expired
+// tokens by up to 24 hours. NewCredentialStore issues one probe query to
+// catch the most common misconfiguration early.
 func NewCredentialStore(db *sql.DB, enc *Encryptor) (*CredentialStore, error) {
 	if db == nil {
 		return nil, fmt.Errorf("credential store: database connection is required")
@@ -195,7 +202,27 @@ func NewCredentialStore(db *sql.DB, enc *Encryptor) (*CredentialStore, error) {
 	if enc == nil {
 		return nil, fmt.Errorf("credential store: encryptor is required")
 	}
-	return &CredentialStore{db: db, enc: enc}, nil
+	s := &CredentialStore{db: db, enc: enc}
+	if err := s.probeTimezone(); err != nil {
+		return nil, fmt.Errorf("credential store: timezone probe: %w", err)
+	}
+	return s, nil
+}
+
+// probeTimezone verifies the DB driver returns timestamps in UTC. Any
+// non-UTC location signals a DSN misconfiguration that would silently
+// corrupt oauth_expires_at comparisons.
+func (s *CredentialStore) probeTimezone() error {
+	var got time.Time
+	if err := s.db.QueryRow("SELECT TIMESTAMP('2000-01-01 00:00:00')").Scan(&got); err != nil {
+		// If the driver doesn't support this literal, fall back silently —
+		// the DSN contract is documented and the probe is best-effort.
+		return nil
+	}
+	if loc := got.Location(); loc != time.UTC {
+		return fmt.Errorf("DB driver returned time in %q, want UTC (set loc=UTC&parseTime=true on DSN)", loc.String())
+	}
+	return nil
 }
 
 const selectCredentialColumns = `

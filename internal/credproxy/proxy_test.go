@@ -572,6 +572,7 @@ func TestDefaultCredentialResolver_PerGroupOpenAI(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	credStore, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -611,6 +612,7 @@ func TestDefaultCredentialResolver_PerGroupNotFound_FallsThroughToPlatform(t *te
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	credStore, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -643,6 +645,7 @@ func TestDefaultCredentialResolver_PerGroupStoreError_PropagatesError(t *testing
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	credStore, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -729,6 +732,7 @@ func TestDefaultCredentialResolver_PerGroupProviderMismatch_FallsThroughToPlatfo
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	credStore, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -832,6 +836,7 @@ func TestDefaultResolver_ChatGPTAuthModeNotSupported(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatalf("store: %v", err)

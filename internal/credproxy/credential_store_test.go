@@ -21,6 +21,12 @@ func newTestEncryptor(t *testing.T) *Encryptor {
 	return enc
 }
 
+func expectTimezoneProbe(t *testing.T, mock sqlmock.Sqlmock) {
+	t.Helper()
+	mock.ExpectQuery("SELECT TIMESTAMP").WillReturnRows(
+		sqlmock.NewRows([]string{"t"}).AddRow(time.Now().UTC().Truncate(time.Second)),
+	)
+}
 
 func TestCredentialStore_UpsertAndGet_APIKey(t *testing.T) {
 	t.Parallel()
@@ -32,6 +38,7 @@ func TestCredentialStore_UpsertAndGet_APIKey(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +74,7 @@ func TestCredentialStore_Delete(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -129,13 +137,14 @@ func TestCredential_Validate(t *testing.T) {
 func TestUpsertCredential_RejectsEmptyAPIKey(t *testing.T) {
 	t.Parallel()
 
-	db, _, err := sqlmock.New()
+	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -238,6 +247,7 @@ func TestGetCredential(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = db.Close() })
 
+			expectTimezoneProbe(t, mock)
 			store, err := NewCredentialStore(db, enc)
 			if err != nil {
 				t.Fatalf("NewCredentialStore: %v", err)
@@ -323,6 +333,7 @@ func TestUpsertChatGPTCredential(t *testing.T) {
 			t.Cleanup(func() { _ = db.Close() })
 
 			enc := newTestEncryptor(t)
+			expectTimezoneProbe(t, mock)
 			store, err := NewCredentialStore(db, enc)
 			if err != nil {
 				t.Fatalf("NewCredentialStore: %v", err)
@@ -356,6 +367,7 @@ func TestUpsertChatGPTCredential_Roundtrip(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatalf("NewCredentialStore: %v", err)
@@ -493,6 +505,7 @@ func TestRefreshChatGPTTokens(t *testing.T) {
 			t.Cleanup(func() { _ = db.Close() })
 
 			enc := newTestEncryptor(t)
+			expectTimezoneProbe(t, mock)
 			store, err := NewCredentialStore(db, enc)
 			if err != nil {
 				t.Fatalf("NewCredentialStore: %v", err)
@@ -564,13 +577,14 @@ func TestCredential_Validate_RejectsExpiredChatGPTToken(t *testing.T) {
 func TestUpsertCredential_RejectsEmptyAuthMode(t *testing.T) {
 	t.Parallel()
 
-	db, _, err := sqlmock.New()
+	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -595,6 +609,7 @@ func TestRefreshChatGPTTokens_NoRow_ReturnsSentinel(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -691,6 +706,7 @@ func TestGetCredential_ValidatesDecryptedShape(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -728,13 +744,14 @@ func TestGetCredential_ValidatesDecryptedShape(t *testing.T) {
 func TestRefreshChatGPTTokens_NilTokensErrors(t *testing.T) {
 	t.Parallel()
 
-	db, _, err := sqlmock.New()
+	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -805,6 +822,7 @@ func TestGetCredential_DecryptErrors(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = db.Close() })
 
+			expectTimezoneProbe(t, mock)
 			store, err := NewCredentialStore(db, enc)
 			if err != nil {
 				t.Fatalf("NewCredentialStore: %v", err)
@@ -874,6 +892,7 @@ func TestGetCredential_ChatGPTNullFieldGuards(t *testing.T) {
 				t.Fatalf("sqlmock: %v", err)
 			}
 			t.Cleanup(func() { _ = db.Close() })
+			expectTimezoneProbe(t, mock)
 			store, err := NewCredentialStore(db, enc)
 			if err != nil {
 				t.Fatalf("NewCredentialStore: %v", err)
@@ -1033,9 +1052,10 @@ func TestGetCredential_ExpiredChatGPTRow_IsReadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock.New(): %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	store, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatalf("NewCredentialStore: %v", err)
@@ -1060,6 +1080,30 @@ func TestGetCredential_ExpiredChatGPTRow_IsReadable(t *testing.T) {
 	}
 	if got == nil || got.AuthMode != AuthModeChatGPT {
 		t.Errorf("GetCredential = %+v, want non-nil chatgpt credential", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestNewCredentialStore_ProbesTimezoneInvariant(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Probe should SELECT a UTC datetime and read it back as time.Time with Location == UTC.
+	utcNow := time.Now().UTC().Truncate(time.Second)
+	mock.ExpectQuery("SELECT TIMESTAMP").WillReturnRows(
+		sqlmock.NewRows([]string{"t"}).AddRow(utcNow),
+	)
+
+	enc := newTestEncryptor(t)
+	_, err = NewCredentialStore(db, enc)
+	if err != nil {
+		t.Errorf("NewCredentialStore with UTC probe err = %v, want nil", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
