@@ -1368,3 +1368,70 @@ func TestCredentialStore_DBErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestCredentialStore_UnknownAuthMode(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		setupMock func(sqlmock.Sqlmock)
+		action    func(context.Context, *CredentialStore) error
+		wantSub   string
+	}{
+		"GetCredential: unknown auth_mode from DB": {
+			setupMock: func(m sqlmock.Sqlmock) {
+				rows := sqlmock.NewRows([]string{
+					"provider", "auth_mode", "api_key_encrypted",
+					"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+					"oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp",
+				}).AddRow("openai", "future_mode", nil, nil, nil, nil, nil, nil, false)
+				m.ExpectQuery("SELECT").WithArgs("g").WillReturnRows(rows)
+			},
+			action: func(ctx context.Context, s *CredentialStore) error {
+				_, err := s.GetCredential(ctx, "g")
+				return err
+			},
+			wantSub: "unknown auth mode",
+		},
+		"UpsertCredential: unknown auth_mode rejected by Validate": {
+			setupMock: func(_ sqlmock.Sqlmock) {},
+			action: func(ctx context.Context, s *CredentialStore) error {
+				cred := &Credential{
+					GroupJID: "g",
+					Provider: "openai",
+					AuthMode: AuthMode("future_mode"),
+					apiKey:   "sk-1",
+				}
+				return s.UpsertCredential(ctx, cred)
+			},
+			wantSub: "unknown auth mode",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New(): %v", err)
+			}
+			defer db.Close()
+			expectTimezoneProbe(t, mock)
+
+			enc := newTestEncryptor(t)
+			s, err := NewCredentialStore(db, enc)
+			if err != nil {
+				t.Fatalf("NewCredentialStore: %v", err)
+			}
+
+			tt.setupMock(mock)
+
+			err = tt.action(context.Background(), s)
+			if err == nil || !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("%s: err = %v, want substring %q", name, err, tt.wantSub)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("%s: unmet expectations: %v", name, err)
+			}
+		})
+	}
+}
