@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -122,7 +121,7 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readCappedBody(resp.Body)
 	if err != nil {
 		return nil, newTransientRefresh(resp.StatusCode, "", err)
 	}

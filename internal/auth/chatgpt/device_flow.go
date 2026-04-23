@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -132,7 +131,7 @@ func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readCappedBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: read device-code response: %w", err)
 	}
@@ -202,7 +201,7 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readCappedBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: read poll response: %w", err)
 	}
@@ -348,7 +347,7 @@ func (c *Client) ExchangeCode(ctx context.Context, code *AuthorizationCode) (*To
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readCappedBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: read token-exchange response: %w", err)
 	}

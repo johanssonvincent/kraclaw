@@ -7,6 +7,7 @@ package chatgpt
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -164,4 +165,29 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// maxResponseBodySize caps HTTP response bodies read from the OAuth issuer.
+// Real OAuth payloads (device-code, poll, token-exchange, refresh) are well
+// under 4 KiB; the 1 MiB ceiling defends against a malicious or misconfigured
+// issuer streaming unbounded bytes without prematurely rejecting any legitimate
+// response the server might realistically grow.
+const maxResponseBodySize = 1 << 20
+
+// ErrResponseTooLarge is returned when an OAuth endpoint response exceeds
+// maxResponseBodySize.
+var ErrResponseTooLarge = errors.New("chatgpt: response body exceeded 1 MiB cap")
+
+// readCappedBody reads r up to maxResponseBodySize, returning ErrResponseTooLarge
+// when the response would exceed the cap. Used to bound memory consumption
+// against hostile issuers; see maxResponseBodySize for rationale.
+func readCappedBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxResponseBodySize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxResponseBodySize {
+		return nil, ErrResponseTooLarge
+	}
+	return body, nil
 }
