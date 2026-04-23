@@ -884,7 +884,7 @@ func TestDefaultResolver_ChatGPTRejection_LogsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock.New(): %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	expectTimezoneProbe(t, mock)
 
 	enc := newTestEncryptor(t)

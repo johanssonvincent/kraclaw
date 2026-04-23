@@ -1172,7 +1172,7 @@ func TestGetCredential_DecryptError_IncludesGroupID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock.New(): %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	expectTimezoneProbe(t, mock)
 
 	enc := newTestEncryptor(t)
@@ -1216,7 +1216,7 @@ func TestUpsertChatGPTCredential_EncryptErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sqlmock.New(): %v", err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			store := &CredentialStore{db: db, enc: tt.cipher}
 			err = store.UpsertChatGPTCredential(context.Background(), "g", "openai", tokens)
 			if err == nil || !strings.Contains(err.Error(), tt.wantSub) {
@@ -1243,7 +1243,7 @@ func TestRefreshChatGPTTokens_EncryptErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sqlmock.New(): %v", err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			store := &CredentialStore{db: db, enc: tt.cipher}
 			err = store.RefreshChatGPTTokens(context.Background(), "g", tokens)
 			if err == nil || !strings.Contains(err.Error(), tt.wantSub) {
@@ -1259,7 +1259,7 @@ func TestUpsertCredential_ModeSwitch_WipesCrossModeColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock.New(): %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	expectTimezoneProbe(t, mock)
 
 	enc := newTestEncryptor(t)
@@ -1347,7 +1347,7 @@ func TestCredentialStore_DBErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sqlmock.New(): %v", err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			expectTimezoneProbe(t, mock)
 
 			enc := newTestEncryptor(t)
@@ -1414,7 +1414,7 @@ func TestCredentialStore_UnknownAuthMode(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sqlmock.New(): %v", err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			expectTimezoneProbe(t, mock)
 
 			enc := newTestEncryptor(t)
