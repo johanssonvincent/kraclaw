@@ -113,7 +113,7 @@ jobs:
         with:
           header: kraclaw-agent-openai-image
           message: |
-            🐳 **OpenAI agent image built** — `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.pr_tag }}`
+            **OpenAI agent image built** — `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.pr_tag }}`
 
             Pull with:
             ```

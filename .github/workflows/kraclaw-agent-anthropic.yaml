@@ -113,7 +113,7 @@ jobs:
         with:
           header: kraclaw-agent-anthropic-image
           message: |
-            🐳 **Anthropic agent image built** — `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.pr_tag }}`
+            **Anthropic agent image built** — `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.pr_tag }}`
 
             Pull with:
             ```
