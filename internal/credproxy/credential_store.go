@@ -17,6 +17,18 @@ const (
 	AuthModeChatGPT AuthMode = "chatgpt"
 )
 
+// Valid reports whether m is a known, non-empty auth mode.
+// Empty string is NOT valid — legacy row reads coerce "" to AuthModeAPIKey
+// inside GetCredential before this check applies.
+func (m AuthMode) Valid() bool {
+	switch m {
+	case AuthModeAPIKey, AuthModeChatGPT:
+		return true
+	default:
+		return false
+	}
+}
+
 // ErrNoChatGPTCredential is returned when a ChatGPT-mode credential operation
 // targets a group that has no such credential (already deleted or never
 // existed). Callers can use errors.Is to route between "force re-auth" and

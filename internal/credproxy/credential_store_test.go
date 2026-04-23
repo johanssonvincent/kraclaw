@@ -1143,3 +1143,24 @@ func TestCredential_Getters(t *testing.T) {
 	}
 }
 
+
+func TestAuthMode_Valid(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		m    AuthMode
+		want bool
+	}{
+		"api_key":        {m: AuthModeAPIKey, want: true},
+		"chatgpt":        {m: AuthModeChatGPT, want: true},
+		"empty":          {m: "", want: false},
+		"unknown string": {m: AuthMode("magic"), want: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.m.Valid(); got != tt.want {
+				t.Errorf("AuthMode(%q).Valid() = %v, want %v", tt.m, got, tt.want)
+			}
+		})
+	}
+}
