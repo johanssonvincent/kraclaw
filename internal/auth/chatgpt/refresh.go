@@ -157,6 +157,9 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 		parsed.RefreshToken = refreshToken
 	}
 	if parsed.AccessToken == "" {
+		c.logger.Warn("chatgpt: refresh 2xx response missing access_token",
+			slog.Int("status", resp.StatusCode),
+			slog.String("body_preview", truncate(string(respBody), 200)))
 		return nil, newTransientRefresh(resp.StatusCode, "", fmt.Errorf("refresh response missing access_token"))
 	}
 	tokens := &Tokens{
