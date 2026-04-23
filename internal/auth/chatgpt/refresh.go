@@ -38,37 +38,55 @@ const (
 	RefreshErrorPermanent
 )
 
-// RefreshError describes a token-refresh failure.
+// RefreshError describes a token-refresh failure. The type is exported so
+// callers can errors.As into it; fields are unexported because (kind, reason)
+// is a constructor-only invariant — a permanent error carries a classified
+// reason, a transient error carries RefreshFailureUnknown, and callers should
+// never forge an instance with an arbitrary combination.
 type RefreshError struct {
-	Kind   RefreshErrorKind
-	Reason RefreshFailureReason // meaningful when Kind == RefreshErrorPermanent; otherwise RefreshFailureUnknown
-	Status int
-	Body   string
+	kind   RefreshErrorKind
+	reason RefreshFailureReason
+	status int
+	body   string
 	cause  error
 }
 
 // Permanent reports whether the caller must trigger a new device-flow sign-in.
-func (e *RefreshError) Permanent() bool { return e.Kind == RefreshErrorPermanent }
+func (e *RefreshError) Permanent() bool { return e.kind == RefreshErrorPermanent }
+
+// Kind returns the transient/permanent discriminant.
+func (e *RefreshError) Kind() RefreshErrorKind { return e.kind }
+
+// Reason returns the classified failure reason. Meaningful only when Permanent
+// returns true; transient errors always return RefreshFailureUnknown.
+func (e *RefreshError) Reason() RefreshFailureReason { return e.reason }
+
+// Status returns the HTTP status code the server responded with, or 0 if the
+// request never reached a response (network error, context cancel).
+func (e *RefreshError) Status() int { return e.status }
+
+// Body returns the truncated response body snapshot, if any.
+func (e *RefreshError) Body() string { return e.body }
 
 func (e *RefreshError) Error() string {
 	kind := "transient"
-	if e.Kind == RefreshErrorPermanent {
+	if e.kind == RefreshErrorPermanent {
 		kind = "permanent"
 	}
 	if e.cause != nil {
-		return fmt.Sprintf("chatgpt: refresh failed (kind=%s, status=%d, reason=%s): %v", kind, e.Status, e.Reason, e.cause)
+		return fmt.Sprintf("chatgpt: refresh failed (kind=%s, status=%d, reason=%s): %v", kind, e.status, e.reason, e.cause)
 	}
-	return fmt.Sprintf("chatgpt: refresh failed (kind=%s, status=%d, reason=%s): %s", kind, e.Status, e.Reason, truncate(e.Body, 200))
+	return fmt.Sprintf("chatgpt: refresh failed (kind=%s, status=%d, reason=%s): %s", kind, e.status, e.reason, truncate(e.body, 200))
 }
 
 func (e *RefreshError) Unwrap() error { return e.cause }
 
 func newTransientRefresh(status int, body string, cause error) *RefreshError {
-	return &RefreshError{Kind: RefreshErrorTransient, Reason: RefreshFailureUnknown, Status: status, Body: body, cause: cause}
+	return &RefreshError{kind: RefreshErrorTransient, reason: RefreshFailureUnknown, status: status, body: body, cause: cause}
 }
 
 func newPermanentRefresh(status int, body string, reason RefreshFailureReason) *RefreshError {
-	return &RefreshError{Kind: RefreshErrorPermanent, Reason: reason, Status: status, Body: body}
+	return &RefreshError{kind: RefreshErrorPermanent, reason: reason, status: status, body: body}
 }
 
 // Refresh exchanges a refresh token for a new ChatGPT OAuth bundle. The

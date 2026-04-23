@@ -197,11 +197,11 @@ func TestRefresh_PermanentFailures(t *testing.T) {
 			if !re.Permanent() {
 				t.Errorf("Permanent() = false, want true (status=%d body=%s err=%+v)", tc.status, tc.body, re)
 			}
-			if re.Reason != tc.wantReason {
-				t.Errorf("Reason = %q, want %q (status=%d body=%s)", re.Reason, tc.wantReason, tc.status, tc.body)
+			if re.Reason() != tc.wantReason {
+				t.Errorf("Reason() = %q, want %q (status=%d body=%s)", re.Reason(), tc.wantReason, tc.status, tc.body)
 			}
-			if re.Status != tc.status {
-				t.Errorf("Status = %d, want %d", re.Status, tc.status)
+			if re.Status() != tc.status {
+				t.Errorf("Status() = %d, want %d", re.Status(), tc.status)
 			}
 		})
 	}
