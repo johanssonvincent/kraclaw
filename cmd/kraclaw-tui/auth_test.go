@@ -172,6 +172,40 @@ func TestAuthEventLoop_SurfacesGRPCStatusCode(t *testing.T) {
 	}
 }
 
+func TestHandleAuthStarted(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		msg     authStartedMsg
+		wantErr bool
+		wantCmd bool // expect a follow-up cmd (event loop)
+	}{
+		"open error stays on screen, no cmd": {
+			msg:     authStartedMsg{err: errors.New("dial: refused")},
+			wantErr: true,
+			wantCmd: false,
+		},
+		"happy path arms event loop": {
+			msg:     authStartedMsg{stream: &fakeAuthStream{}, cancel: func() {}},
+			wantErr: false,
+			wantCmd: true,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := model{chatState: chatStateOAuth}
+			got, cmd := m.handleAuthStarted(tt.msg)
+			gm := got.(model)
+			if (gm.oauth.err != nil) != tt.wantErr {
+				t.Errorf("oauth.err = %v, wantErr = %v", gm.oauth.err, tt.wantErr)
+			}
+			if (cmd != nil) != tt.wantCmd {
+				t.Errorf("cmd = %v, wantCmd = %v", cmd, tt.wantCmd)
+			}
+		})
+	}
+}
+
 // fakeAuthStream lets tests drive Recv error scenarios without a real gRPC channel.
 type fakeAuthStream struct {
 	kraclawv1.AuthService_StartChatGPTDeviceAuthClient
