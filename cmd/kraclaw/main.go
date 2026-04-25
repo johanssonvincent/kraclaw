@@ -268,6 +268,19 @@ func main() {
 	// so we have a single source of truth for provider metadata.
 	providerRegistry := provider.NewRegistry()
 
+	// Compose Auth sub-struct only when both dependencies are available.
+	// chatgptClient is always set at this point; credStore is non-nil only
+	// when per-group credential encryption is configured. Both must be present
+	// for the AuthService to register — partial config is a startup error.
+	var authCfg *server.AuthConfig
+	if chatgptClient != nil && credStore != nil {
+		authCfg = &server.AuthConfig{
+			ChatGPT:     chatgptClient,
+			Credentials: credStore,
+			Providers:   providerRegistry,
+		}
+	}
+
 	// Start gRPC + REST server
 	srv, err := server.New(server.Config{
 		GRPCAddr:              cfg.Server.GRPCAddr,
@@ -289,9 +302,7 @@ func main() {
 		TUIChannel:            tuiChannel,
 		Channels:              []channel.Channel{tuiChannel},
 		Log:                   log,
-		ChatGPTClient:         chatgptClient,
-		CredentialStore:       credStore,
-		Providers:             providerRegistry,
+		Auth:                  authCfg,
 	})
 	if err != nil {
 		log.Error("failed to create server", "error", err)
