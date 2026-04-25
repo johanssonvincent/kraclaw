@@ -65,6 +65,11 @@ type sandboxService struct {
 }
 
 func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) {
+	providers := cfg.Providers
+	if providers == nil {
+		providers = provider.NewRegistry()
+	}
+
 	admin := &adminService{
 		version:   cfg.Version,
 		startedAt: cfg.StartedAt,
@@ -78,7 +83,7 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 	}
 	groups := &groupService{
 		store:     cfg.Store,
-		providers: provider.NewRegistry(),
+		providers: providers,
 		log:       cfg.Log.With("component", "grpc-groups"),
 	}
 	tasks := &taskService{
@@ -104,6 +109,11 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 	kraclawv1.RegisterTaskServiceServer(grpcServer, tasks)
 	kraclawv1.RegisterSandboxServiceServer(grpcServer, sandboxes)
 	kraclawv1.RegisterChannelServiceServer(grpcServer, channels)
+
+	if cfg.ChatGPTClient != nil && cfg.CredentialStore != nil {
+		auth := newAuthService(cfg.ChatGPTClient, cfg.CredentialStore, providers, cfg.Log.With("component", "grpc-auth"))
+		kraclawv1.RegisterAuthServiceServer(grpcServer, auth)
+	}
 }
 
 func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequest) (*kraclawv1.ServerStatus, error) {

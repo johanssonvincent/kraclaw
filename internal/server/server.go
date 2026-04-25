@@ -18,9 +18,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/johanssonvincent/kraclaw/internal/auth/chatgpt"
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/channel/tui"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
@@ -60,6 +63,17 @@ type Config struct {
 	TUIChannel            *tui.TUI
 	Channels              []channel.Channel
 	Log                   *slog.Logger
+
+	// ChatGPTClient drives the ChatGPT OAuth device-code flow. When nil, the
+	// AuthService is not registered.
+	ChatGPTClient *chatgpt.Client
+	// CredentialStore persists ChatGPT OAuth tokens. When nil, the AuthService
+	// is not registered (the Anthropic-only legacy proxy path doesn't need it).
+	CredentialStore *credproxy.CredentialStore
+	// Providers is the shared provider registry. When nil, services that need
+	// it construct their own provider.NewRegistry() — pass an instance here
+	// when multiple services should share the same registry.
+	Providers *provider.Registry
 }
 
 // New creates a new Server.

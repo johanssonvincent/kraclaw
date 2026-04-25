@@ -18,6 +18,7 @@ import (
 	agentsandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/johanssonvincent/kraclaw/internal/auth/chatgpt"
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/channel/tui"
 	"github.com/johanssonvincent/kraclaw/internal/config"
@@ -186,6 +187,10 @@ func main() {
 
 	// Start credential proxy
 	var proxy *credproxy.Proxy
+	// credStore is shared with the AuthService when per-group credential
+	// encryption is configured; otherwise it stays nil and AuthService is
+	// not registered.
+	var credStore *credproxy.CredentialStore
 
 	// Multi-provider proxy is needed when:
 	// 1. Per-group credential encryption is configured, OR
@@ -200,7 +205,7 @@ func main() {
 				log.Error("failed to create credential encryptor", "error", err)
 				os.Exit(1)
 			}
-			credStore, err := credproxy.NewCredentialStore(mysqlStore.DB(), enc)
+			credStore, err = credproxy.NewCredentialStore(mysqlStore.DB(), enc)
 			if err != nil {
 				log.Error("failed to create credential store", "error", err)
 				os.Exit(1)
@@ -246,6 +251,23 @@ func main() {
 		}
 	}()
 
+	// Build the ChatGPT OAuth client. Its only side effect is HTTP traffic
+	// when the AuthService device-flow RPC is invoked, so it's safe to
+	// construct unconditionally; AuthService registration is gated on
+	// credStore being non-nil below.
+	chatgptClient, err := chatgpt.NewClient(chatgpt.Config{
+		Issuer: cfg.OAuth.ChatGPTIssuer,
+		Logger: log.With("component", "chatgpt"),
+	})
+	if err != nil {
+		log.Error("failed to create chatgpt client", "error", err)
+		os.Exit(1)
+	}
+
+	// Shared provider registry — passed to every service that needs one
+	// so we have a single source of truth for provider metadata.
+	providerRegistry := provider.NewRegistry()
+
 	// Start gRPC + REST server
 	srv, err := server.New(server.Config{
 		GRPCAddr:              cfg.Server.GRPCAddr,
@@ -267,6 +289,9 @@ func main() {
 		TUIChannel:            tuiChannel,
 		Channels:              []channel.Channel{tuiChannel},
 		Log:                   log,
+		ChatGPTClient:         chatgptClient,
+		CredentialStore:       credStore,
+		Providers:             providerRegistry,
 	})
 	if err != nil {
 		log.Error("failed to create server", "error", err)
