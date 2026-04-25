@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package kraclaw.v1;
+
+option go_package = "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1";
+
+// AuthService manages provider credentials that require interactive
+// authentication. ChatGPT OAuth is the only flow today; future flows
+// (e.g. Anthropic OAuth) reuse this service.
+service AuthService {
+  // StartChatGPTDeviceAuth begins the OAuth 2.0 device-code flow against
+  // OpenAI's auth issuer for the given group + provider. The server emits a
+  // single DEVICE_CODE event with the user_code and verification_url, then
+  // periodic TICK heartbeats while polling, then exactly one terminal event
+  // (SUCCESS or ERROR). Tokens are stored in the credproxy credential
+  // store on success — the caller does not receive them.
+  rpc StartChatGPTDeviceAuth(StartChatGPTDeviceAuthRequest) returns (stream DeviceAuthEvent);
+}
+
+message StartChatGPTDeviceAuthRequest {
+  // group_jid identifies the per-group credential row (PR #46 schema).
+  string group_jid = 1;
+  // provider must be a registry provider id with auth_mode == "chatgpt"
+  // (today: "openai").
+  string provider = 2;
+}
+
+message DeviceAuthEvent {
+  oneof event {
+    DeviceCode device_code = 1;
+    Tick tick = 2;
+    Success success = 3;
+    Error error = 4;
+  }
+
+  message DeviceCode {
+    string user_code = 1;
+    string verification_url = 2;
+    // poll_interval_seconds is informational; the server polls itself.
+    int32 poll_interval_seconds = 3;
+  }
+
+  message Tick {
+    // elapsed_seconds since the device-code event.
+    int32 elapsed_seconds = 1;
+  }
+
+  message Success {
+    // account_id is the parsed sub claim from id_token; useful for display.
+    string account_id = 1;
+    // expires_at is RFC3339; informational only.
+    string expires_at = 2;
+  }
+
+  message Error {
+    // code is one of: TIMEOUT, ACCESS_DENIED, INTERNAL.
+    string code = 1;
+    string message = 2;
+  }
+}
