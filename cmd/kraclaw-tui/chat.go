@@ -357,7 +357,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			input := strings.TrimSpace(m.chatInput.Value())
-			if strings.HasPrefix(input, ":auth") {
+			if isAuthCommand(input) {
 				parts := strings.Fields(input)
 				if len(parts) < 2 {
 					m.chatErr = fmt.Errorf("usage: :auth <provider>")
@@ -623,6 +623,13 @@ func (m model) renderChat() string {
 	}
 
 	return b.String()
+}
+
+// isAuthCommand returns true when the first whitespace-delimited token of input
+// is exactly ":auth", preventing false matches against ":authority", ":authentic", etc.
+func isAuthCommand(input string) bool {
+	parts := strings.Fields(input)
+	return len(parts) > 0 && parts[0] == ":auth"
 }
 
 // lookupAuthMode returns the auth_mode for the provider with the given id,
