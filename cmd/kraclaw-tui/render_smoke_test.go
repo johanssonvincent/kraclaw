@@ -1,9 +1,21 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestRenderOAuth_ErrorScreenDoesNotPromiseEnterRetry(t *testing.T) {
+	t.Parallel()
+	out := renderOAuth(oauthState{err: errors.New("denied")})
+	if strings.Contains(out, "Enter to retry") {
+		t.Errorf("renderOAuth still promises Enter to retry without a handler: %q", out)
+	}
+	if !strings.Contains(out, "Esc") {
+		t.Errorf("renderOAuth error view should mention Esc; got: %q", out)
+	}
+}
 
 func TestRenderSmoke_OAuthScreen(t *testing.T) {
 	t.Parallel()

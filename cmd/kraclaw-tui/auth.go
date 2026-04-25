@@ -194,7 +194,7 @@ func (m model) handleEscOAuth() (tea.Model, tea.Cmd) {
 func renderOAuth(s oauthState) string {
 	if s.err != nil {
 		return errStyle.Render(
-			fmt.Sprintf("ChatGPT auth failed: %v\n\nPress Esc to cancel, Enter to retry.", s.err))
+			fmt.Sprintf("ChatGPT auth failed: %v\n\nPress Esc to return.", s.err))
 	}
 	if s.userCode == "" {
 		return lipgloss.NewStyle().Foreground(defaultChatTheme.Muted).Render("starting OAuth…")
