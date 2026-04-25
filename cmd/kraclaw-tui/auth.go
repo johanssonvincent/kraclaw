@@ -100,11 +100,17 @@ func (m model) handleAuthStarted(msg authStartedMsg) (tea.Model, tea.Cmd) {
 // errors stay on the OAuth screen with oauth.err populated.
 func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
+		if m.oauth.cancel != nil {
+			m.oauth.cancel()
+		}
 		m.oauth.err = msg.err
 		return m, nil
 	}
 	if msg.event == nil {
 		// Server closed stream without a terminal event.
+		if m.oauth.cancel != nil {
+			m.oauth.cancel()
+		}
 		m.oauth.err = fmt.Errorf("auth stream closed unexpectedly")
 		return m, nil
 	}
@@ -146,6 +152,9 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case *kraclawv1.DeviceAuthEvent_Error_:
+		if m.oauth.cancel != nil {
+			m.oauth.cancel()
+		}
 		m.oauth.err = fmt.Errorf("oauth %s: %s", e.Error.GetCode(), e.Error.GetMessage())
 		return m, nil
 	}

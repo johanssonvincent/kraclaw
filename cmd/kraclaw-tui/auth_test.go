@@ -69,12 +69,23 @@ func TestOAuthFlow_HandlesEvents(t *testing.T) {
 	}
 }
 
-func TestOAuthFlow_StreamErrorBubblesUp(t *testing.T) {
+func TestOAuthFlow_TerminalSignalsSetErr(t *testing.T) {
 	t.Parallel()
-	m := model{chatState: chatStateOAuth, oauth: oauthState{active: true}}
-	next, _ := m.handleAuthEvent(authEventMsg{err: errors.New("network")})
-	gotModel := next.(model)
-	if gotModel.oauth.err == nil {
-		t.Errorf("handleAuthEvent(stream err) oauth.err = nil, want non-nil")
+	tests := map[string]struct {
+		msg authEventMsg
+	}{
+		"stream error":          {msg: authEventMsg{err: errors.New("network")}},
+		"nil event from server": {msg: authEventMsg{}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := model{chatState: chatStateOAuth, oauth: oauthState{active: true}}
+			next, _ := m.handleAuthEvent(tt.msg)
+			got := next.(model)
+			if got.oauth.err == nil {
+				t.Errorf("msg=%+v: expected oauth.err, got nil", tt.msg)
+			}
+		})
 	}
 }
