@@ -328,6 +328,13 @@ func TestEscOnOAuth_RoutesByFlow(t *testing.T) {
 		pendingGroupName string
 		chatGroup        *GroupInfo // nil for new-group flow
 		wantState        chatState
+		// creation fields to pre-populate (only set in the regression case)
+		creationPendingGroupName string
+		creationSelectedProvider string
+		creationSelectedModelID  string
+		creationProviders        []*kraclawv1.ProviderInfo
+		creationProvidersLoaded  bool
+		creationPicker           creationPickerState
 	}{
 		"new-group flow returns to selectGroup": {
 			startState:       chatStateOAuth,
@@ -340,14 +347,33 @@ func TestEscOnOAuth_RoutesByFlow(t *testing.T) {
 			chatGroup:        &GroupInfo{JID: "tui:existing", Name: "existing"},
 			wantState:        chatStateChatting,
 		},
+		"new-group flow clears creation state": {
+			startState:               chatStateOAuth,
+			pendingGroupName:         "g-stale",
+			wantState:                chatStateSelectGroup,
+			creationPendingGroupName: "g-stale",
+			creationSelectedProvider: "openai",
+			creationSelectedModelID:  "gpt-4o",
+			creationProviders:        []*kraclawv1.ProviderInfo{{Id: "openai"}},
+			creationProvidersLoaded:  true,
+			creationPicker: creationPickerState{
+				items: []creationPickerItem{{id: "gpt-4o", label: "GPT-4o"}},
+			},
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			m := model{
-				chatState: tt.startState,
-				oauth:     oauthState{pendingGroupName: tt.pendingGroupName},
-				chatGroup: tt.chatGroup,
+				chatState:                tt.startState,
+				oauth:                    oauthState{pendingGroupName: tt.pendingGroupName},
+				chatGroup:                tt.chatGroup,
+				creationPendingGroupName: tt.creationPendingGroupName,
+				creationSelectedProvider: tt.creationSelectedProvider,
+				creationSelectedModelID:  tt.creationSelectedModelID,
+				creationProviders:        tt.creationProviders,
+				creationProvidersLoaded:  tt.creationProvidersLoaded,
+				creationPicker:           tt.creationPicker,
 			}
 			got, _ := m.handleEscOAuth()
 			gm := got.(model)
@@ -359,6 +385,26 @@ func TestEscOnOAuth_RoutesByFlow(t *testing.T) {
 			if gm.oauth.active || gm.oauth.pendingGroupName != "" || gm.oauth.userCode != "" || gm.oauth.err != nil {
 				t.Errorf("oauth not cleared: active=%v pending=%q userCode=%q err=%v",
 					gm.oauth.active, gm.oauth.pendingGroupName, gm.oauth.userCode, gm.oauth.err)
+			}
+			// All six creation fields must be zeroed regardless of flow to prevent
+			// stale context surviving cancel + re-entry.
+			if gm.creationPendingGroupName != "" {
+				t.Errorf("creationPendingGroupName = %q, want %q", gm.creationPendingGroupName, "")
+			}
+			if gm.creationSelectedProvider != "" {
+				t.Errorf("creationSelectedProvider = %q, want %q", gm.creationSelectedProvider, "")
+			}
+			if gm.creationSelectedModelID != "" {
+				t.Errorf("creationSelectedModelID = %q, want %q", gm.creationSelectedModelID, "")
+			}
+			if len(gm.creationPicker.items) != 0 {
+				t.Errorf("creationPicker.items len = %d, want 0", len(gm.creationPicker.items))
+			}
+			if gm.creationProviders != nil {
+				t.Errorf("creationProviders = %v, want nil", gm.creationProviders)
+			}
+			if gm.creationProvidersLoaded {
+				t.Errorf("creationProvidersLoaded = true, want false")
 			}
 		})
 	}

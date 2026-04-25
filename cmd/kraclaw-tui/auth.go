@@ -172,6 +172,15 @@ func (m model) handleEscOAuth() (tea.Model, tea.Cmd) {
 	}
 	wasReauth := m.oauth.pendingGroupName == ""
 	m.oauth = oauthState{}
+	// Clear creation state unconditionally so stale context from a cancelled
+	// new-group OAuth flow does not survive into a subsequent attempt.
+	// In the re-auth path these fields are already empty, so this is a no-op.
+	m.creationPendingGroupName = ""
+	m.creationSelectedProvider = ""
+	m.creationSelectedModelID = ""
+	m.creationPicker = creationPickerState{}
+	m.creationProviders = nil
+	m.creationProvidersLoaded = false
 	if wasReauth && m.chatGroup != nil && m.chatGroup.JID != "" {
 		m.chatState = chatStateChatting
 		return m, nil
