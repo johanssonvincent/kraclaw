@@ -244,6 +244,7 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 		wantSeq       []string
 		wantErrCode   string
 		wantAccountID string
+		matchSeq      func([]string, []string) bool
 	}{
 		"success path: approves immediately, persists tokens": {
 			issuerMode: issuerModeApprove,
@@ -273,7 +274,7 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 			wantSeq:     []string{"error"},
 			wantErrCode: "INVALID_ARGUMENT",
 		},
-		"deny path: ExchangeCode 400 access_denied yields ACCESS_DENIED": {
+		"deny path: poll 400 access_denied yields ACCESS_DENIED": {
 			issuerMode: issuerModeDeny,
 			req: &kraclawv1.StartChatGPTDeviceAuthRequest{
 				GroupJid: "tui:g",
@@ -291,6 +292,7 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 			wantSeq:       []string{"device_code", "tick", "success"},
 			wantAccountID: "acct_99",
 			expectUpsert:  true,
+			matchSeq:      equalSeqAtLeastOneTick,
 		},
 	}
 
@@ -353,9 +355,9 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 			}
 			seq, terminal := collectEvents(t, stream)
 
-			matchSeq := equalSeqIgnoringTickCount
-			if name == "slow approval emits at least one tick before success" {
-				matchSeq = equalSeqAtLeastOneTick
+			matchSeq := tt.matchSeq
+			if matchSeq == nil {
+				matchSeq = equalSeqIgnoringTickCount
 			}
 			if !matchSeq(seq, tt.wantSeq) {
 				t.Errorf("event sequence for %+v = %v, want %v", tt.req, seq, tt.wantSeq)
