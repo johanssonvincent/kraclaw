@@ -82,8 +82,8 @@ func authEventLoopCmd(stream kraclawv1.AuthService_StartChatGPTDeviceAuthClient)
 }
 
 // handleAuthStarted records the open stream on the model and kicks off the
-// event loop. On open-error it surfaces the error in oauthState.err and
-// stays on the OAuth screen so the user can press Esc / Enter to retry.
+// event loop. On open-error it surfaces the error in oauthState.err so the
+// user can press Esc to return to the picker.
 func (m model) handleAuthStarted(msg authStartedMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.oauth.err = msg.err
