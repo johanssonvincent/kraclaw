@@ -139,15 +139,19 @@ func (s *authService) sendError(stream kraclawv1.AuthService_StartChatGPTDeviceA
 	return nil
 }
 
-// errCodeFor maps a low-level error to the proto error code (TIMEOUT,
-// ACCESS_DENIED, INTERNAL). ACCESS_DENIED covers explicit context.Canceled —
-// the operator either cancelled the TUI or hit the OAuth deny button.
+// errCodeFor maps a low-level error to the proto error code returned in a
+// terminal Error event. Order matters: ErrAccessDenied wins over context
+// errors so a wrapped sentinel still routes correctly.
 func errCodeFor(err error) string {
 	switch {
-	case errors.Is(err, chatgpt.ErrDeviceAuthTimeout):
+	case err == nil:
+		return "INTERNAL"
+	case errors.Is(err, chatgpt.ErrAccessDenied):
+		return "ACCESS_DENIED"
+	case errors.Is(err, chatgpt.ErrDeviceAuthTimeout), errors.Is(err, context.DeadlineExceeded):
 		return "TIMEOUT"
 	case errors.Is(err, context.Canceled):
-		return "ACCESS_DENIED"
+		return "CANCELLED"
 	default:
 		return "INTERNAL"
 	}

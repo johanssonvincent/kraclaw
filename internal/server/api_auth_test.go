@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -325,6 +326,31 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 				if err := mock.ExpectationsWereMet(); err != nil {
 					t.Errorf("sqlmock expectations not met: %v", err)
 				}
+			}
+		})
+	}
+}
+
+func TestErrCodeFor(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		err  error
+		want string
+	}{
+		"timeout":           {err: chatgpt.ErrDeviceAuthTimeout, want: "TIMEOUT"},
+		"deadline exceeded": {err: context.DeadlineExceeded, want: "TIMEOUT"},
+		"access denied":     {err: chatgpt.ErrAccessDenied, want: "ACCESS_DENIED"},
+		"context canceled":  {err: context.Canceled, want: "CANCELLED"},
+		"wrapped denied":    {err: fmt.Errorf("wrap: %w", chatgpt.ErrAccessDenied), want: "ACCESS_DENIED"},
+		"unknown":           {err: errors.New("boom"), want: "INTERNAL"},
+		"nil":               {err: nil, want: "INTERNAL"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := errCodeFor(tt.err)
+			if got != tt.want {
+				t.Errorf("errCodeFor(%v) = %q, want %q", tt.err, got, tt.want)
 			}
 		})
 	}
