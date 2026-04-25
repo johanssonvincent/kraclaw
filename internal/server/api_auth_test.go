@@ -242,7 +242,7 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 		req           *kraclawv1.StartChatGPTDeviceAuthRequest
 		expectUpsert  bool
 		wantSeq       []string
-		wantErrCode   string
+		wantErrCode   kraclawv1.DeviceAuthEvent_ErrorCode
 		wantAccountID string
 		matchSeq      func([]string, []string) bool
 	}{
@@ -263,7 +263,7 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 				Provider: "no-such",
 			},
 			wantSeq:     []string{"error"},
-			wantErrCode: "INVALID_ARGUMENT",
+			wantErrCode: kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT,
 		},
 		"non-chatgpt provider yields INVALID_ARGUMENT error": {
 			issuerMode: issuerModeApprove,
@@ -272,7 +272,7 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 				Provider: provider.ProviderAnthropic,
 			},
 			wantSeq:     []string{"error"},
-			wantErrCode: "INVALID_ARGUMENT",
+			wantErrCode: kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT,
 		},
 		"deny path: poll 400 access_denied yields ACCESS_DENIED": {
 			issuerMode: issuerModeDeny,
@@ -281,7 +281,7 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 				Provider: provider.ProviderOpenAI,
 			},
 			wantSeq:     []string{"device_code", "error"},
-			wantErrCode: "ACCESS_DENIED",
+			wantErrCode: kraclawv1.DeviceAuthEvent_ACCESS_DENIED,
 		},
 		"slow approval emits at least one tick before success": {
 			issuerMode: issuerModeSlowApprove,
@@ -363,16 +363,16 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 				t.Errorf("event sequence for %+v = %v, want %v", tt.req, seq, tt.wantSeq)
 			}
 
-			if tt.wantErrCode != "" {
+			if tt.wantErrCode != kraclawv1.DeviceAuthEvent_ERROR_CODE_UNSPECIFIED {
 				if terminal == nil {
-					t.Fatalf("terminal event = nil, want error %q", tt.wantErrCode)
+					t.Fatalf("terminal event = nil, want error %v", tt.wantErrCode)
 				}
 				e := terminal.GetError()
 				if e == nil {
 					t.Fatalf("terminal event = %v, want *DeviceAuthEvent_Error_", terminal)
 				}
 				if e.GetCode() != tt.wantErrCode {
-					t.Errorf("error code = %q, want %q", e.GetCode(), tt.wantErrCode)
+					t.Errorf("error code = %v, want %v", e.GetCode(), tt.wantErrCode)
 				}
 			} else {
 				if terminal == nil {
@@ -400,12 +400,12 @@ func TestStartChatGPTDeviceAuth_ValidationErrorsUseInvalidArgument(t *testing.T)
 	t.Parallel()
 	tests := map[string]struct {
 		req      *kraclawv1.StartChatGPTDeviceAuthRequest
-		wantCode string
+		wantCode kraclawv1.DeviceAuthEvent_ErrorCode
 		wantSub  string
 	}{
-		"empty group_jid":      {req: &kraclawv1.StartChatGPTDeviceAuthRequest{Provider: "openai"}, wantCode: "INVALID_ARGUMENT", wantSub: "group_jid"},
-		"unknown provider":     {req: &kraclawv1.StartChatGPTDeviceAuthRequest{GroupJid: "tui:g", Provider: "nope"}, wantCode: "INVALID_ARGUMENT", wantSub: "unknown provider"},
-		"non-chatgpt provider": {req: &kraclawv1.StartChatGPTDeviceAuthRequest{GroupJid: "tui:g", Provider: "anthropic"}, wantCode: "INVALID_ARGUMENT", wantSub: "does not use chatgpt"},
+		"empty group_jid":      {req: &kraclawv1.StartChatGPTDeviceAuthRequest{Provider: "openai"}, wantCode: kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT, wantSub: "group_jid"},
+		"unknown provider":     {req: &kraclawv1.StartChatGPTDeviceAuthRequest{GroupJid: "tui:g", Provider: "nope"}, wantCode: kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT, wantSub: "unknown provider"},
+		"non-chatgpt provider": {req: &kraclawv1.StartChatGPTDeviceAuthRequest{GroupJid: "tui:g", Provider: "anthropic"}, wantCode: kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT, wantSub: "does not use chatgpt"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -428,7 +428,7 @@ func TestStartChatGPTDeviceAuth_ValidationErrorsUseInvalidArgument(t *testing.T)
 				t.Fatalf("expected Error event, got %T", ev.GetEvent())
 			}
 			if e.GetCode() != tt.wantCode {
-				t.Errorf("code = %q, want %q", e.GetCode(), tt.wantCode)
+				t.Errorf("code = %v, want %v", e.GetCode(), tt.wantCode)
 			}
 			if !strings.Contains(e.GetMessage(), tt.wantSub) {
 				t.Errorf("message = %q, want substring %q", e.GetMessage(), tt.wantSub)
@@ -441,24 +441,24 @@ func TestErrCodeFor(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
 		err  error
-		want string
+		want kraclawv1.DeviceAuthEvent_ErrorCode
 	}{
-		"timeout":           {err: chatgpt.ErrDeviceAuthTimeout, want: "TIMEOUT"},
-		"deadline exceeded": {err: context.DeadlineExceeded, want: "TIMEOUT"},
-		"access denied":     {err: chatgpt.ErrAccessDenied, want: "ACCESS_DENIED"},
-		"context canceled":  {err: context.Canceled, want: "CANCELLED"},
-		"wrapped denied":    {err: fmt.Errorf("wrap: %w", chatgpt.ErrAccessDenied), want: "ACCESS_DENIED"},
-		"wrapped deadline":  {err: fmt.Errorf("wrap: %w", context.DeadlineExceeded), want: "TIMEOUT"},
-		"wrapped canceled":  {err: fmt.Errorf("wrap: %w", context.Canceled), want: "CANCELLED"},
-		"unknown":           {err: errors.New("boom"), want: "INTERNAL"},
-		"nil":               {err: nil, want: "INTERNAL"},
+		"timeout":           {err: chatgpt.ErrDeviceAuthTimeout, want: kraclawv1.DeviceAuthEvent_TIMEOUT},
+		"deadline exceeded": {err: context.DeadlineExceeded, want: kraclawv1.DeviceAuthEvent_TIMEOUT},
+		"access denied":     {err: chatgpt.ErrAccessDenied, want: kraclawv1.DeviceAuthEvent_ACCESS_DENIED},
+		"context canceled":  {err: context.Canceled, want: kraclawv1.DeviceAuthEvent_CANCELLED},
+		"wrapped denied":    {err: fmt.Errorf("wrap: %w", chatgpt.ErrAccessDenied), want: kraclawv1.DeviceAuthEvent_ACCESS_DENIED},
+		"wrapped deadline":  {err: fmt.Errorf("wrap: %w", context.DeadlineExceeded), want: kraclawv1.DeviceAuthEvent_TIMEOUT},
+		"wrapped canceled":  {err: fmt.Errorf("wrap: %w", context.Canceled), want: kraclawv1.DeviceAuthEvent_CANCELLED},
+		"unknown":           {err: errors.New("boom"), want: kraclawv1.DeviceAuthEvent_INTERNAL},
+		"nil":               {err: nil, want: kraclawv1.DeviceAuthEvent_INTERNAL},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			got := errCodeFor(tt.err)
 			if got != tt.want {
-				t.Errorf("errCodeFor(%v) = %q, want %q", tt.err, got, tt.want)
+				t.Errorf("errCodeFor(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

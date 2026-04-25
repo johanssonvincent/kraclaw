@@ -33,6 +33,19 @@ message DeviceAuthEvent {
     Error error = 4;
   }
 
+  // ErrorCode is the terminal error category surfaced to clients. The server
+  // emits exactly one Error event with one of these codes, then closes the
+  // stream. Order: ERROR_CODE_UNSPECIFIED is the proto3 default and MUST NOT
+  // be emitted; clients seeing it should treat as an internal protocol bug.
+  enum ErrorCode {
+    ERROR_CODE_UNSPECIFIED = 0;
+    INTERNAL = 1;
+    INVALID_ARGUMENT = 2;
+    TIMEOUT = 3;
+    ACCESS_DENIED = 4;
+    CANCELLED = 5;
+  }
+
   message DeviceCode {
     string user_code = 1;
     string verification_url = 2;
@@ -53,8 +66,7 @@ message DeviceAuthEvent {
   }
 
   message Error {
-    // code is one of: TIMEOUT, ACCESS_DENIED, INTERNAL.
-    string code = 1;
+    ErrorCode code = 1;
     string message = 2;
   }
 }

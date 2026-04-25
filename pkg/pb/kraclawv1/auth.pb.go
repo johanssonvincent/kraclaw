@@ -21,6 +21,68 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// ErrorCode is the terminal error category surfaced to clients. The server
+// emits exactly one Error event with one of these codes, then closes the
+// stream. Order: ERROR_CODE_UNSPECIFIED is the proto3 default and MUST NOT
+// be emitted; clients seeing it should treat as an internal protocol bug.
+type DeviceAuthEvent_ErrorCode int32
+
+const (
+	DeviceAuthEvent_ERROR_CODE_UNSPECIFIED DeviceAuthEvent_ErrorCode = 0
+	DeviceAuthEvent_INTERNAL               DeviceAuthEvent_ErrorCode = 1
+	DeviceAuthEvent_INVALID_ARGUMENT       DeviceAuthEvent_ErrorCode = 2
+	DeviceAuthEvent_TIMEOUT                DeviceAuthEvent_ErrorCode = 3
+	DeviceAuthEvent_ACCESS_DENIED          DeviceAuthEvent_ErrorCode = 4
+	DeviceAuthEvent_CANCELLED              DeviceAuthEvent_ErrorCode = 5
+)
+
+// Enum value maps for DeviceAuthEvent_ErrorCode.
+var (
+	DeviceAuthEvent_ErrorCode_name = map[int32]string{
+		0: "ERROR_CODE_UNSPECIFIED",
+		1: "INTERNAL",
+		2: "INVALID_ARGUMENT",
+		3: "TIMEOUT",
+		4: "ACCESS_DENIED",
+		5: "CANCELLED",
+	}
+	DeviceAuthEvent_ErrorCode_value = map[string]int32{
+		"ERROR_CODE_UNSPECIFIED": 0,
+		"INTERNAL":               1,
+		"INVALID_ARGUMENT":       2,
+		"TIMEOUT":                3,
+		"ACCESS_DENIED":          4,
+		"CANCELLED":              5,
+	}
+)
+
+func (x DeviceAuthEvent_ErrorCode) Enum() *DeviceAuthEvent_ErrorCode {
+	p := new(DeviceAuthEvent_ErrorCode)
+	*p = x
+	return p
+}
+
+func (x DeviceAuthEvent_ErrorCode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DeviceAuthEvent_ErrorCode) Descriptor() protoreflect.EnumDescriptor {
+	return file_kraclaw_v1_auth_proto_enumTypes[0].Descriptor()
+}
+
+func (DeviceAuthEvent_ErrorCode) Type() protoreflect.EnumType {
+	return &file_kraclaw_v1_auth_proto_enumTypes[0]
+}
+
+func (x DeviceAuthEvent_ErrorCode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DeviceAuthEvent_ErrorCode.Descriptor instead.
+func (DeviceAuthEvent_ErrorCode) EnumDescriptor() ([]byte, []int) {
+	return file_kraclaw_v1_auth_proto_rawDescGZIP(), []int{1, 0}
+}
+
 type StartChatGPTDeviceAuthRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// group_jid identifies the per-group credential row (PR #46 schema).
@@ -351,10 +413,9 @@ func (x *DeviceAuthEvent_Success) GetExpiresAt() string {
 }
 
 type DeviceAuthEvent_Error struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// code is one of: TIMEOUT, ACCESS_DENIED, INTERNAL.
-	Code          string `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
-	Message       string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	Code          DeviceAuthEvent_ErrorCode `protobuf:"varint,1,opt,name=code,proto3,enum=kraclaw.v1.DeviceAuthEvent_ErrorCode" json:"code,omitempty"`
+	Message       string                    `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -389,11 +450,11 @@ func (*DeviceAuthEvent_Error) Descriptor() ([]byte, []int) {
 	return file_kraclaw_v1_auth_proto_rawDescGZIP(), []int{1, 3}
 }
 
-func (x *DeviceAuthEvent_Error) GetCode() string {
+func (x *DeviceAuthEvent_Error) GetCode() DeviceAuthEvent_ErrorCode {
 	if x != nil {
 		return x.Code
 	}
-	return ""
+	return DeviceAuthEvent_ERROR_CODE_UNSPECIFIED
 }
 
 func (x *DeviceAuthEvent_Error) GetMessage() string {
@@ -411,7 +472,7 @@ const file_kraclaw_v1_auth_proto_rawDesc = "" +
 	"kraclaw.v1\"X\n" +
 	"\x1dStartChatGPTDeviceAuthRequest\x12\x1b\n" +
 	"\tgroup_jid\x18\x01 \x01(\tR\bgroupJid\x12\x1a\n" +
-	"\bprovider\x18\x02 \x01(\tR\bprovider\"\xd5\x04\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\"\xf8\x05\n" +
 	"\x0fDeviceAuthEvent\x12I\n" +
 	"\vdevice_code\x18\x01 \x01(\v2&.kraclaw.v1.DeviceAuthEvent.DeviceCodeH\x00R\n" +
 	"deviceCode\x126\n" +
@@ -429,10 +490,17 @@ const file_kraclaw_v1_auth_proto_rawDesc = "" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\x12\x1d\n" +
 	"\n" +
-	"expires_at\x18\x02 \x01(\tR\texpiresAt\x1a5\n" +
-	"\x05Error\x12\x12\n" +
-	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessageB\a\n" +
+	"expires_at\x18\x02 \x01(\tR\texpiresAt\x1a\\\n" +
+	"\x05Error\x129\n" +
+	"\x04code\x18\x01 \x01(\x0e2%.kraclaw.v1.DeviceAuthEvent.ErrorCodeR\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"z\n" +
+	"\tErrorCode\x12\x1a\n" +
+	"\x16ERROR_CODE_UNSPECIFIED\x10\x00\x12\f\n" +
+	"\bINTERNAL\x10\x01\x12\x14\n" +
+	"\x10INVALID_ARGUMENT\x10\x02\x12\v\n" +
+	"\aTIMEOUT\x10\x03\x12\x11\n" +
+	"\rACCESS_DENIED\x10\x04\x12\r\n" +
+	"\tCANCELLED\x10\x05B\a\n" +
 	"\x05event2q\n" +
 	"\vAuthService\x12b\n" +
 	"\x16StartChatGPTDeviceAuth\x12).kraclaw.v1.StartChatGPTDeviceAuthRequest\x1a\x1b.kraclaw.v1.DeviceAuthEvent0\x01B\x9a\x01\n" +
@@ -452,27 +520,30 @@ func file_kraclaw_v1_auth_proto_rawDescGZIP() []byte {
 	return file_kraclaw_v1_auth_proto_rawDescData
 }
 
+var file_kraclaw_v1_auth_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_kraclaw_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_kraclaw_v1_auth_proto_goTypes = []any{
-	(*StartChatGPTDeviceAuthRequest)(nil), // 0: kraclaw.v1.StartChatGPTDeviceAuthRequest
-	(*DeviceAuthEvent)(nil),               // 1: kraclaw.v1.DeviceAuthEvent
-	(*DeviceAuthEvent_DeviceCode)(nil),    // 2: kraclaw.v1.DeviceAuthEvent.DeviceCode
-	(*DeviceAuthEvent_Tick)(nil),          // 3: kraclaw.v1.DeviceAuthEvent.Tick
-	(*DeviceAuthEvent_Success)(nil),       // 4: kraclaw.v1.DeviceAuthEvent.Success
-	(*DeviceAuthEvent_Error)(nil),         // 5: kraclaw.v1.DeviceAuthEvent.Error
+	(DeviceAuthEvent_ErrorCode)(0),        // 0: kraclaw.v1.DeviceAuthEvent.ErrorCode
+	(*StartChatGPTDeviceAuthRequest)(nil), // 1: kraclaw.v1.StartChatGPTDeviceAuthRequest
+	(*DeviceAuthEvent)(nil),               // 2: kraclaw.v1.DeviceAuthEvent
+	(*DeviceAuthEvent_DeviceCode)(nil),    // 3: kraclaw.v1.DeviceAuthEvent.DeviceCode
+	(*DeviceAuthEvent_Tick)(nil),          // 4: kraclaw.v1.DeviceAuthEvent.Tick
+	(*DeviceAuthEvent_Success)(nil),       // 5: kraclaw.v1.DeviceAuthEvent.Success
+	(*DeviceAuthEvent_Error)(nil),         // 6: kraclaw.v1.DeviceAuthEvent.Error
 }
 var file_kraclaw_v1_auth_proto_depIdxs = []int32{
-	2, // 0: kraclaw.v1.DeviceAuthEvent.device_code:type_name -> kraclaw.v1.DeviceAuthEvent.DeviceCode
-	3, // 1: kraclaw.v1.DeviceAuthEvent.tick:type_name -> kraclaw.v1.DeviceAuthEvent.Tick
-	4, // 2: kraclaw.v1.DeviceAuthEvent.success:type_name -> kraclaw.v1.DeviceAuthEvent.Success
-	5, // 3: kraclaw.v1.DeviceAuthEvent.error:type_name -> kraclaw.v1.DeviceAuthEvent.Error
-	0, // 4: kraclaw.v1.AuthService.StartChatGPTDeviceAuth:input_type -> kraclaw.v1.StartChatGPTDeviceAuthRequest
-	1, // 5: kraclaw.v1.AuthService.StartChatGPTDeviceAuth:output_type -> kraclaw.v1.DeviceAuthEvent
-	5, // [5:6] is the sub-list for method output_type
-	4, // [4:5] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	3, // 0: kraclaw.v1.DeviceAuthEvent.device_code:type_name -> kraclaw.v1.DeviceAuthEvent.DeviceCode
+	4, // 1: kraclaw.v1.DeviceAuthEvent.tick:type_name -> kraclaw.v1.DeviceAuthEvent.Tick
+	5, // 2: kraclaw.v1.DeviceAuthEvent.success:type_name -> kraclaw.v1.DeviceAuthEvent.Success
+	6, // 3: kraclaw.v1.DeviceAuthEvent.error:type_name -> kraclaw.v1.DeviceAuthEvent.Error
+	0, // 4: kraclaw.v1.DeviceAuthEvent.Error.code:type_name -> kraclaw.v1.DeviceAuthEvent.ErrorCode
+	1, // 5: kraclaw.v1.AuthService.StartChatGPTDeviceAuth:input_type -> kraclaw.v1.StartChatGPTDeviceAuthRequest
+	2, // 6: kraclaw.v1.AuthService.StartChatGPTDeviceAuth:output_type -> kraclaw.v1.DeviceAuthEvent
+	6, // [6:7] is the sub-list for method output_type
+	5, // [5:6] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_kraclaw_v1_auth_proto_init() }
@@ -491,13 +562,14 @@ func file_kraclaw_v1_auth_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kraclaw_v1_auth_proto_rawDesc), len(file_kraclaw_v1_auth_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_kraclaw_v1_auth_proto_goTypes,
 		DependencyIndexes: file_kraclaw_v1_auth_proto_depIdxs,
+		EnumInfos:         file_kraclaw_v1_auth_proto_enumTypes,
 		MessageInfos:      file_kraclaw_v1_auth_proto_msgTypes,
 	}.Build()
 	File_kraclaw_v1_auth_proto = out.File

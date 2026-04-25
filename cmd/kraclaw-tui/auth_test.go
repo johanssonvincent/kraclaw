@@ -46,7 +46,7 @@ func TestOAuthFlow_HandlesEvents(t *testing.T) {
 		},
 		"error stays on screen with err": {
 			event: &kraclawv1.DeviceAuthEvent{Event: &kraclawv1.DeviceAuthEvent_Error_{
-				Error: &kraclawv1.DeviceAuthEvent_Error{Code: "ACCESS_DENIED", Message: "user denied"},
+				Error: &kraclawv1.DeviceAuthEvent_Error{Code: kraclawv1.DeviceAuthEvent_ACCESS_DENIED, Message: "user denied"},
 			}},
 			startState: oauthState{},
 			wantState:  chatStateOAuth,

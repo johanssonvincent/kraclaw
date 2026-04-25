@@ -49,14 +49,14 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 	ctx := stream.Context()
 
 	if req.GetGroupJid() == "" {
-		return s.sendError(stream, "INVALID_ARGUMENT", "group_jid is required")
+		return s.sendError(stream, kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT, "group_jid is required")
 	}
 	prov, ok := s.providers.Get(req.GetProvider())
 	if !ok {
-		return s.sendError(stream, "INVALID_ARGUMENT", fmt.Sprintf("unknown provider %q", req.GetProvider()))
+		return s.sendError(stream, kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT, fmt.Sprintf("unknown provider %q", req.GetProvider()))
 	}
 	if prov.AuthMode != provider.AuthModeChatGPT {
-		return s.sendError(stream, "INVALID_ARGUMENT", fmt.Sprintf("provider %q does not use chatgpt auth", prov.ID))
+		return s.sendError(stream, kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT, fmt.Sprintf("provider %q does not use chatgpt auth", prov.ID))
 	}
 
 	dc, err := s.chatgpt.RequestDeviceCode(ctx)
@@ -116,7 +116,7 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 			slog.Time("expires_at", tokens.ExpiresAt),
 			slog.String("err", err.Error()),
 		)
-		return s.sendError(stream, "INTERNAL", fmt.Sprintf("store credentials: %v", err))
+		return s.sendError(stream, kraclawv1.DeviceAuthEvent_INTERNAL, fmt.Sprintf("store credentials: %v", err))
 	}
 
 	if err := stream.Send(&kraclawv1.DeviceAuthEvent{
@@ -135,8 +135,8 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 // sendError emits an Error event terminating the stream and returns nil so
 // the gRPC layer reports the stream as cleanly closed (the error envelope is
 // in-band so the client can render it without translating status codes).
-func (s *authService) sendError(stream kraclawv1.AuthService_StartChatGPTDeviceAuthServer, code, msg string) error {
-	s.log.Warn("StartChatGPTDeviceAuth error", "code", code, "msg", msg)
+func (s *authService) sendError(stream kraclawv1.AuthService_StartChatGPTDeviceAuthServer, code kraclawv1.DeviceAuthEvent_ErrorCode, msg string) error {
+	s.log.Warn("StartChatGPTDeviceAuth error", "code", code.String(), "msg", msg)
 	if err := stream.Send(&kraclawv1.DeviceAuthEvent{
 		Event: &kraclawv1.DeviceAuthEvent_Error_{
 			Error: &kraclawv1.DeviceAuthEvent_Error{Code: code, Message: msg},
@@ -150,17 +150,17 @@ func (s *authService) sendError(stream kraclawv1.AuthService_StartChatGPTDeviceA
 // errCodeFor maps a low-level error to the proto error code returned in a
 // terminal Error event. Order matters: ErrAccessDenied wins over context
 // errors so a wrapped sentinel still routes correctly.
-func errCodeFor(err error) string {
+func errCodeFor(err error) kraclawv1.DeviceAuthEvent_ErrorCode {
 	switch {
 	case err == nil:
-		return "INTERNAL"
+		return kraclawv1.DeviceAuthEvent_INTERNAL
 	case errors.Is(err, chatgpt.ErrAccessDenied):
-		return "ACCESS_DENIED"
+		return kraclawv1.DeviceAuthEvent_ACCESS_DENIED
 	case errors.Is(err, chatgpt.ErrDeviceAuthTimeout), errors.Is(err, context.DeadlineExceeded):
-		return "TIMEOUT"
+		return kraclawv1.DeviceAuthEvent_TIMEOUT
 	case errors.Is(err, context.Canceled):
-		return "CANCELLED"
+		return kraclawv1.DeviceAuthEvent_CANCELLED
 	default:
-		return "INTERNAL"
+		return kraclawv1.DeviceAuthEvent_INTERNAL
 	}
 }
