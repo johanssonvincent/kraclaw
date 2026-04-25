@@ -245,6 +245,63 @@ func TestChatStatusTokens(t *testing.T) {
 	}
 }
 
+func TestSelectModel_OpenAIBranchesToOAuth(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		provider     string
+		authMode     string
+		wantState    chatState
+		wantProvider string // creationSelectedProvider stashed for OAuth
+	}{
+		"openai with chatgpt auth_mode branches to OAuth": {
+			provider:     "openai",
+			authMode:     "chatgpt",
+			wantState:    chatStateOAuth,
+			wantProvider: "openai",
+		},
+		"anthropic with api_key auth_mode skips OAuth": {
+			provider:  "anthropic",
+			authMode:  "api_key",
+			wantState: chatStateConnecting,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+			m.chatState = chatStateSelectModel
+			m.creationProviders = []*kraclawv1.ProviderInfo{
+				{Id: tt.provider, AuthMode: tt.authMode, Models: []*kraclawv1.ModelInfo{{Id: "model-1"}}},
+			}
+			m.creationSelectedProvider = tt.provider
+			m.creationPendingGroupName = "g1"
+			m.creationPicker = creationPickerState{
+				items: []creationPickerItem{{id: "model-1", label: "Model 1"}},
+			}
+			updated, _ := m.updateChat(keyPress("enter"))
+			got := updated.(model)
+			if got.chatState != tt.wantState {
+				t.Errorf("provider=%q authMode=%q chatState = %v, want %v",
+					tt.provider, tt.authMode, got.chatState, tt.wantState)
+			}
+			if tt.wantState == chatStateOAuth {
+				if got.creationSelectedModelID != "model-1" {
+					t.Errorf("provider=%q creationSelectedModelID = %q, want %q",
+						tt.provider, got.creationSelectedModelID, "model-1")
+				}
+				if got.oauth.provider != tt.wantProvider {
+					t.Errorf("provider=%q oauth.provider = %q, want %q",
+						tt.provider, got.oauth.provider, tt.wantProvider)
+				}
+				if got.oauth.pendingGroupName != "g1" {
+					t.Errorf("provider=%q oauth.pendingGroupName = %q, want %q",
+						tt.provider, got.oauth.pendingGroupName, "g1")
+				}
+			}
+		})
+	}
+}
+
 func TestSidebarShowsModelAndProcessing(t *testing.T) {
 	sidebar := newSidebarModel()
 	sidebar.width = 30

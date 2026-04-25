@@ -265,6 +265,23 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			selectedModel := m.creationPicker.items[m.creationPicker.cursor].id
 			name := m.creationPendingGroupName
 			provider := m.creationSelectedProvider
+			authMode := lookupAuthMode(m.creationProviders, provider)
+
+			m.creationSelectedModelID = selectedModel
+
+			if authMode == "chatgpt" {
+				groupJID := "tui:" + name
+				m.oauth = oauthState{
+					active:           true,
+					provider:         provider,
+					groupJID:         groupJID,
+					pendingGroupName: name,
+				}
+				m.chatState = chatStateOAuth
+				return m, m.startOAuthCmd(provider, groupJID, name)
+			}
+
+			// api_key path — original flow.
 			m.creationPendingGroupName = ""
 			m.creationSelectedProvider = ""
 			m.creationPicker = creationPickerState{}
@@ -273,6 +290,28 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.chatState = chatStateConnecting
 			m.chatMessages = nil
 			return m, m.registerGroupCmd(name, provider, selectedModel)
+		}
+
+	case chatStateOAuth:
+		switch msg.String() {
+		case "ctrl+c":
+			if m.oauth.cancel != nil {
+				m.oauth.cancel()
+			}
+			return m, tea.Quit
+		case "esc":
+			if m.oauth.cancel != nil {
+				m.oauth.cancel()
+			}
+			m.oauth = oauthState{}
+			m.chatState = chatStateSelectGroup
+			m.creationPendingGroupName = ""
+			m.creationSelectedProvider = ""
+			m.creationSelectedModelID = ""
+			m.creationPicker = creationPickerState{}
+			m.creationProviders = nil
+			m.creationProvidersLoaded = false
+			return m, nil
 		}
 
 	case chatStateConnecting:
@@ -475,6 +514,13 @@ func (m model) renderChat() string {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("  Enter: create group | Esc: back | j/k: navigate"))
 
+	case chatStateOAuth:
+		b.WriteString(titleStyle.Render("Chat - ChatGPT OAuth"))
+		b.WriteString("\n")
+		b.WriteString(renderOAuth(m.oauth))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Esc: cancel"))
+
 	case chatStateConnecting:
 		b.WriteString(titleStyle.Render("Chat"))
 		b.WriteString("\n")
@@ -570,4 +616,15 @@ func (m model) renderChat() string {
 	}
 
 	return b.String()
+}
+
+// lookupAuthMode returns the auth_mode for the provider with the given id,
+// or the empty string if no matching provider is found.
+func lookupAuthMode(providers []*kraclawv1.ProviderInfo, id string) string {
+	for _, p := range providers {
+		if p.GetId() == id {
+			return p.GetAuthMode()
+		}
+	}
+	return ""
 }

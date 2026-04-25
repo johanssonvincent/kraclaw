@@ -793,6 +793,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case authStartedMsg:
+		return m.handleAuthStarted(msg)
+
+	case authEventMsg:
+		return m.handleAuthEvent(msg)
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
