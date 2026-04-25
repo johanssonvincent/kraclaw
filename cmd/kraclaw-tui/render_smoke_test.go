@@ -52,6 +52,34 @@ func TestRenderOAuth_ShowsBrowserOpenFailureHint(t *testing.T) {
 	}
 }
 
+func TestRenderOAuth_StartingStateAndErrorScreen(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		state       oauthState
+		wantSubstrs []string
+	}{
+		"starting placeholder": {
+			state:       oauthState{},
+			wantSubstrs: []string{"starting OAuth"},
+		},
+		"error renders message and Esc hint": {
+			state:       oauthState{err: errors.New("boom")},
+			wantSubstrs: []string{"ChatGPT auth failed", "boom", "Esc"},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out := renderOAuth(tt.state)
+			for _, sub := range tt.wantSubstrs {
+				if !strings.Contains(out, sub) {
+					t.Errorf("renderOAuth(%+v) = %q, want substring %q", tt.state, out, sub)
+				}
+			}
+		})
+	}
+}
+
 func TestRenderSmoke_OAuthScreen(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
