@@ -85,7 +85,7 @@ func (DeviceAuthEvent_ErrorCode) EnumDescriptor() ([]byte, []int) {
 
 type StartChatGPTDeviceAuthRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// group_jid identifies the per-group credential row (PR #46 schema).
+	// group_jid identifies the per-group credential row.
 	GroupJid string `protobuf:"bytes,1,opt,name=group_jid,json=groupJid,proto3" json:"group_jid,omitempty"`
 	// provider must be a registry provider id with auth_mode == "chatgpt"
 	// (today: "openai").
@@ -138,6 +138,15 @@ func (x *StartChatGPTDeviceAuthRequest) GetProvider() string {
 	return ""
 }
 
+// DeviceAuthEvent is the per-event payload of StartChatGPTDeviceAuth.
+//
+// Server emission order is guaranteed:
+//  1. Exactly one DeviceCode event.
+//  2. Zero or more Tick events (heartbeats; clients SHOULD NOT poll based
+//     on poll_interval_seconds — server polls for the client).
+//  3. Exactly one terminal event (Success or Error), then stream close.
+//
+// Reference: RFC 8628 (OAuth 2.0 Device Authorization Grant).
 type DeviceAuthEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Event:

@@ -25,6 +25,15 @@ message StartChatGPTDeviceAuthRequest {
   string provider = 2;
 }
 
+// DeviceAuthEvent is the per-event payload of StartChatGPTDeviceAuth.
+//
+// Server emission order is guaranteed:
+//   1. Exactly one DeviceCode event.
+//   2. Zero or more Tick events (heartbeats; clients SHOULD NOT poll based
+//      on poll_interval_seconds — server polls for the client).
+//   3. Exactly one terminal event (Success or Error), then stream close.
+//
+// Reference: RFC 8628 (OAuth 2.0 Device Authorization Grant).
 message DeviceAuthEvent {
   oneof event {
     DeviceCode device_code = 1;
