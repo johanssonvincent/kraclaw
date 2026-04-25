@@ -49,14 +49,14 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 	ctx := stream.Context()
 
 	if req.GetGroupJid() == "" {
-		return s.sendError(stream, "INTERNAL", "group_jid is required")
+		return s.sendError(stream, "INVALID_ARGUMENT", "group_jid is required")
 	}
 	prov, ok := s.providers.Get(req.GetProvider())
 	if !ok {
-		return s.sendError(stream, "INTERNAL", fmt.Sprintf("unknown provider %q", req.GetProvider()))
+		return s.sendError(stream, "INVALID_ARGUMENT", fmt.Sprintf("unknown provider %q", req.GetProvider()))
 	}
 	if prov.AuthMode != provider.AuthModeChatGPT {
-		return s.sendError(stream, "INTERNAL", fmt.Sprintf("provider %q does not use chatgpt auth", prov.ID))
+		return s.sendError(stream, "INVALID_ARGUMENT", fmt.Sprintf("provider %q does not use chatgpt auth", prov.ID))
 	}
 
 	dc, err := s.chatgpt.RequestDeviceCode(ctx)
@@ -108,6 +108,14 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 		ExpiresAt:    tokens.ExpiresAt,
 		IsFedRAMP:    tokens.IDClaims.IsFedRAMP,
 	}); err != nil {
+		s.log.Error("store credentials failed",
+			slog.String("error_id", "store_credentials_failed"),
+			slog.String("group_jid", req.GetGroupJid()),
+			slog.String("provider", req.GetProvider()),
+			slog.String("account_id", tokens.IDClaims.AccountID),
+			slog.Time("expires_at", tokens.ExpiresAt),
+			slog.Any("err", err),
+		)
 		return s.sendError(stream, "INTERNAL", fmt.Sprintf("store credentials: %v", err))
 	}
 

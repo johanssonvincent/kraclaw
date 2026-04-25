@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -206,23 +207,23 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 			wantSeq:       []string{"device_code", "success"},
 			wantAccountID: "acct_99",
 		},
-		"unknown provider yields INTERNAL error before issuer is contacted": {
+		"unknown provider yields INVALID_ARGUMENT error before issuer is contacted": {
 			issuerMode: issuerModeApprove,
 			req: &kraclawv1.StartChatGPTDeviceAuthRequest{
 				GroupJid: "discord:42",
 				Provider: "no-such",
 			},
 			wantSeq:     []string{"error"},
-			wantErrCode: "INTERNAL",
+			wantErrCode: "INVALID_ARGUMENT",
 		},
-		"non-chatgpt provider yields INTERNAL error": {
+		"non-chatgpt provider yields INVALID_ARGUMENT error": {
 			issuerMode: issuerModeApprove,
 			req: &kraclawv1.StartChatGPTDeviceAuthRequest{
 				GroupJid: "discord:42",
 				Provider: provider.ProviderAnthropic,
 			},
 			wantSeq:     []string{"error"},
-			wantErrCode: "INTERNAL",
+			wantErrCode: "INVALID_ARGUMENT",
 		},
 		"poll endpoint denial surfaces as INTERNAL after device_code emitted": {
 			issuerMode: issuerModeDeny,
@@ -331,6 +332,47 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 	}
 }
 
+func TestStartChatGPTDeviceAuth_ValidationErrorsUseInvalidArgument(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		req      *kraclawv1.StartChatGPTDeviceAuthRequest
+		wantCode string
+		wantSub  string
+	}{
+		"empty group_jid":      {req: &kraclawv1.StartChatGPTDeviceAuthRequest{Provider: "openai"}, wantCode: "INVALID_ARGUMENT", wantSub: "group_jid"},
+		"unknown provider":     {req: &kraclawv1.StartChatGPTDeviceAuthRequest{GroupJid: "tui:g", Provider: "nope"}, wantCode: "INVALID_ARGUMENT", wantSub: "unknown provider"},
+		"non-chatgpt provider": {req: &kraclawv1.StartChatGPTDeviceAuthRequest{GroupJid: "tui:g", Provider: "anthropic"}, wantCode: "INVALID_ARGUMENT", wantSub: "does not use chatgpt"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			svc := newAuthService(nil, nil, provider.NewRegistry(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+			gclient, cleanup := startAuthGRPC(t, svc)
+			defer cleanup()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			stream, err := gclient.StartChatGPTDeviceAuth(ctx, tt.req)
+			if err != nil {
+				t.Fatalf("StartChatGPTDeviceAuth: %v", err)
+			}
+			ev, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv: %v", err)
+			}
+			e := ev.GetError()
+			if e == nil {
+				t.Fatalf("expected Error event, got %T", ev.GetEvent())
+			}
+			if e.GetCode() != tt.wantCode {
+				t.Errorf("code = %q, want %q", e.GetCode(), tt.wantCode)
+			}
+			if !strings.Contains(e.GetMessage(), tt.wantSub) {
+				t.Errorf("message = %q, want substring %q", e.GetMessage(), tt.wantSub)
+			}
+		})
+	}
+}
+
 func TestErrCodeFor(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
@@ -355,5 +397,85 @@ func TestErrCodeFor(t *testing.T) {
 				t.Errorf("errCodeFor(%v) = %q, want %q", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStartChatGPTDeviceAuth_UpsertFailureLogsRedactedMetadata(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	logger := slog.New(handler)
+
+	idTok := mintTestJWT(t, map[string]any{
+		"email": "u@example.com",
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id":         "acct_77",
+			"chatgpt_user_id":            "user_42",
+			"chatgpt_account_is_fedramp": false,
+		},
+	})
+	// expiresIn must be positive; 3600 = 1 hour
+	issuer := newFakeIssuer(t, issuerModeApprove, idTok, 3600)
+
+	client, err := chatgpt.NewClient(chatgpt.Config{
+		Issuer:       issuer.URL,
+		HTTPClient:   issuer.Client(),
+		PollInterval: 5 * time.Millisecond,
+		PollTimeout:  500 * time.Millisecond,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	// NewCredentialStore issues a timezone probe query on construction.
+	mock.ExpectQuery("SELECT TIMESTAMP").WillReturnRows(
+		sqlmock.NewRows([]string{"t"}).AddRow(time.Now().UTC().Truncate(time.Second)),
+	)
+
+	enc, err := credproxy.NewEncryptor(strings.Repeat("ab", 32))
+	if err != nil {
+		t.Fatalf("NewEncryptor: %v", err)
+	}
+	store, err := credproxy.NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+
+	mock.ExpectExec("REPLACE INTO credentials").WillReturnError(errors.New("disk full"))
+
+	svc := newAuthService(client, store, provider.NewRegistry(), logger)
+	gclient, cleanup := startAuthGRPC(t, svc)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := gclient.StartChatGPTDeviceAuth(ctx, &kraclawv1.StartChatGPTDeviceAuthRequest{
+		GroupJid: "tui:g", Provider: "openai",
+	})
+	if err != nil {
+		t.Fatalf("StartChatGPTDeviceAuth: %v", err)
+	}
+	_, terminal := collectEvents(t, stream)
+	if terminal == nil || terminal.GetError() == nil {
+		t.Fatalf("expected terminal Error event")
+	}
+
+	logs := buf.String()
+	if !strings.Contains(logs, "store_credentials_failed") {
+		t.Errorf("expected log error_id=store_credentials_failed in logs, got: %s", logs)
+	}
+	if !strings.Contains(logs, "acct_77") {
+		t.Errorf("expected log to include account_id acct_77, got: %s", logs)
+	}
+	if strings.Contains(logs, "AccessToken") || strings.Contains(strings.ToLower(logs), "access_token") {
+		t.Errorf("logs leak access_token field name: %s", logs)
 	}
 }
