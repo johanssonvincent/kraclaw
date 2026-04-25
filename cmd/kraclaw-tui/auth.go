@@ -15,11 +15,9 @@ import (
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
 )
 
-// oauthState tracks an in-flight ChatGPT OAuth device flow. active is true
-// from when startOAuthCmd dispatches until the terminal event is handled
-// (success or error) or the user cancels with Esc.
+// oauthState tracks an in-flight ChatGPT OAuth device flow.
+// chatState == chatStateOAuth is the single source of truth for "OAuth is in flight".
 type oauthState struct {
-	active           bool
 	provider         string
 	groupJID         string
 	pendingGroupName string // empty for re-auth flow (group already exists)

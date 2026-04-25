@@ -26,7 +26,7 @@ func TestOAuthFlow_HandlesEvents(t *testing.T) {
 					VerificationUrl: "https://auth.openai.com/codex/device",
 				},
 			}},
-			startState:   oauthState{active: true},
+			startState:   oauthState{},
 			wantState:    chatStateOAuth,
 			wantUserCode: "ABCD-1234",
 		},
@@ -34,21 +34,21 @@ func TestOAuthFlow_HandlesEvents(t *testing.T) {
 			event: &kraclawv1.DeviceAuthEvent{Event: &kraclawv1.DeviceAuthEvent_Tick_{
 				Tick: &kraclawv1.DeviceAuthEvent_Tick{ElapsedSeconds: 12},
 			}},
-			startState: oauthState{active: true, userCode: "ABCD-1234"},
+			startState: oauthState{userCode: "ABCD-1234"},
 			wantState:  chatStateOAuth,
 		},
 		"success transitions to connecting": {
 			event: &kraclawv1.DeviceAuthEvent{Event: &kraclawv1.DeviceAuthEvent_Success_{
 				Success: &kraclawv1.DeviceAuthEvent_Success{AccountId: "acct_123"},
 			}},
-			startState: oauthState{active: true, pendingGroupName: "g1", provider: "openai"},
+			startState: oauthState{pendingGroupName: "g1", provider: "openai"},
 			wantState:  chatStateConnecting,
 		},
 		"error stays on screen with err": {
 			event: &kraclawv1.DeviceAuthEvent{Event: &kraclawv1.DeviceAuthEvent_Error_{
 				Error: &kraclawv1.DeviceAuthEvent_Error{Code: "ACCESS_DENIED", Message: "user denied"},
 			}},
-			startState: oauthState{active: true},
+			startState: oauthState{},
 			wantState:  chatStateOAuth,
 			wantErr:    true,
 		},
@@ -83,7 +83,7 @@ func TestOAuthFlow_TerminalSignalsSetErr(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			m := model{chatState: chatStateOAuth, oauth: oauthState{active: true}}
+			m := model{chatState: chatStateOAuth, oauth: oauthState{}}
 			next, _ := m.handleAuthEvent(tt.msg)
 			got := next.(model)
 			if got.oauth.err == nil {

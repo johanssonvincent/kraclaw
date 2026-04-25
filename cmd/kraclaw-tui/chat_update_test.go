@@ -382,9 +382,9 @@ func TestEscOnOAuth_RoutesByFlow(t *testing.T) {
 			}
 			// oauthState is not directly comparable (holds func/interface fields),
 			// so check the scalar fields that must be zero after a cancel.
-			if gm.oauth.active || gm.oauth.pendingGroupName != "" || gm.oauth.userCode != "" || gm.oauth.err != nil {
-				t.Errorf("oauth not cleared: active=%v pending=%q userCode=%q err=%v",
-					gm.oauth.active, gm.oauth.pendingGroupName, gm.oauth.userCode, gm.oauth.err)
+			if gm.oauth.pendingGroupName != "" || gm.oauth.userCode != "" || gm.oauth.err != nil {
+				t.Errorf("oauth not cleared: pending=%q userCode=%q err=%v",
+					gm.oauth.pendingGroupName, gm.oauth.userCode, gm.oauth.err)
 			}
 			// All six creation fields must be zeroed regardless of flow to prevent
 			// stale context surviving cancel + re-entry.

@@ -272,7 +272,6 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if authMode == "chatgpt" {
 				groupJID := "tui:" + name
 				m.oauth = oauthState{
-					active:           true,
 					provider:         provider,
 					groupJID:         groupJID,
 					pendingGroupName: name,
@@ -367,7 +366,6 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.chatInput.Reset()
 				m.chatInput.SetValue("")
 				m.oauth = oauthState{
-					active:   true,
 					provider: provider,
 					groupJID: m.chatGroup.JID,
 				}

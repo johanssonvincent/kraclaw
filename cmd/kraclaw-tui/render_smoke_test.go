@@ -60,7 +60,6 @@ func TestRenderSmoke_OAuthScreen(t *testing.T) {
 	}{
 		"device-code body shows user_code, URL, and elapsed": {
 			oauth: oauthState{
-				active:          true,
 				userCode:        "ABCD-1234",
 				verificationURL: "https://auth.openai.com/codex/device",
 				elapsed:         7,
