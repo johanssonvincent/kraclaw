@@ -19,13 +19,36 @@ func TestRenderOAuth_ErrorScreenDoesNotPromiseEnterRetry(t *testing.T) {
 
 func TestRenderOAuth_ShowsBrowserOpenFailureHint(t *testing.T) {
 	t.Parallel()
-	out := renderOAuth(oauthState{
-		userCode:        "ABCD-1234",
-		verificationURL: "https://example.com/verify",
-		openURLErr:      errors.New("xdg-open: not found"),
-	})
-	if !strings.Contains(out, "couldn't open browser") {
-		t.Errorf("renderOAuth should hint that browser launch failed; got: %q", out)
+	tests := map[string]struct {
+		state       oauthState
+		wantPresent bool
+	}{
+		"open url failed → hint present": {
+			state: oauthState{
+				userCode:        "ABCD-1234",
+				verificationURL: "https://example.com/verify",
+				openURLErr:      errors.New("xdg-open: not found"),
+			},
+			wantPresent: true,
+		},
+		"open url succeeded → no hint": {
+			state: oauthState{
+				userCode:        "ABCD-1234",
+				verificationURL: "https://example.com/verify",
+			},
+			wantPresent: false,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := renderOAuth(tt.state)
+			present := strings.Contains(got, "couldn't open browser")
+			if present != tt.wantPresent {
+				t.Errorf("renderOAuth(openURLErr=%v): hint present = %v, want %v\noutput: %q",
+					tt.state.openURLErr, present, tt.wantPresent, got)
+			}
+		})
 	}
 }
 
