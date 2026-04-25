@@ -159,8 +159,13 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Unknown event type — keep listening rather than crash the flow.
-	return m, authEventLoopCmd(m.oauth.stream)
+	// Unknown event variant — treat as a terminal error so a future proto
+	// addition without a handler does not silently re-arm the loop forever.
+	if m.oauth.cancel != nil {
+		m.oauth.cancel()
+	}
+	m.oauth.err = fmt.Errorf("unknown auth event variant")
+	return m, nil
 }
 
 // handleEscOAuth tears down any in-flight OAuth stream and returns the model
