@@ -8,6 +8,15 @@ const (
 	ProviderOpenAI    = "openai"
 )
 
+// AuthMode names how clients of a provider authenticate. Values must match
+// internal/credproxy.AuthMode strings — that package owns the canonical set.
+type AuthMode string
+
+const (
+	AuthModeAPIKey  AuthMode = "api_key"
+	AuthModeChatGPT AuthMode = "chatgpt"
+)
+
 // ModelInfo describes a single model offered by a provider.
 type ModelInfo struct {
 	ID          string
@@ -20,6 +29,7 @@ type ProviderInfo struct {
 	DisplayName  string
 	Models       []ModelInfo
 	DefaultModel string
+	AuthMode     AuthMode
 }
 
 // Registry holds all known providers and their models.
@@ -35,6 +45,7 @@ func NewRegistry() *Registry {
 		ID:           ProviderAnthropic,
 		DisplayName:  "Anthropic",
 		DefaultModel: "claude-sonnet-4-6",
+		AuthMode:     AuthModeAPIKey,
 		Models: []ModelInfo{
 			{ID: "claude-opus-4-6", DisplayName: "Claude Opus 4.6"},
 			{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6"},
@@ -51,6 +62,7 @@ func NewRegistry() *Registry {
 		ID:           ProviderOpenAI,
 		DisplayName:  "OpenAI",
 		DefaultModel: "gpt-5.4",
+		AuthMode:     AuthModeChatGPT,
 		Models: []ModelInfo{
 			{ID: "gpt-5.4", DisplayName: "GPT-5.4"},
 			{ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini"},

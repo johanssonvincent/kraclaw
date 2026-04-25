@@ -304,6 +304,7 @@ func (s *groupService) ListProviders(ctx context.Context, _ *kraclawv1.ListProvi
 			Id:           p.ID,
 			DisplayName:  p.DisplayName,
 			DefaultModel: p.DefaultModel,
+			AuthMode:     string(p.AuthMode),
 			Models:       make([]*kraclawv1.ModelInfo, 0, len(p.Models)),
 		}
 		for _, m := range p.Models {

@@ -71,3 +71,27 @@ func TestRegistry_Models_ReturnsCorrectProvider(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistry_AuthMode(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		provider string
+		want     AuthMode
+	}{
+		"anthropic uses api_key": {provider: ProviderAnthropic, want: AuthModeAPIKey},
+		"openai uses chatgpt":    {provider: ProviderOpenAI, want: AuthModeChatGPT},
+	}
+	r := NewRegistry()
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			p, ok := r.Get(tt.provider)
+			if !ok {
+				t.Fatalf("provider %q not registered", tt.provider)
+			}
+			if p.AuthMode != tt.want {
+				t.Errorf("AuthMode for %q = %q, want %q", tt.provider, p.AuthMode, tt.want)
+			}
+		})
+	}
+}
