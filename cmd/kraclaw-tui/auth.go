@@ -27,6 +27,7 @@ type oauthState struct {
 	verificationURL  string
 	elapsed          int
 	err              error
+	openURLErr       error // non-nil if the best-effort browser launch failed
 	stream           kraclawv1.AuthService_StartChatGPTDeviceAuthClient
 	cancel           context.CancelFunc
 }
@@ -125,8 +126,10 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 		m.oauth.userCode = dc.GetUserCode()
 		m.oauth.verificationURL = dc.GetVerificationUrl()
 		// Best-effort browser open — failure is non-fatal because the user_code
-		// is always shown alongside.
+		// is always shown alongside. Capture the error so renderOAuth can hint
+		// the user to copy the URL manually.
 		if err := OpenURL(dc.GetVerificationUrl()); err != nil {
+			m.oauth.openURLErr = err
 			slog.Warn("OpenURL failed", "err", err)
 		}
 		return m, authEventLoopCmd(m.oauth.stream)
@@ -212,5 +215,8 @@ func renderOAuth(s oauthState) string {
 		"Open this URL in a browser and enter the code:\n\n  %s\n\n  code: %s\n\n  elapsed: %ds — waiting for approval…",
 		s.verificationURL, s.userCode, s.elapsed,
 	)
+	if s.openURLErr != nil {
+		body += "\n\n  (couldn't open browser — copy the URL above)"
+	}
 	return lipgloss.NewStyle().Foreground(defaultChatTheme.Text).Render(body)
 }

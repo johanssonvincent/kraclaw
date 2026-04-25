@@ -17,6 +17,18 @@ func TestRenderOAuth_ErrorScreenDoesNotPromiseEnterRetry(t *testing.T) {
 	}
 }
 
+func TestRenderOAuth_ShowsBrowserOpenFailureHint(t *testing.T) {
+	t.Parallel()
+	out := renderOAuth(oauthState{
+		userCode:        "ABCD-1234",
+		verificationURL: "https://example.com/verify",
+		openURLErr:      errors.New("xdg-open: not found"),
+	})
+	if !strings.Contains(out, "couldn't open browser") {
+		t.Errorf("renderOAuth should hint that browser launch failed; got: %q", out)
+	}
+}
+
 func TestRenderSmoke_OAuthScreen(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
