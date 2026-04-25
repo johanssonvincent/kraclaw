@@ -356,6 +356,9 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			input := strings.TrimSpace(m.chatInput.Value())
+			// :auth <provider> — re-authenticate the current group's OAuth
+			// credentials in place. Useful when refresh tokens are revoked or
+			// expire mid-session. Bare ":auth" surfaces a usage error.
 			if isAuthCommand(input) {
 				parts := strings.Fields(input)
 				if len(parts) < 2 {
