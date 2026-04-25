@@ -95,3 +95,36 @@ func TestRegistry_AuthMode(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthMode_Valid(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		m    AuthMode
+		want bool
+	}{
+		"api_key": {m: AuthModeAPIKey, want: true},
+		"chatgpt": {m: AuthModeChatGPT, want: true},
+		"empty":   {m: AuthMode(""), want: false},
+		"unknown": {m: AuthMode("shipt"), want: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.m.Valid(); got != tt.want {
+				t.Errorf("AuthMode(%q).Valid() = %v, want %v", string(tt.m), got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewRegistryForTest_RejectsInvalidAuthMode(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("expected panic for invalid AuthMode in NewRegistryForTest")
+		}
+	}()
+	NewRegistryForTest(map[string]ProviderInfo{
+		"x": {ID: "x", AuthMode: AuthMode("shipt")},
+	})
+}

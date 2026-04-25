@@ -17,6 +17,16 @@ const (
 	AuthModeChatGPT AuthMode = "chatgpt"
 )
 
+// Valid reports whether m is one of the known auth modes. Empty is invalid.
+func (m AuthMode) Valid() bool {
+	switch m {
+	case AuthModeAPIKey, AuthModeChatGPT:
+		return true
+	default:
+		return false
+	}
+}
+
 // ModelInfo describes a single model offered by a provider.
 type ModelInfo struct {
 	ID          string
@@ -81,6 +91,11 @@ func NewRegistry() *Registry {
 func NewRegistryForTest(providers map[string]ProviderInfo) *Registry {
 	if providers == nil {
 		providers = make(map[string]ProviderInfo)
+	}
+	for id, p := range providers {
+		if !p.AuthMode.Valid() {
+			panic(fmt.Sprintf("provider.NewRegistryForTest: provider %q has invalid AuthMode %q", id, p.AuthMode))
+		}
 	}
 	return &Registry{providers: providers}
 }
