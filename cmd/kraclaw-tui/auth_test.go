@@ -92,22 +92,32 @@ func TestOAuthFlow_TerminalSignalsSetErr(t *testing.T) {
 
 func TestHandleAuthEvent_UnknownVariantSetsErrAndCancels(t *testing.T) {
 	t.Parallel()
-	var canceled bool
-	cancel := func() { canceled = true }
-	m := model{
-		chatState: chatStateOAuth,
-		oauth:     oauthState{cancel: cancel},
+	// Table is length-1 today; adding future unknown variants is a one-liner.
+	tests := map[string]struct {
+		event *kraclawv1.DeviceAuthEvent
+	}{
+		"empty event (no oneof set)": {event: &kraclawv1.DeviceAuthEvent{}},
 	}
-	// DeviceAuthEvent with no oneof variant set is the "unknown" case.
-	got, cmd := m.handleAuthEvent(authEventMsg{event: &kraclawv1.DeviceAuthEvent{}})
-	gm := got.(model)
-	if gm.oauth.err == nil {
-		t.Errorf("expected oauth.err to be set; got nil")
-	}
-	if cmd != nil {
-		t.Errorf("expected nil cmd to halt the loop; got non-nil")
-	}
-	if !canceled {
-		t.Errorf("expected cancel() to be invoked")
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var canceled bool
+			cancel := func() { canceled = true }
+			m := model{
+				chatState: chatStateOAuth,
+				oauth:     oauthState{cancel: cancel},
+			}
+			got, cmd := m.handleAuthEvent(authEventMsg{event: tt.event})
+			gm := got.(model)
+			if gm.oauth.err == nil {
+				t.Errorf("event=%+v: oauth.err = nil, want non-nil", tt.event)
+			}
+			if cmd != nil {
+				t.Errorf("event=%+v: cmd = %v, want nil to halt loop", tt.event, cmd)
+			}
+			if !canceled {
+				t.Errorf("event=%+v: cancel() not invoked", tt.event)
+			}
+		})
 	}
 }
