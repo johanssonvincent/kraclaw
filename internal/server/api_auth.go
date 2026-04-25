@@ -114,7 +114,7 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 			slog.String("provider", req.GetProvider()),
 			slog.String("account_id", tokens.IDClaims.AccountID),
 			slog.Time("expires_at", tokens.ExpiresAt),
-			slog.Any("err", err),
+			slog.String("err", err.Error()),
 		)
 		return s.sendError(stream, "INTERNAL", fmt.Sprintf("store credentials: %v", err))
 	}

@@ -475,7 +475,9 @@ func TestStartChatGPTDeviceAuth_UpsertFailureLogsRedactedMetadata(t *testing.T) 
 	if !strings.Contains(logs, "acct_77") {
 		t.Errorf("expected log to include account_id acct_77, got: %s", logs)
 	}
-	if strings.Contains(logs, "AccessToken") || strings.Contains(strings.ToLower(logs), "access_token") {
-		t.Errorf("logs leak access_token field name: %s", logs)
+	for _, forbidden := range []string{"accesstoken", "access_token", "refreshtoken", "refresh_token", "idtoken", "id_token"} {
+		if strings.Contains(strings.ToLower(logs), forbidden) {
+			t.Errorf("logs leak token field %q: %s", forbidden, logs)
+		}
 	}
 }
