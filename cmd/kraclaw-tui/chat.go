@@ -20,6 +20,7 @@ const (
 	chatStateSelectGroup    chatState = iota
 	chatStateSelectProvider          // step 1: pick provider for new group
 	chatStateSelectModel             // step 2: pick model for new group
+	chatStateOAuth                   // step 3 (chatgpt only): device-flow OAuth
 	chatStateConnecting
 	chatStateChatting
 )
