@@ -342,6 +342,8 @@ func TestErrCodeFor(t *testing.T) {
 		"access denied":     {err: chatgpt.ErrAccessDenied, want: "ACCESS_DENIED"},
 		"context canceled":  {err: context.Canceled, want: "CANCELLED"},
 		"wrapped denied":    {err: fmt.Errorf("wrap: %w", chatgpt.ErrAccessDenied), want: "ACCESS_DENIED"},
+		"wrapped deadline":  {err: fmt.Errorf("wrap: %w", context.DeadlineExceeded), want: "TIMEOUT"},
+		"wrapped canceled":  {err: fmt.Errorf("wrap: %w", context.Canceled), want: "CANCELLED"},
 		"unknown":           {err: errors.New("boom"), want: "INTERNAL"},
 		"nil":               {err: nil, want: "INTERNAL"},
 	}
