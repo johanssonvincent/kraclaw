@@ -97,7 +97,7 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 
 	tokens, err := s.chatgpt.ExchangeCode(ctx, authCode)
 	if err != nil {
-		return s.sendError(stream, "INTERNAL", fmt.Sprintf("exchange: %v", err))
+		return s.sendError(stream, errCodeFor(err), fmt.Sprintf("exchange: %v", err))
 	}
 
 	if err := s.creds.UpsertChatGPTCredential(ctx, req.GetGroupJid(), req.GetProvider(), &credproxy.ChatGPTTokens{
