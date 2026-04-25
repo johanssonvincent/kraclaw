@@ -75,8 +75,8 @@ func TestOAuthFlow_HandlesEvents(t *testing.T) {
 			if tt.wantErr && gotModel.oauth.err == nil {
 				t.Errorf("handleAuthEvent(%#v) expected oauth.err, got nil", tt.event)
 			}
-			if tt.wantCanceled && !canceled {
-				t.Errorf("handleAuthEvent(%#v): expected cancel() to be invoked on terminal path", tt.event)
+			if canceled != tt.wantCanceled {
+				t.Errorf("handleAuthEvent(%#v): canceled = %v, want %v", tt.event, canceled, tt.wantCanceled)
 			}
 		})
 	}
