@@ -8,9 +8,14 @@ import (
 
 type runFn func(name string, args ...string) error
 
-// OpenURL launches the system browser. It is a best-effort helper: callers
-// must always display the URL alongside any UI affordance, so failures here
-// are non-fatal — the device-flow user_code is what actually matters.
+// OpenURL launches the system browser to the given URL. Best-effort:
+// failure is non-fatal because the device-flow user_code is always shown.
+//
+// Platform requirements:
+//   - linux: xdg-open must be in PATH (missing in headless containers).
+//   - darwin: open(1) is provided by the OS.
+//   - windows: cmd.exe; the empty-string title arg before the URL is
+//     load-bearing — without it cmd's start parses the URL as the title.
 func OpenURL(url string) error {
 	return openURLFor(runtime.GOOS, url, func(name string, args ...string) error {
 		return exec.Command(name, args...).Start()
@@ -24,7 +29,6 @@ func openURLFor(goos, url string, run runFn) error {
 	case "darwin":
 		return run("open", url)
 	case "windows":
-		// "" arg before url is the title for the cmd start subshell.
 		return run("cmd", "/c", "start", "", url)
 	default:
 		return fmt.Errorf("openurl: unsupported OS %q", goos)

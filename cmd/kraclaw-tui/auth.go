@@ -50,7 +50,7 @@ type authEventMsg struct {
 // startOAuthCmd opens the AuthService stream. It does NOT consume events —
 // authEventLoopCmd does that one event at a time so each event becomes a
 // distinct tea.Msg and re-renders the UI.
-func (m model) startOAuthCmd(provider, groupJID, _ string) tea.Cmd {
+func (m model) startOAuthCmd(provider, groupJID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		stream, err := m.api.auth.StartChatGPTDeviceAuth(ctx, &kraclawv1.StartChatGPTDeviceAuthRequest{
@@ -84,9 +84,8 @@ func authEventLoopCmd(stream kraclawv1.AuthService_StartChatGPTDeviceAuthClient)
 	}
 }
 
-// handleAuthStarted records the open stream on the model and kicks off the
-// event loop. On open-error it surfaces the error in oauthState.err so the
-// user can press Esc to return to the picker.
+// handleAuthStarted records the open stream or surfaces an open-error so the
+// user can press Esc and try again from the picker.
 func (m model) handleAuthStarted(msg authStartedMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.oauth.err = msg.err
@@ -141,8 +140,7 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 			m.oauth.cancel()
 		}
 		if m.oauth.pendingGroupName != "" {
-			// New-group path: group was deferred until OAuth completed; now
-			// register it. Task 6 wires the trigger into the chat flow.
+			// new-group: group was deferred until OAuth completed; register it.
 			name := m.oauth.pendingGroupName
 			provider := m.oauth.provider
 			modelID := m.creationSelectedModelID
@@ -151,7 +149,7 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 			m.chatMessages = nil
 			return m, m.registerGroupCmd(name, provider, modelID)
 		}
-		// Re-auth path (Task 7): group already exists, just go back to chat.
+		// re-auth: group already exists; return to chat without re-registering.
 		m.oauth = oauthState{}
 		m.chatState = chatStateChatting
 		return m, nil

@@ -18,7 +18,7 @@ service AuthService {
 }
 
 message StartChatGPTDeviceAuthRequest {
-  // group_jid identifies the per-group credential row (PR #46 schema).
+  // group_jid identifies the per-group credential row.
   string group_jid = 1;
   // provider must be a registry provider id with auth_mode == "chatgpt"
   // (today: "openai").

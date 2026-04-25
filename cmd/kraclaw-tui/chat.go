@@ -277,7 +277,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					pendingGroupName: name,
 				}
 				m.chatState = chatStateOAuth
-				return m, m.startOAuthCmd(provider, groupJID, name)
+				return m, m.startOAuthCmd(provider, groupJID)
 			}
 
 			// api_key path — original flow.
@@ -371,7 +371,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				m.chatState = chatStateOAuth
 				m.chatErr = nil
-				return m, m.startOAuthCmd(provider, m.chatGroup.JID, "")
+				return m, m.startOAuthCmd(provider, m.chatGroup.JID)
 			}
 			if input == "" {
 				return m, nil

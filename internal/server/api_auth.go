@@ -44,7 +44,6 @@ func newAuthService(c *chatgpt.Client, s *credproxy.CredentialStore, r *provider
 	return &authService{chatgpt: c, creds: s, providers: r, log: log}
 }
 
-// StartChatGPTDeviceAuth implements kraclawv1.AuthServiceServer.
 func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAuthRequest, stream kraclawv1.AuthService_StartChatGPTDeviceAuthServer) error {
 	ctx := stream.Context()
 
@@ -79,8 +78,7 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 	start := time.Now()
 	tickFn := func() {
 		// Tick send errors are best-effort: the stream may already be torn
-		// down by the time a heartbeat fires. The real failure surfaces from
-		// PollUntilCode/ExchangeCode below.
+		// down by the time a heartbeat fires.
 		_ = stream.Send(&kraclawv1.DeviceAuthEvent{
 			Event: &kraclawv1.DeviceAuthEvent_Tick_{
 				Tick: &kraclawv1.DeviceAuthEvent_Tick{
