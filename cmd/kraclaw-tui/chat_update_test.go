@@ -320,3 +320,51 @@ func TestSidebarShowsModelAndProcessing(t *testing.T) {
 		t.Fatalf("expected sidebar to contain Processing label, got %q", view)
 	}
 }
+
+func TestComposerCommand_Auth(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		input        string
+		wantState    chatState
+		wantProvider string
+		wantPending  string
+		wantErr      bool
+	}{
+		":auth openai branches to OAuth re-auth": {
+			input:        ":auth openai",
+			wantState:    chatStateOAuth,
+			wantProvider: "openai",
+			wantPending:  "",
+		},
+		":auth without provider sets chatErr": {
+			input:     ":auth",
+			wantState: chatStateChatting,
+			wantErr:   true,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+			m.chatState = chatStateChatting
+			m.chatGroup = &GroupInfo{JID: "tui:g1"}
+			m.chatInput.SetValue(tt.input)
+
+			updated, _ := m.updateChat(keyPress("enter"))
+			got := updated.(model)
+
+			if got.chatState != tt.wantState {
+				t.Errorf("input=%q chatState = %v, want %v", tt.input, got.chatState, tt.wantState)
+			}
+			if tt.wantProvider != "" && got.oauth.provider != tt.wantProvider {
+				t.Errorf("input=%q oauth.provider = %q, want %q", tt.input, got.oauth.provider, tt.wantProvider)
+			}
+			if got.oauth.pendingGroupName != tt.wantPending {
+				t.Errorf("input=%q oauth.pendingGroupName = %q, want %q", tt.input, got.oauth.pendingGroupName, tt.wantPending)
+			}
+			if tt.wantErr && got.chatErr == nil {
+				t.Errorf("input=%q expected chatErr, got nil", tt.input)
+			}
+		})
+	}
+}

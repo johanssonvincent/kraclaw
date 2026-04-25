@@ -367,13 +367,31 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.inboundStream = nil
 			return m, nil
 		case "enter":
-			text := strings.TrimSpace(m.chatInput.Value())
-			if text == "" {
+			input := strings.TrimSpace(m.chatInput.Value())
+			if strings.HasPrefix(input, ":auth") {
+				parts := strings.Fields(input)
+				if len(parts) < 2 {
+					m.chatErr = fmt.Errorf("usage: :auth <provider>")
+					return m, nil
+				}
+				provider := parts[1]
+				m.chatInput.Reset()
+				m.chatInput.SetValue("")
+				m.oauth = oauthState{
+					active:   true,
+					provider: provider,
+					groupJID: m.chatGroup.JID,
+				}
+				m.chatState = chatStateOAuth
+				m.chatErr = nil
+				return m, m.startOAuthCmd(provider, m.chatGroup.JID, "")
+			}
+			if input == "" {
 				return m, nil
 			}
 			m.chatMessages = append(m.chatMessages, chatMessage{
 				sender:  "you",
-				content: text,
+				content: input,
 			})
 			m.chatInput.Reset()
 			m.chatInput.SetValue("")
@@ -385,7 +403,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.chatViewport.SetContent(m.formatChatMessages())
 			m.chatViewport.GotoBottom()
 			m.chatWaitingForAgent = true
-			return m, m.sendMessageCmd(text)
+			return m, m.sendMessageCmd(input)
 		case "ctrl+m":
 			m.modelPicker.Open = true
 			m.modelPicker.Loading = true
