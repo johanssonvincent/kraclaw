@@ -30,13 +30,15 @@ import (
 
 // issuerMode selects the behaviour of the test fake issuer:
 //
-//	"approve": usercode -> immediate authorization_code -> token bundle
-//	"deny":    usercode OK, then poll endpoint returns HTTP 500 (errBadStatus)
+//	"approve":      usercode -> immediate authorization_code -> token bundle
+//	"deny":         usercode OK, then poll/exchange endpoint returns 400 access_denied (ErrAccessDenied)
+//	"slow_approve": authorization_pending twice, then approves on the third poll
 type issuerMode string
 
 const (
-	issuerModeApprove issuerMode = "approve"
-	issuerModeDeny    issuerMode = "deny"
+	issuerModeApprove     issuerMode = "approve"
+	issuerModeDeny        issuerMode = "deny"
+	issuerModeSlowApprove issuerMode = "slow_approve"
 )
 
 func mintTestJWT(t *testing.T, payload map[string]any) string {
@@ -63,15 +65,34 @@ func newFakeIssuer(t *testing.T, mode issuerMode, idTokenJWT string, expiresIn i
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"device_auth_id":"dev_xyz","user_code":"USER-1234","interval":"0.005"}`))
 		case "/api/accounts/deviceauth/token":
-			pollCalls.Add(1)
-			if mode == issuerModeDeny {
-				http.Error(w, "denied", http.StatusInternalServerError)
+			n := int(pollCalls.Add(1))
+			switch mode {
+			case issuerModeDeny:
+				// Return 400 access_denied so pollTerminalCode catches it as ErrAccessDenied.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"access_denied"}`))
 				return
+			case issuerModeSlowApprove:
+				// First two calls return authorization_pending; third approves.
+				if n < 3 {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+					return
+				}
 			}
-			// approve: first poll returns the authorization_code immediately.
+			// approve / slow_approve after 2 pending: return the authorization_code.
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"authorization_code":"ac_1","code_verifier":"cv_1"}`))
 		case "/oauth/token":
+			if mode == issuerModeDeny {
+				// ExchangeCode also uses pollTerminalCode on 400 responses.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"access_denied"}`))
+				return
+			}
 			resp := map[string]any{
 				"id_token":      idTokenJWT,
 				"access_token":  "access_42",
@@ -175,6 +196,33 @@ func equalSeqIgnoringTickCount(got, want []string) bool {
 	return true
 }
 
+// equalSeqAtLeastOneTick verifies that got matches want with the constraint
+// that every "tick" entry in want must match >= 1 consecutive "tick" entries
+// in got. All other entries must match exactly.
+func equalSeqAtLeastOneTick(got, want []string) bool {
+	si, wi := 0, 0
+	for si < len(got) && wi < len(want) {
+		if want[wi] == "tick" {
+			matched := 0
+			for si < len(got) && got[si] == "tick" {
+				si++
+				matched++
+			}
+			if matched < 1 {
+				return false
+			}
+			wi++
+		} else {
+			if got[si] != want[wi] {
+				return false
+			}
+			si++
+			wi++
+		}
+	}
+	return si == len(got) && wi == len(want)
+}
+
 func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 	t.Parallel()
 
@@ -225,14 +273,24 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 			wantSeq:     []string{"error"},
 			wantErrCode: "INVALID_ARGUMENT",
 		},
-		"poll endpoint denial surfaces as INTERNAL after device_code emitted": {
+		"deny path: ExchangeCode 400 access_denied yields ACCESS_DENIED": {
 			issuerMode: issuerModeDeny,
 			req: &kraclawv1.StartChatGPTDeviceAuthRequest{
-				GroupJid: "discord:42",
+				GroupJid: "tui:g",
 				Provider: provider.ProviderOpenAI,
 			},
 			wantSeq:     []string{"device_code", "error"},
-			wantErrCode: "INTERNAL",
+			wantErrCode: "ACCESS_DENIED",
+		},
+		"slow approval emits at least one tick before success": {
+			issuerMode: issuerModeSlowApprove,
+			req: &kraclawv1.StartChatGPTDeviceAuthRequest{
+				GroupJid: "tui:g",
+				Provider: provider.ProviderOpenAI,
+			},
+			wantSeq:       []string{"device_code", "tick", "success"},
+			wantAccountID: "acct_99",
+			expectUpsert:  true,
 		},
 	}
 
@@ -295,7 +353,11 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 			}
 			seq, terminal := collectEvents(t, stream)
 
-			if !equalSeqIgnoringTickCount(seq, tt.wantSeq) {
+			matchSeq := equalSeqIgnoringTickCount
+			if name == "slow approval emits at least one tick before success" {
+				matchSeq = equalSeqAtLeastOneTick
+			}
+			if !matchSeq(seq, tt.wantSeq) {
 				t.Errorf("event sequence for %+v = %v, want %v", tt.req, seq, tt.wantSeq)
 			}
 
