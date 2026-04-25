@@ -840,3 +840,65 @@ func TestPollUntilCode_CancelDuringSleep_ReturnsPromptly(t *testing.T) {
 		t.Errorf("PollUntilCode took %v, want < 500ms after ctx cancel mid-sleep", elapsed)
 	}
 }
+
+func TestPollOnce_AccessDeniedReturnsSentinel(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		status int
+		body   string
+		want   error
+	}{
+		"400 access_denied": {status: 400, body: `{"error":"access_denied"}`, want: ErrAccessDenied},
+		"403 access_denied": {status: 403, body: `{"error":"access_denied"}`, want: ErrAccessDenied},
+		"400 expired_token": {status: 400, body: `{"error":"expired_token"}`, want: ErrAccessDenied},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			c, err := NewClient(Config{Issuer: srv.URL, HTTPClient: srv.Client()})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			dc := deviceCodeForTest("dc", "UC", srv.URL, 5*time.Millisecond)
+			_, got := c.PollOnce(context.Background(), dc)
+			if !errors.Is(got, tt.want) {
+				t.Errorf("PollOnce(%s) error = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExchangeCode_AccessDeniedReturnsSentinel(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		status int
+		body   string
+	}{
+		"400 access_denied": {status: 400, body: `{"error":"access_denied"}`},
+		"400 expired_token": {status: 400, body: `{"error":"expired_token"}`},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+			c, err := NewClient(Config{Issuer: srv.URL, HTTPClient: srv.Client()})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			_, got := c.ExchangeCode(context.Background(), &AuthorizationCode{Code: "x", CodeVerifier: "v"})
+			if !errors.Is(got, ErrAccessDenied) {
+				t.Errorf("ExchangeCode body=%q error = %v, want ErrAccessDenied", tt.body, got)
+			}
+		})
+	}
+}

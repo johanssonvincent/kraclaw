@@ -225,11 +225,32 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 	case "slow_down":
 		return nil, ErrSlowDown
 	}
+	if err := pollTerminalCode(resp.StatusCode, respBody); err != nil {
+		return nil, err
+	}
 	c.logger.Warn("chatgpt: poll returned non-pending non-success status",
 		slog.Int("status", resp.StatusCode),
 		slog.String("url", endpoint),
 		slog.String("body_preview", truncate(string(respBody), 200)))
 	return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
+}
+
+// pollTerminalCode returns ErrAccessDenied if the response body carries a
+// terminal RFC 8628 error ("access_denied" or "expired_token"); otherwise
+// returns nil. Inspected only on the same status range as pollPendingCode.
+func pollTerminalCode(status int, body []byte) error {
+	if status != http.StatusBadRequest && status != http.StatusForbidden && status != http.StatusNotFound {
+		return nil
+	}
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	switch strings.ToLower(strings.TrimSpace(parsed.Error)) {
+	case "access_denied", "expired_token":
+		return ErrAccessDenied
+	}
+	return nil
 }
 
 // pollPendingCode returns the RFC 8628 pending error code
@@ -352,6 +373,9 @@ func (c *Client) ExchangeCode(ctx context.Context, code *AuthorizationCode) (*To
 		return nil, fmt.Errorf("chatgpt: read token-exchange response: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
+		if err := pollTerminalCode(resp.StatusCode, respBody); err != nil {
+			return nil, err
+		}
 		c.logger.Warn("chatgpt: token-exchange returned non-2xx",
 			slog.Int("status", resp.StatusCode),
 			slog.String("url", endpoint),
