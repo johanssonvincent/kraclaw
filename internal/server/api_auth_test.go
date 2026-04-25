@@ -497,7 +497,7 @@ func TestStartChatGPTDeviceAuth_UpsertFailureLogsRedactedMetadata(t *testing.T) 
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// NewCredentialStore issues a timezone probe query on construction.
 	mock.ExpectQuery("SELECT TIMESTAMP").WillReturnRows(
