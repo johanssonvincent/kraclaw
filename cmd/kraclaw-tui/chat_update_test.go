@@ -461,21 +461,19 @@ func TestComposerCommand_Auth(t *testing.T) {
 func TestAuthCommand_PrefixCollision(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
-		input          string
-		wantOAuthState bool
-		wantErr        bool
+		input string
+		want  bool
 	}{
-		"exact :auth no provider":     {input: ":auth", wantOAuthState: false, wantErr: true},
-		":auth openai triggers OAuth": {input: ":auth openai", wantOAuthState: true, wantErr: false},
-		":authority does NOT trigger": {input: ":authority foo", wantOAuthState: false, wantErr: false},
-		":authentic does NOT trigger": {input: ":authentic", wantOAuthState: false, wantErr: false},
+		"exact :auth no provider":     {input: ":auth", want: true},
+		":auth openai triggers OAuth": {input: ":auth openai", want: true},
+		":authority does NOT trigger": {input: ":authority foo", want: false},
+		":authentic does NOT trigger": {input: ":authentic", want: false},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			triggered := isAuthCommand(tt.input)
-			if triggered != tt.wantOAuthState && !tt.wantErr {
-				t.Errorf("isAuthCommand(%q) = %v, want %v", tt.input, triggered, tt.wantOAuthState)
+			if got := isAuthCommand(tt.input); got != tt.want {
+				t.Errorf("isAuthCommand(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}
