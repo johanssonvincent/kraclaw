@@ -13,11 +13,12 @@ import (
 func TestOAuthFlow_HandlesEvents(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
-		event        *kraclawv1.DeviceAuthEvent
-		startState   oauthState
-		wantState    chatState
-		wantErr      bool
-		wantUserCode string
+		event         *kraclawv1.DeviceAuthEvent
+		startState    oauthState
+		wantState     chatState
+		wantErr       bool
+		wantUserCode  string
+		wantCanceled  bool
 	}{
 		"device code populates fields": {
 			event: &kraclawv1.DeviceAuthEvent{Event: &kraclawv1.DeviceAuthEvent_DeviceCode_{
@@ -41,22 +42,28 @@ func TestOAuthFlow_HandlesEvents(t *testing.T) {
 			event: &kraclawv1.DeviceAuthEvent{Event: &kraclawv1.DeviceAuthEvent_Success_{
 				Success: &kraclawv1.DeviceAuthEvent_Success{AccountId: "acct_123"},
 			}},
-			startState: oauthState{pendingGroupName: "g1", provider: "openai"},
-			wantState:  chatStateConnecting,
+			startState:   oauthState{pendingGroupName: "g1", provider: "openai"},
+			wantState:    chatStateConnecting,
+			wantCanceled: true,
 		},
 		"error stays on screen with err": {
 			event: &kraclawv1.DeviceAuthEvent{Event: &kraclawv1.DeviceAuthEvent_Error_{
 				Error: &kraclawv1.DeviceAuthEvent_Error{Code: kraclawv1.DeviceAuthEvent_ACCESS_DENIED, Message: "user denied"},
 			}},
-			startState: oauthState{},
-			wantState:  chatStateOAuth,
-			wantErr:    true,
+			startState:   oauthState{},
+			wantState:    chatStateOAuth,
+			wantErr:      true,
+			wantCanceled: true,
 		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			m := model{chatState: chatStateOAuth, oauth: tt.startState}
+			var canceled bool
+			cancel := func() { canceled = true }
+			startState := tt.startState
+			startState.cancel = cancel
+			m := model{chatState: chatStateOAuth, oauth: startState}
 			next, _ := m.handleAuthEvent(authEventMsg{event: tt.event})
 			gotModel := next.(model)
 			if gotModel.chatState != tt.wantState {
@@ -68,6 +75,9 @@ func TestOAuthFlow_HandlesEvents(t *testing.T) {
 			if tt.wantErr && gotModel.oauth.err == nil {
 				t.Errorf("handleAuthEvent(%#v) expected oauth.err, got nil", tt.event)
 			}
+			if tt.wantCanceled && !canceled {
+				t.Errorf("handleAuthEvent(%#v): expected cancel() to be invoked on terminal path", tt.event)
+			}
 		})
 	}
 }
@@ -77,17 +87,25 @@ func TestOAuthFlow_TerminalSignalsSetErr(t *testing.T) {
 	tests := map[string]struct {
 		msg authEventMsg
 	}{
-		"stream error":          {msg: authEventMsg{err: errors.New("network")}},
-		"nil event from server": {msg: authEventMsg{}},
+		"recv error sets oauth.err":       {msg: authEventMsg{err: errors.New("boom")}},
+		"nil event signals stream closed": {msg: authEventMsg{}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			m := model{chatState: chatStateOAuth, oauth: oauthState{}}
-			next, _ := m.handleAuthEvent(tt.msg)
-			got := next.(model)
-			if got.oauth.err == nil {
-				t.Errorf("msg=%+v: expected oauth.err, got nil", tt.msg)
+			var canceled bool
+			cancel := func() { canceled = true }
+			m := model{
+				chatState: chatStateOAuth,
+				oauth:     oauthState{cancel: cancel},
+			}
+			got, _ := m.handleAuthEvent(tt.msg)
+			gm := got.(model)
+			if gm.oauth.err == nil {
+				t.Errorf("expected oauth.err to be set; got nil")
+			}
+			if !canceled {
+				t.Errorf("expected cancel() to be invoked on terminal path")
 			}
 		})
 	}
