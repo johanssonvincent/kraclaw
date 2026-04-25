@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"google.golang.org/grpc/status"
 
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
 )
@@ -75,6 +76,9 @@ func authEventLoopCmd(stream kraclawv1.AuthService_StartChatGPTDeviceAuthClient)
 			return authEventMsg{}
 		}
 		if err != nil {
+			if st, ok := status.FromError(err); ok {
+				return authEventMsg{err: fmt.Errorf("auth stream %s: %s", st.Code(), st.Message())}
+			}
 			return authEventMsg{err: fmt.Errorf("auth stream recv: %w", err)}
 		}
 		return authEventMsg{event: ev}

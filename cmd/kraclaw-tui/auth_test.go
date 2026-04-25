@@ -2,9 +2,12 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestOAuthFlow_HandlesEvents(t *testing.T) {
@@ -120,4 +123,43 @@ func TestHandleAuthEvent_UnknownVariantSetsErrAndCancels(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuthEventLoop_SurfacesGRPCStatusCode(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		recvErr error
+		want    string
+	}{
+		"unavailable":     {recvErr: status.Error(codes.Unavailable, "down"), want: "Unavailable"},
+		"unauthenticated": {recvErr: status.Error(codes.Unauthenticated, "bad token"), want: "Unauthenticated"},
+		"plain error":     {recvErr: errors.New("boom"), want: "boom"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			stream := &fakeAuthStream{recvErr: tt.recvErr}
+			msg := authEventLoopCmd(stream)()
+			ev, ok := msg.(authEventMsg)
+			if !ok {
+				t.Fatalf("expected authEventMsg, got %T", msg)
+			}
+			if ev.err == nil {
+				t.Fatalf("expected err, got nil")
+			}
+			if !strings.Contains(ev.err.Error(), tt.want) {
+				t.Errorf("err = %v, want substring %q", ev.err, tt.want)
+			}
+		})
+	}
+}
+
+// fakeAuthStream lets tests drive Recv error scenarios without a real gRPC channel.
+type fakeAuthStream struct {
+	kraclawv1.AuthService_StartChatGPTDeviceAuthClient
+	recvErr error
+}
+
+func (f *fakeAuthStream) Recv() (*kraclawv1.DeviceAuthEvent, error) {
+	return nil, f.recvErr
 }
