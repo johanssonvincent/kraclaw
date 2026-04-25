@@ -321,6 +321,49 @@ func TestSidebarShowsModelAndProcessing(t *testing.T) {
 	}
 }
 
+func TestEscOnOAuth_RoutesByFlow(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		startState       chatState
+		pendingGroupName string
+		chatGroup        *GroupInfo // nil for new-group flow
+		wantState        chatState
+	}{
+		"new-group flow returns to selectGroup": {
+			startState:       chatStateOAuth,
+			pendingGroupName: "g-new",
+			wantState:        chatStateSelectGroup,
+		},
+		"re-auth flow returns to chatting": {
+			startState:       chatStateOAuth,
+			pendingGroupName: "",
+			chatGroup:        &GroupInfo{JID: "tui:existing", Name: "existing"},
+			wantState:        chatStateChatting,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := model{
+				chatState: tt.startState,
+				oauth:     oauthState{pendingGroupName: tt.pendingGroupName},
+				chatGroup: tt.chatGroup,
+			}
+			got, _ := m.handleEscOAuth()
+			gm := got.(model)
+			if gm.chatState != tt.wantState {
+				t.Errorf("Esc on oauth (pending=%q) → state %v, want %v", tt.pendingGroupName, gm.chatState, tt.wantState)
+			}
+			// oauthState is not directly comparable (holds func/interface fields),
+			// so check the scalar fields that must be zero after a cancel.
+			if gm.oauth.active || gm.oauth.pendingGroupName != "" || gm.oauth.userCode != "" || gm.oauth.err != nil {
+				t.Errorf("oauth not cleared: active=%v pending=%q userCode=%q err=%v",
+					gm.oauth.active, gm.oauth.pendingGroupName, gm.oauth.userCode, gm.oauth.err)
+			}
+		})
+	}
+}
+
 func TestComposerCommand_Auth(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {

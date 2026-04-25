@@ -163,6 +163,23 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 	return m, authEventLoopCmd(m.oauth.stream)
 }
 
+// handleEscOAuth tears down any in-flight OAuth stream and returns the model
+// to the right place: re-auth (group already exists) → chatting; new-group
+// (group not yet registered) → group picker.
+func (m model) handleEscOAuth() (tea.Model, tea.Cmd) {
+	if m.oauth.cancel != nil {
+		m.oauth.cancel()
+	}
+	wasReauth := m.oauth.pendingGroupName == ""
+	m.oauth = oauthState{}
+	if wasReauth && m.chatGroup != nil && m.chatGroup.JID != "" {
+		m.chatState = chatStateChatting
+		return m, nil
+	}
+	m.chatState = chatStateSelectGroup
+	return m, nil
+}
+
 // renderOAuth renders the device-code screen. It always shows the user_code
 // and verification URL because the OpenURL helper is best-effort.
 func renderOAuth(s oauthState) string {

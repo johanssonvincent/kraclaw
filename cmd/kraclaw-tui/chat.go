@@ -300,18 +300,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "esc":
-			if m.oauth.cancel != nil {
-				m.oauth.cancel()
-			}
-			m.oauth = oauthState{}
-			m.chatState = chatStateSelectGroup
-			m.creationPendingGroupName = ""
-			m.creationSelectedProvider = ""
-			m.creationSelectedModelID = ""
-			m.creationPicker = creationPickerState{}
-			m.creationProviders = nil
-			m.creationProvidersLoaded = false
-			return m, nil
+			return m.handleEscOAuth()
 		}
 
 	case chatStateConnecting:
