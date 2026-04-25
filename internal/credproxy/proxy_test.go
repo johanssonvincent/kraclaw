@@ -1,10 +1,12 @@
 package credproxy
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -572,14 +574,15 @@ func TestDefaultCredentialResolver_PerGroupOpenAI(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	credStore, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	encKey, _ := enc.Encrypt("sk-group-openai-key")
-	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted"}).
-		AddRow("openai", encKey)
+	rows := sqlmock.NewRows([]string{"provider", "auth_mode", "api_key_encrypted", "oauth_access_token_encrypted", "oauth_refresh_token_encrypted", "oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp"}).
+		AddRow("openai", string(AuthModeAPIKey), encKey, nil, nil, nil, nil, nil, false)
 	mock.ExpectQuery("SELECT").WithArgs("discord:123").WillReturnRows(rows)
 
 	r := NewDefaultResolver(credStore, config.ProxyConfig{
@@ -611,6 +614,7 @@ func TestDefaultCredentialResolver_PerGroupNotFound_FallsThroughToPlatform(t *te
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	credStore, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -643,6 +647,7 @@ func TestDefaultCredentialResolver_PerGroupStoreError_PropagatesError(t *testing
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	credStore, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -729,6 +734,7 @@ func TestDefaultCredentialResolver_PerGroupProviderMismatch_FallsThroughToPlatfo
 	defer func() { _ = db.Close() }()
 
 	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
 	credStore, err := NewCredentialStore(db, enc)
 	if err != nil {
 		t.Fatal(err)
@@ -736,8 +742,8 @@ func TestDefaultCredentialResolver_PerGroupProviderMismatch_FallsThroughToPlatfo
 
 	// Group has Anthropic credentials stored.
 	encKey, _ := enc.Encrypt("sk-group-anthropic")
-	rows := sqlmock.NewRows([]string{"provider", "api_key_encrypted"}).
-		AddRow("anthropic", encKey)
+	rows := sqlmock.NewRows([]string{"provider", "auth_mode", "api_key_encrypted", "oauth_access_token_encrypted", "oauth_refresh_token_encrypted", "oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp"}).
+		AddRow("anthropic", string(AuthModeAPIKey), encKey, nil, nil, nil, nil, nil, false)
 	mock.ExpectQuery("SELECT").WithArgs("discord:mismatch").WillReturnRows(rows)
 
 	r := NewDefaultResolver(credStore, config.ProxyConfig{
@@ -819,5 +825,93 @@ func TestDefaultResolver_RequestedProviderNotConfigured_ReturnsError(t *testing.
 				t.Fatalf("expected error when requesting %q with no matching credentials configured", tt.requestedProvider)
 			}
 		})
+	}
+}
+
+func TestDefaultResolver_ChatGPTAuthModeNotSupported(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	enc := newTestEncryptor(t)
+	expectTimezoneProbe(t, mock)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	accessEnc, err := enc.Encrypt("access")
+	if err != nil {
+		t.Fatalf("encrypt access: %v", err)
+	}
+	refreshEnc, err := enc.Encrypt("refresh")
+	if err != nil {
+		t.Fatalf("encrypt refresh: %v", err)
+	}
+	expiresAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	rows := sqlmock.NewRows([]string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id",
+		"oauth_expires_at", "oauth_is_fedramp",
+	}).AddRow("openai", string(AuthModeChatGPT), nil, accessEnc, refreshEnc, nil, "acct", expiresAt, false)
+	mock.ExpectQuery("SELECT").WithArgs("discord:chatgpt").WillReturnRows(rows)
+
+	resolver := NewDefaultResolver(store, config.ProxyConfig{
+		OpenAIAPIKey:      "platform-openai-key",
+		OpenAIUpstreamURL: "https://api.openai.com",
+	})
+
+	rc, err := resolver.Resolve(context.Background(), "discord:chatgpt", provider.ProviderOpenAI)
+	if err == nil {
+		t.Errorf("Resolve(chatgpt cred) err = nil, want error; got %+v", rc)
+	}
+	if rc != nil {
+		t.Errorf("Resolve(chatgpt cred) rc = %+v, want nil", rc)
+	}
+	if err != nil && !strings.Contains(err.Error(), "chatgpt auth mode") {
+		t.Errorf("Resolve(chatgpt cred) err = %v, want error mentioning chatgpt auth mode", err)
+	}
+}
+
+func TestDefaultResolver_ChatGPTRejection_LogsError(t *testing.T) {
+	t.Parallel()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New(): %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	expectTimezoneProbe(t, mock)
+
+	enc := newTestEncryptor(t)
+	store, err := NewCredentialStore(db, enc)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+
+	accessEnc, _ := enc.Encrypt("a")
+	refreshEnc, _ := enc.Encrypt("r")
+	rows := sqlmock.NewRows([]string{
+		"provider", "auth_mode", "api_key_encrypted",
+		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
+		"oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp",
+	}).AddRow("openai", string(AuthModeChatGPT), nil, accessEnc, refreshEnc, nil, "acct", time.Now().Add(time.Hour).UTC(), false)
+	mock.ExpectQuery("SELECT").WithArgs("grp").WillReturnRows(rows)
+
+	var buf bytes.Buffer
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	defer slog.SetDefault(origLogger)
+
+	r := NewDefaultResolver(store, config.ProxyConfig{OpenAIUpstreamURL: "https://api.openai.com"})
+	if _, err := r.Resolve(context.Background(), "grp", ""); err == nil {
+		t.Errorf("Resolve err = nil, want rejection error")
+	}
+	if !strings.Contains(buf.String(), "grp") {
+		t.Errorf("slog output = %q, want error log referencing group %q", buf.String(), "grp")
 	}
 }
