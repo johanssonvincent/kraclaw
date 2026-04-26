@@ -77,15 +77,20 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 
 	start := time.Now()
 	tickFn := func() {
-		// Tick send errors are best-effort: the stream may already be torn
-		// down by the time a heartbeat fires.
-		_ = stream.Send(&kraclawv1.DeviceAuthEvent{
+		if err := stream.Send(&kraclawv1.DeviceAuthEvent{
 			Event: &kraclawv1.DeviceAuthEvent_Tick_{
 				Tick: &kraclawv1.DeviceAuthEvent_Tick{
 					ElapsedSeconds: int32(time.Since(start) / time.Second),
 				},
 			},
-		})
+		}); err != nil {
+			// Tick send is best-effort: stream may be torn down. Log at debug
+			// for operator-side visibility without impacting the flow.
+			s.log.Debug("auth stream tick send failed",
+				slog.String("group_jid", req.GetGroupJid()),
+				slog.String("err", err.Error()),
+			)
+		}
 	}
 
 	authCode, err := s.chatgpt.PollUntilCode(ctx, dc, tickFn)
