@@ -30,15 +30,17 @@ import (
 
 // issuerMode selects the behaviour of the test fake issuer:
 //
-//	"approve":      usercode -> immediate authorization_code -> token bundle
-//	"deny":         usercode OK, then poll/exchange endpoint returns 400 access_denied (ErrAccessDenied)
-//	"slow_approve": authorization_pending twice, then approves on the third poll
+//	"approve":          usercode -> immediate authorization_code -> token bundle
+//	"deny":             usercode OK, then poll/exchange endpoint returns 400 access_denied (ErrAccessDenied)
+//	"slow_approve":     authorization_pending twice, then approves on the third poll
+//	"5xx_during_poll":  usercode OK, then poll endpoint returns 502 (errBadStatus → INTERNAL)
 type issuerMode string
 
 const (
-	issuerModeApprove     issuerMode = "approve"
-	issuerModeDeny        issuerMode = "deny"
-	issuerModeSlowApprove issuerMode = "slow_approve"
+	issuerModeApprove       issuerMode = "approve"
+	issuerModeDeny          issuerMode = "deny"
+	issuerModeSlowApprove   issuerMode = "slow_approve"
+	issuerMode5xxDuringPoll issuerMode = "5xx_during_poll"
 )
 
 func mintTestJWT(t *testing.T, payload map[string]any) string {
@@ -81,6 +83,12 @@ func newFakeIssuer(t *testing.T, mode issuerMode, idTokenJWT string, expiresIn i
 					_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
 					return
 				}
+			case issuerMode5xxDuringPoll:
+				// Subsequent /api/accounts/deviceauth/token poll fails with
+				// 502; pollOnce wraps this as *errBadStatus, which falls
+				// through errCodeFor's default → INTERNAL.
+				http.Error(w, "bad gateway", http.StatusBadGateway)
+				return
 			}
 			// approve / slow_approve after 2 pending: return the authorization_code.
 			w.Header().Set("Content-Type", "application/json")
@@ -293,6 +301,15 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 			wantAccountID: "acct_99",
 			expectUpsert:  true,
 			matchSeq:      equalSeqAtLeastOneTick,
+		},
+		"issuer returns 5xx mid-poll → INTERNAL": {
+			issuerMode: issuerMode5xxDuringPoll,
+			req: &kraclawv1.StartChatGPTDeviceAuthRequest{
+				GroupJid: "tui:g",
+				Provider: provider.ProviderOpenAI,
+			},
+			wantSeq:     []string{"device_code", "error"},
+			wantErrCode: kraclawv1.DeviceAuthEvent_INTERNAL,
 		},
 	}
 
