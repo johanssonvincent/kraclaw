@@ -23,14 +23,24 @@ func OpenURL(url string) error {
 }
 
 func openURLFor(goos, url string, run runFn) error {
+	var name string
+	var args []string
+	var hint string
 	switch goos {
 	case "linux":
-		return run("xdg-open", url)
+		name, args = "xdg-open", []string{url}
+		hint = "install xdg-open or copy the URL manually"
 	case "darwin":
-		return run("open", url)
+		name, args = "open", []string{url}
+		hint = "copy the URL manually"
 	case "windows":
-		return run("cmd", "/c", "start", "", url)
+		name, args = "cmd", []string{"/c", "start", "", url}
+		hint = "copy the URL manually"
 	default:
 		return fmt.Errorf("openurl: unsupported OS %q", goos)
 	}
+	if err := run(name, args...); err != nil {
+		return fmt.Errorf("openurl on %s: %w (%s)", goos, err, hint)
+	}
+	return nil
 }
