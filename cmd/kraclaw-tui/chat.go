@@ -17,10 +17,10 @@ import (
 type chatState int
 
 const (
-	chatStateSelectGroup    chatState = iota
-	chatStateSelectProvider          // step 1: pick provider for new group
-	chatStateSelectModel             // step 2: pick model for new group
-	chatStateOAuth                   // step 3 (chatgpt only): device-flow OAuth
+	chatStateSelectGroup chatState = iota
+	chatStateSelectProvider
+	chatStateSelectModel
+	chatStateOAuth
 	chatStateConnecting
 	chatStateChatting
 )
@@ -215,7 +215,6 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.creationPicker.items[m.creationPicker.cursor]
-			// Load model list for the selected provider from cached providers.
 			var modelItems []creationPickerItem
 			for _, p := range m.creationProviders {
 				if p.GetId() == selected.id {
@@ -280,7 +279,6 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, m.startOAuthCmd(provider, groupJID)
 			}
 
-			// api_key path — original flow.
 			m.creationPendingGroupName = ""
 			m.creationSelectedProvider = ""
 			m.creationPicker = creationPickerState{}
