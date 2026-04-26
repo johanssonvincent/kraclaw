@@ -369,7 +369,9 @@ func (x *DeviceAuthEvent_Tick) GetElapsedSeconds() int32 {
 
 type DeviceAuthEvent_Success struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// account_id is the parsed sub claim from id_token; useful for display.
+	// account_id is the chatgpt_account_id claim from the OpenAI auth namespace
+	// in id_token (parsed in internal/auth/chatgpt/jwt.go); informational, useful
+	// for display.
 	AccountId string `protobuf:"bytes,1,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
 	// expires_at is RFC3339; informational only.
 	ExpiresAt     string `protobuf:"bytes,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`

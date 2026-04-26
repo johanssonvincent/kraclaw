@@ -68,7 +68,9 @@ message DeviceAuthEvent {
   }
 
   message Success {
-    // account_id is the parsed sub claim from id_token; useful for display.
+    // account_id is the chatgpt_account_id claim from the OpenAI auth namespace
+    // in id_token (parsed in internal/auth/chatgpt/jwt.go); informational, useful
+    // for display.
     string account_id = 1;
     // expires_at is RFC3339; informational only.
     string expires_at = 2;
