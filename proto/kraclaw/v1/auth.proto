@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package kraclaw.v1;
+
+option go_package = "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1";
+
+// AuthService manages provider credentials that require interactive
+// authentication. ChatGPT OAuth is the only flow today; future flows
+// (e.g. Anthropic OAuth) reuse this service.
+service AuthService {
+  // StartChatGPTDeviceAuth begins the OAuth 2.0 device-code flow against
+  // OpenAI's auth issuer for the given group + provider. The server emits a
+  // single DEVICE_CODE event with the user_code and verification_url, then
+  // periodic TICK heartbeats while polling, then exactly one terminal event
+  // (SUCCESS or ERROR). Tokens are stored in the credproxy credential
+  // store on success — the caller does not receive them.
+  rpc StartChatGPTDeviceAuth(StartChatGPTDeviceAuthRequest) returns (stream DeviceAuthEvent);
+}
+
+message StartChatGPTDeviceAuthRequest {
+  // group_jid identifies the per-group credential row.
+  string group_jid = 1;
+  // provider must be a registry provider id with auth_mode == "chatgpt"
+  // (today: "openai").
+  string provider = 2;
+}
+
+// DeviceAuthEvent is the per-event payload of StartChatGPTDeviceAuth.
+//
+// Server emission order is guaranteed:
+//   1. Exactly one DeviceCode event.
+//   2. Zero or more Tick events (heartbeats; clients SHOULD NOT poll based
+//      on poll_interval_seconds — server polls for the client).
+//   3. Exactly one terminal event (Success or Error), then stream close.
+//
+// Reference: RFC 8628 (OAuth 2.0 Device Authorization Grant).
+message DeviceAuthEvent {
+  oneof event {
+    DeviceCode device_code = 1;
+    Tick tick = 2;
+    Success success = 3;
+    Error error = 4;
+  }
+
+  // ErrorCode is the terminal error category surfaced to clients. The server
+  // emits exactly one Error event with one of these codes, then closes the
+  // stream. Order: ERROR_CODE_UNSPECIFIED is the proto3 default and MUST NOT
+  // be emitted; clients seeing it should treat as an internal protocol bug.
+  enum ErrorCode {
+    ERROR_CODE_UNSPECIFIED = 0;
+    INTERNAL = 1;
+    INVALID_ARGUMENT = 2;
+    TIMEOUT = 3;
+    ACCESS_DENIED = 4;
+    CANCELLED = 5;
+  }
+
+  message DeviceCode {
+    string user_code = 1;
+    string verification_url = 2;
+    // poll_interval_seconds is informational; the server polls itself.
+    int32 poll_interval_seconds = 3;
+  }
+
+  message Tick {
+    // elapsed_seconds since the device-code event.
+    int32 elapsed_seconds = 1;
+  }
+
+  message Success {
+    // account_id is the chatgpt_account_id claim from the OpenAI auth namespace
+    // in id_token (parsed in internal/auth/chatgpt/jwt.go); informational, useful
+    // for display.
+    string account_id = 1;
+    // expires_at is RFC3339; informational only.
+    string expires_at = 2;
+  }
+
+  message Error {
+    ErrorCode code = 1;
+    string message = 2;
+  }
+}

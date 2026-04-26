@@ -707,11 +707,13 @@ func (x *ListProvidersResponse) GetProviders() []*ProviderInfo {
 }
 
 type ProviderInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	DisplayName   string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	DefaultModel  string                 `protobuf:"bytes,3,opt,name=default_model,json=defaultModel,proto3" json:"default_model,omitempty"`
-	Models        []*ModelInfo           `protobuf:"bytes,4,rep,name=models,proto3" json:"models,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Id           string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	DisplayName  string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	DefaultModel string                 `protobuf:"bytes,3,opt,name=default_model,json=defaultModel,proto3" json:"default_model,omitempty"`
+	Models       []*ModelInfo           `protobuf:"bytes,4,rep,name=models,proto3" json:"models,omitempty"`
+	// auth_mode is "api_key" or "chatgpt". Empty = "api_key" for forward compatibility.
+	AuthMode      string `protobuf:"bytes,5,opt,name=auth_mode,json=authMode,proto3" json:"auth_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -772,6 +774,13 @@ func (x *ProviderInfo) GetModels() []*ModelInfo {
 		return x.Models
 	}
 	return nil
+}
+
+func (x *ProviderInfo) GetAuthMode() string {
+	if x != nil {
+		return x.AuthMode
+	}
+	return ""
 }
 
 type ModelInfo struct {
@@ -871,12 +880,13 @@ const file_kraclaw_v1_group_proto_rawDesc = "" +
 	"\aentries\x18\x02 \x03(\v2 .kraclaw.v1.SenderAllowlistEntryR\aentries\"\x16\n" +
 	"\x14ListProvidersRequest\"O\n" +
 	"\x15ListProvidersResponse\x126\n" +
-	"\tproviders\x18\x01 \x03(\v2\x18.kraclaw.v1.ProviderInfoR\tproviders\"\x95\x01\n" +
+	"\tproviders\x18\x01 \x03(\v2\x18.kraclaw.v1.ProviderInfoR\tproviders\"\xb2\x01\n" +
 	"\fProviderInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12#\n" +
 	"\rdefault_model\x18\x03 \x01(\tR\fdefaultModel\x12-\n" +
-	"\x06models\x18\x04 \x03(\v2\x15.kraclaw.v1.ModelInfoR\x06models\">\n" +
+	"\x06models\x18\x04 \x03(\v2\x15.kraclaw.v1.ModelInfoR\x06models\x12\x1b\n" +
+	"\tauth_mode\x18\x05 \x01(\tR\bauthMode\">\n" +
 	"\tModelInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName2\xc9\x04\n" +

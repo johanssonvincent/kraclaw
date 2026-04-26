@@ -121,6 +121,7 @@ type apiClient struct {
 	tasks     kraclawv1.TaskServiceClient
 	sandboxes kraclawv1.SandboxServiceClient
 	channels  kraclawv1.ChannelServiceClient
+	auth      kraclawv1.AuthServiceClient
 }
 
 func newAPIClient(serverAddr, caCertFile, clientCertFile, clientKeyFile, serverName string, insecure bool) (*apiClient, error) {
@@ -151,6 +152,7 @@ func newAPIClient(serverAddr, caCertFile, clientCertFile, clientKeyFile, serverN
 		tasks:     kraclawv1.NewTaskServiceClient(conn),
 		sandboxes: kraclawv1.NewSandboxServiceClient(conn),
 		channels:  kraclawv1.NewChannelServiceClient(conn),
+		auth:      kraclawv1.NewAuthServiceClient(conn),
 	}, nil
 }
 
@@ -256,9 +258,13 @@ type model struct {
 	creationFlowID            int
 	creationPendingGroupName  string
 	creationSelectedProvider  string
+	creationSelectedModelID   string
 	creationProviders         []*kraclawv1.ProviderInfo
 	creationPicker            creationPickerState
 	creationProvidersLoaded   bool
+
+	// ChatGPT OAuth device-flow state.
+	oauth oauthState
 
 	// Cached Glamour renderer for markdown in agent messages.
 	// Rebuilt only when viewport width changes.
@@ -786,6 +792,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatErr = msg.err
 		}
 		return m, nil
+
+	case authStartedMsg:
+		return m.handleAuthStarted(msg)
+
+	case authEventMsg:
+		return m.handleAuthEvent(msg)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd

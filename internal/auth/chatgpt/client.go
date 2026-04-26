@@ -156,6 +156,11 @@ var ErrSlowDown = fmt.Errorf("%w: slow_down", ErrAuthorizationPending)
 // each slow_down response.
 const slowDownBackoff = 5 * time.Second
 
+// ErrAccessDenied is returned by PollOnce / ExchangeCode when the issuer
+// signals that the user denied authorization or the device code has expired.
+// Maps to RFC 8628 "access_denied" and "expired_token" body codes.
+var ErrAccessDenied = errors.New("chatgpt: access denied")
+
 // ErrDeviceAuthTimeout is returned by PollUntilCode after PollTimeout elapses
 // without a successful response.
 var ErrDeviceAuthTimeout = errors.New("chatgpt: device authorization timed out")

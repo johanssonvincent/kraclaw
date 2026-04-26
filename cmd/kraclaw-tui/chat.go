@@ -17,9 +17,10 @@ import (
 type chatState int
 
 const (
-	chatStateSelectGroup    chatState = iota
-	chatStateSelectProvider          // step 1: pick provider for new group
-	chatStateSelectModel             // step 2: pick model for new group
+	chatStateSelectGroup chatState = iota
+	chatStateSelectProvider
+	chatStateSelectModel
+	chatStateOAuth
 	chatStateConnecting
 	chatStateChatting
 )
@@ -214,7 +215,6 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.creationPicker.items[m.creationPicker.cursor]
-			// Load model list for the selected provider from cached providers.
 			var modelItems []creationPickerItem
 			for _, p := range m.creationProviders {
 				if p.GetId() == selected.id {
@@ -264,6 +264,21 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			selectedModel := m.creationPicker.items[m.creationPicker.cursor].id
 			name := m.creationPendingGroupName
 			provider := m.creationSelectedProvider
+			authMode := lookupAuthMode(m.creationProviders, provider)
+
+			m.creationSelectedModelID = selectedModel
+
+			if authMode == "chatgpt" {
+				groupJID := "tui:" + name
+				m.oauth = oauthState{
+					provider:         provider,
+					groupJID:         groupJID,
+					pendingGroupName: name,
+				}
+				m.chatState = chatStateOAuth
+				return m, m.startOAuthCmd(provider, groupJID)
+			}
+
 			m.creationPendingGroupName = ""
 			m.creationSelectedProvider = ""
 			m.creationPicker = creationPickerState{}
@@ -272,6 +287,17 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.chatState = chatStateConnecting
 			m.chatMessages = nil
 			return m, m.registerGroupCmd(name, provider, selectedModel)
+		}
+
+	case chatStateOAuth:
+		switch msg.String() {
+		case "ctrl+c":
+			if m.oauth.cancel != nil {
+				m.oauth.cancel()
+			}
+			return m, tea.Quit
+		case "esc":
+			return m.handleEscOAuth()
 		}
 
 	case chatStateConnecting:
@@ -327,13 +353,33 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.inboundStream = nil
 			return m, nil
 		case "enter":
-			text := strings.TrimSpace(m.chatInput.Value())
-			if text == "" {
+			input := strings.TrimSpace(m.chatInput.Value())
+			// :auth <provider> — re-authenticate the current group's OAuth
+			// credentials in place. Useful when refresh tokens are revoked or
+			// expire mid-session. Bare ":auth" surfaces a usage error.
+			if isAuthCommand(input) {
+				parts := strings.Fields(input)
+				if len(parts) < 2 {
+					m.chatErr = fmt.Errorf("usage: :auth <provider>")
+					return m, nil
+				}
+				provider := parts[1]
+				m.chatInput.Reset()
+				m.chatInput.SetValue("")
+				m.oauth = oauthState{
+					provider: provider,
+					groupJID: m.chatGroup.JID,
+				}
+				m.chatState = chatStateOAuth
+				m.chatErr = nil
+				return m, m.startOAuthCmd(provider, m.chatGroup.JID)
+			}
+			if input == "" {
 				return m, nil
 			}
 			m.chatMessages = append(m.chatMessages, chatMessage{
 				sender:  "you",
-				content: text,
+				content: input,
 			})
 			m.chatInput.Reset()
 			m.chatInput.SetValue("")
@@ -345,7 +391,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.chatViewport.SetContent(m.formatChatMessages())
 			m.chatViewport.GotoBottom()
 			m.chatWaitingForAgent = true
-			return m, m.sendMessageCmd(text)
+			return m, m.sendMessageCmd(input)
 		case "ctrl+m":
 			m.modelPicker.Open = true
 			m.modelPicker.Loading = true
@@ -474,6 +520,13 @@ func (m model) renderChat() string {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("  Enter: create group | Esc: back | j/k: navigate"))
 
+	case chatStateOAuth:
+		b.WriteString(titleStyle.Render("Chat - ChatGPT OAuth"))
+		b.WriteString("\n")
+		b.WriteString(renderOAuth(m.oauth))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Esc: cancel"))
+
 	case chatStateConnecting:
 		b.WriteString(titleStyle.Render("Chat"))
 		b.WriteString("\n")
@@ -569,4 +622,22 @@ func (m model) renderChat() string {
 	}
 
 	return b.String()
+}
+
+// isAuthCommand returns true when the first whitespace-delimited token of input
+// is exactly ":auth", preventing false matches against ":authority", ":authentic", etc.
+func isAuthCommand(input string) bool {
+	parts := strings.Fields(input)
+	return len(parts) > 0 && parts[0] == ":auth"
+}
+
+// lookupAuthMode returns the auth_mode for the provider with the given id,
+// or the empty string if no matching provider is found.
+func lookupAuthMode(providers []*kraclawv1.ProviderInfo, id string) string {
+	for _, p := range providers {
+		if p.GetId() == id {
+			return p.GetAuthMode()
+		}
+	}
+	return ""
 }

@@ -84,6 +84,8 @@ message ProviderInfo {
   string display_name = 2;
   string default_model = 3;
   repeated ModelInfo models = 4;
+  // auth_mode is "api_key" or "chatgpt". Empty = "api_key" for forward compatibility.
+  string auth_mode = 5;
 }
 
 message ModelInfo {

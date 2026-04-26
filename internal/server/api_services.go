@@ -64,7 +64,16 @@ type sandboxService struct {
 	log     *slog.Logger
 }
 
-func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) {
+func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) error {
+	if err := cfg.Auth.Validate(); err != nil {
+		return fmt.Errorf("auth config: %w", err)
+	}
+
+	providers := provider.NewRegistry()
+	if cfg.Auth != nil && cfg.Auth.Providers != nil {
+		providers = cfg.Auth.Providers
+	}
+
 	admin := &adminService{
 		version:   cfg.Version,
 		startedAt: cfg.StartedAt,
@@ -78,7 +87,7 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 	}
 	groups := &groupService{
 		store:     cfg.Store,
-		providers: provider.NewRegistry(),
+		providers: providers,
 		log:       cfg.Log.With("component", "grpc-groups"),
 	}
 	tasks := &taskService{
@@ -104,6 +113,13 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 	kraclawv1.RegisterTaskServiceServer(grpcServer, tasks)
 	kraclawv1.RegisterSandboxServiceServer(grpcServer, sandboxes)
 	kraclawv1.RegisterChannelServiceServer(grpcServer, channels)
+
+	if cfg.Auth != nil {
+		auth := newAuthService(cfg.Auth.ChatGPT, cfg.Auth.Credentials, providers, cfg.Log.With("component", "grpc-auth"))
+		kraclawv1.RegisterAuthServiceServer(grpcServer, auth)
+	}
+
+	return nil
 }
 
 func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequest) (*kraclawv1.ServerStatus, error) {
@@ -304,6 +320,7 @@ func (s *groupService) ListProviders(ctx context.Context, _ *kraclawv1.ListProvi
 			Id:           p.ID,
 			DisplayName:  p.DisplayName,
 			DefaultModel: p.DefaultModel,
+			AuthMode:     string(p.AuthMode),
 			Models:       make([]*kraclawv1.ModelInfo, 0, len(p.Models)),
 		}
 		for _, m := range p.Models {
