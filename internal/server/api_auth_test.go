@@ -545,3 +545,113 @@ func TestStartChatGPTDeviceAuth_UpsertFailureLogsRedactedMetadata(t *testing.T) 
 		}
 	}
 }
+
+// TestStartChatGPTDeviceAuth_CredStoreErrorScrubbed verifies that the wire
+// Error.Message returned to the client when the credential store fails
+// contains a fixed, generic string and never echoes the underlying error
+// text. This is defense-in-depth: a future contributor wrapping the err
+// with token material in fmt.Errorf must not be able to leak it through
+// the gRPC stream.
+func TestStartChatGPTDeviceAuth_CredStoreErrorScrubbed(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		credErr        error
+		wantWireSubstr string
+		wantNotInWire  string
+	}{
+		"raw err with token-shaped text is scrubbed": {
+			credErr:        errors.New("mysql: insert tokens sk-secret-AAAA failed: connection refused"),
+			wantWireSubstr: "failed to persist credentials",
+			wantNotInWire:  "sk-secret-AAAA",
+		},
+		"generic err is scrubbed": {
+			credErr:        errors.New("disk full"),
+			wantWireSubstr: "failed to persist credentials",
+			wantNotInWire:  "disk full",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			idTok := mintTestJWT(t, map[string]any{
+				"email": "u@example.com",
+				"exp":   time.Now().Add(time.Hour).Unix(),
+				"https://api.openai.com/auth": map[string]any{
+					"chatgpt_account_id":         "acct_77",
+					"chatgpt_user_id":            "user_42",
+					"chatgpt_account_is_fedramp": false,
+				},
+			})
+			issuer := newFakeIssuer(t, issuerModeApprove, idTok, 3600)
+
+			client, err := chatgpt.NewClient(chatgpt.Config{
+				Issuer:       issuer.URL,
+				HTTPClient:   issuer.Client(),
+				PollInterval: 5 * time.Millisecond,
+				PollTimeout:  500 * time.Millisecond,
+				Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			})
+			if err != nil {
+				t.Fatalf("chatgpt.NewClient: %v", err)
+			}
+
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+
+			mock.ExpectQuery("SELECT TIMESTAMP").WillReturnRows(
+				sqlmock.NewRows([]string{"t"}).AddRow(time.Now().UTC().Truncate(time.Second)),
+			)
+
+			enc, err := credproxy.NewEncryptor(strings.Repeat("ab", 32))
+			if err != nil {
+				t.Fatalf("NewEncryptor: %v", err)
+			}
+			store, err := credproxy.NewCredentialStore(db, enc)
+			if err != nil {
+				t.Fatalf("NewCredentialStore: %v", err)
+			}
+
+			mock.ExpectExec("REPLACE INTO credentials").WillReturnError(tt.credErr)
+
+			svc := newAuthService(client, store, provider.NewRegistry(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+			gclient, cleanup := startAuthGRPC(t, svc)
+			defer cleanup()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			stream, err := gclient.StartChatGPTDeviceAuth(ctx, &kraclawv1.StartChatGPTDeviceAuthRequest{
+				GroupJid: "tui:g", Provider: "openai",
+			})
+			if err != nil {
+				t.Fatalf("StartChatGPTDeviceAuth: %v", err)
+			}
+			_, terminal := collectEvents(t, stream)
+			if terminal == nil {
+				t.Fatalf("credErr=%v: terminal event = nil, want Error event", tt.credErr)
+			}
+			e := terminal.GetError()
+			if e == nil {
+				t.Fatalf("credErr=%v: terminal event = %v, want *DeviceAuthEvent_Error_", tt.credErr, terminal)
+			}
+			if e.GetCode() != kraclawv1.DeviceAuthEvent_INTERNAL {
+				t.Errorf("credErr=%v: error code = %v, want %v",
+					tt.credErr, e.GetCode(), kraclawv1.DeviceAuthEvent_INTERNAL)
+			}
+			msg := e.GetMessage()
+			if !strings.Contains(msg, tt.wantWireSubstr) {
+				t.Errorf("credErr=%v: wire message = %q, want substring %q",
+					tt.credErr, msg, tt.wantWireSubstr)
+			}
+			if strings.Contains(msg, tt.wantNotInWire) {
+				t.Errorf("credErr=%v: wire message = %q, must NOT contain %q",
+					tt.credErr, msg, tt.wantNotInWire)
+			}
+		})
+	}
+}

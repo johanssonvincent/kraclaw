@@ -114,7 +114,7 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 			slog.Time("expires_at", tokens.ExpiresAt),
 			slog.String("err", err.Error()),
 		)
-		return s.sendError(stream, kraclawv1.DeviceAuthEvent_INTERNAL, fmt.Sprintf("store credentials: %v", err))
+		return s.sendError(stream, kraclawv1.DeviceAuthEvent_INTERNAL, "failed to persist credentials")
 	}
 
 	if err := stream.Send(&kraclawv1.DeviceAuthEvent{
