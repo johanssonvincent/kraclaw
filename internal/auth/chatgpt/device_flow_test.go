@@ -840,3 +840,175 @@ func TestPollUntilCode_CancelDuringSleep_ReturnsPromptly(t *testing.T) {
 		t.Errorf("PollUntilCode took %v, want < 500ms after ctx cancel mid-sleep", elapsed)
 	}
 }
+
+func TestPollOnce_AccessDeniedReturnsSentinel(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		status int
+		body   string
+		want   error
+	}{
+		"400 access_denied": {status: 400, body: `{"error":"access_denied"}`, want: ErrAccessDenied},
+		"403 access_denied": {status: 403, body: `{"error":"access_denied"}`, want: ErrAccessDenied},
+		"400 expired_token": {status: 400, body: `{"error":"expired_token"}`, want: ErrAccessDenied},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			c, err := NewClient(Config{Issuer: srv.URL, HTTPClient: srv.Client()})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			dc := deviceCodeForTest("dc", "UC", srv.URL, 5*time.Millisecond)
+			_, got := c.PollOnce(context.Background(), dc)
+			if !errors.Is(got, tt.want) {
+				t.Errorf("PollOnce(%s) error = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExchangeCode_AccessDeniedReturnsSentinel(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		status int
+		body   string
+	}{
+		"400 access_denied": {status: 400, body: `{"error":"access_denied"}`},
+		"400 expired_token": {status: 400, body: `{"error":"expired_token"}`},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+			c, err := NewClient(Config{Issuer: srv.URL, HTTPClient: srv.Client()})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			_, got := c.ExchangeCode(context.Background(), &AuthorizationCode{Code: "x", CodeVerifier: "v"})
+			if !errors.Is(got, ErrAccessDenied) {
+				t.Errorf("ExchangeCode body=%q error = %v, want ErrAccessDenied", tt.body, got)
+			}
+		})
+	}
+}
+
+func TestPollTerminalCode(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		status           int
+		body             []byte
+		wantTerminal     error
+		wantParseErrSet  bool
+	}{
+		"in-range access_denied returns sentinel": {
+			status:          http.StatusBadRequest,
+			body:            []byte(`{"error":"access_denied"}`),
+			wantTerminal:    ErrAccessDenied,
+			wantParseErrSet: false,
+		},
+		"in-range expired_token returns sentinel": {
+			status:          http.StatusForbidden,
+			body:            []byte(`{"error":"expired_token"}`),
+			wantTerminal:    ErrAccessDenied,
+			wantParseErrSet: false,
+		},
+		"in-range pending code is not terminal": {
+			status:          http.StatusBadRequest,
+			body:            []byte(`{"error":"authorization_pending"}`),
+			wantTerminal:    nil,
+			wantParseErrSet: false,
+		},
+		"in-range garbage body returns parse error": {
+			status:          http.StatusBadRequest,
+			body:            []byte("<html>nginx 502</html>"),
+			wantTerminal:    nil,
+			wantParseErrSet: true,
+		},
+		"out-of-range status returns nil/nil even on garbage": {
+			status:          http.StatusInternalServerError,
+			body:            []byte("<html>nginx 502</html>"),
+			wantTerminal:    nil,
+			wantParseErrSet: false,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			gotTerminal, gotParseErr := pollTerminalCode(tt.status, tt.body)
+			if !errors.Is(gotTerminal, tt.wantTerminal) {
+				t.Errorf("pollTerminalCode(%d, %q) terminal = %v, want %v",
+					tt.status, string(tt.body), gotTerminal, tt.wantTerminal)
+			}
+			if (gotParseErr != nil) != tt.wantParseErrSet {
+				t.Errorf("pollTerminalCode(%d, %q) parseErr = %v, want parseErrSet=%v",
+					tt.status, string(tt.body), gotParseErr, tt.wantParseErrSet)
+			}
+		})
+	}
+}
+
+func TestPollPendingCode(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		status          int
+		body            []byte
+		wantCode        string
+		wantParseErrSet bool
+	}{
+		"in-range authorization_pending": {
+			status:          http.StatusBadRequest,
+			body:            []byte(`{"error":"authorization_pending"}`),
+			wantCode:        "authorization_pending",
+			wantParseErrSet: false,
+		},
+		"in-range slow_down": {
+			status:          http.StatusBadRequest,
+			body:            []byte(`{"error":"slow_down"}`),
+			wantCode:        "slow_down",
+			wantParseErrSet: false,
+		},
+		"in-range terminal code is not pending": {
+			status:          http.StatusBadRequest,
+			body:            []byte(`{"error":"access_denied"}`),
+			wantCode:        "",
+			wantParseErrSet: false,
+		},
+		"in-range garbage body returns parse error": {
+			status:          http.StatusBadRequest,
+			body:            []byte("<html>nginx 502</html>"),
+			wantCode:        "",
+			wantParseErrSet: true,
+		},
+		"out-of-range status returns empty/nil even on garbage": {
+			status:          http.StatusInternalServerError,
+			body:            []byte("<html>nginx 502</html>"),
+			wantCode:        "",
+			wantParseErrSet: false,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			gotCode, gotParseErr := pollPendingCode(tt.status, tt.body)
+			if gotCode != tt.wantCode {
+				t.Errorf("pollPendingCode(%d, %q) code = %q, want %q",
+					tt.status, string(tt.body), gotCode, tt.wantCode)
+			}
+			if (gotParseErr != nil) != tt.wantParseErrSet {
+				t.Errorf("pollPendingCode(%d, %q) parseErr = %v, want parseErrSet=%v",
+					tt.status, string(tt.body), gotParseErr, tt.wantParseErrSet)
+			}
+		})
+	}
+}

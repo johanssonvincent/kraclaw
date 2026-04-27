@@ -879,7 +879,9 @@ func TestDefaultResolver_ChatGPTAuthModeNotSupported(t *testing.T) {
 }
 
 func TestDefaultResolver_ChatGPTRejection_LogsError(t *testing.T) {
-	t.Parallel()
+	// Not parallel: this test mutates slog.Default() via SetDefault to capture
+	// the resolver's error log into a local buffer. Running it in parallel
+	// races against any other parallel test that emits via slog.Default().
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New(): %v", err)

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -18,13 +19,41 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/johanssonvincent/kraclaw/internal/auth/chatgpt"
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/channel/tui"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
 )
+
+// ErrAuthConfigIncomplete signals that AuthConfig has only one of
+// ChatGPT/Credentials set. Both must be present (or both nil) so the
+// AuthService is either fully wired or absent — no silent half-config.
+var ErrAuthConfigIncomplete = errors.New("server: AuthConfig requires both ChatGPT and Credentials")
+
+// AuthConfig groups the dependencies the AuthService needs. nil disables
+// the AuthService entirely; non-nil with any field nil is a startup error.
+type AuthConfig struct {
+	ChatGPT     *chatgpt.Client
+	Credentials *credproxy.CredentialStore
+	Providers   *provider.Registry // optional; falls back to NewRegistry()
+}
+
+// Validate returns nil when AuthConfig is either nil (disabled) or fully
+// populated. Half-set returns ErrAuthConfigIncomplete.
+func (c *AuthConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.ChatGPT == nil || c.Credentials == nil {
+		return ErrAuthConfigIncomplete
+	}
+	return nil
+}
 
 // Server manages the gRPC server and REST gateway.
 type Server struct {
@@ -60,6 +89,10 @@ type Config struct {
 	TUIChannel            *tui.TUI
 	Channels              []channel.Channel
 	Log                   *slog.Logger
+
+	// Auth wires the optional AuthService. nil disables auth-flow RPCs.
+	// Non-nil with either ChatGPT or Credentials unset is a startup error.
+	Auth *AuthConfig
 }
 
 // New creates a new Server.
@@ -105,7 +138,9 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	events := newEventHub(cfg.Log)
-	registerAPIServices(grpcSrv, cfg, events)
+	if err := registerAPIServices(grpcSrv, cfg, events); err != nil {
+		return nil, fmt.Errorf("register API services: %w", err)
+	}
 
 	// REST gateway with health and metrics
 	mux := http.NewServeMux()

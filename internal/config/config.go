@@ -15,6 +15,7 @@ type Config struct {
 	NATS      NATSConfig
 	K8s       K8sConfig
 	Proxy     ProxyConfig
+	OAuth     OAuthConfig
 	Queue     QueueConfig
 	Scheduler SchedulerConfig
 	Metrics   MetricsConfig
@@ -70,6 +71,14 @@ type ProxyConfig struct {
 
 	// Encryption key for credential store (hex-encoded 32 bytes)
 	CredentialEncryptionKey string `envconfig:"CREDENTIAL_ENCRYPTION_KEY"`
+}
+
+// OAuthConfig holds OAuth-related configuration for interactive auth flows
+// (e.g. ChatGPT device-code flow). Empty values fall back to package defaults.
+type OAuthConfig struct {
+	// ChatGPTIssuer overrides the OAuth issuer base URL used by the ChatGPT
+	// device-code flow. Empty means use chatgpt.DefaultIssuer.
+	ChatGPTIssuer string `envconfig:"OAUTH_CHATGPT_ISSUER"`
 }
 
 type QueueConfig struct {

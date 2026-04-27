@@ -16,9 +16,10 @@ import (
 type chatState int
 
 const (
-	chatStateSelectGroup    chatState = iota
-	chatStateSelectProvider           // step 1: pick provider for new group
-	chatStateSelectModel              // step 2: pick model for new group
+	chatStateSelectGroup chatState = iota
+	chatStateSelectProvider
+	chatStateSelectModel
+	chatStateOAuth
 	chatStateConnecting
 	chatStateChatting
 )
@@ -260,6 +261,21 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			selectedModel := m.creationPicker.items[m.creationPicker.cursor].id
 			name := m.creationPendingGroupName
 			provider := m.creationSelectedProvider
+			authMode := lookupAuthMode(m.creationProviders, provider)
+
+			m.creationSelectedModelID = selectedModel
+
+			if authMode == "chatgpt" {
+				groupJID := "tui:" + name
+				m.oauth = oauthState{
+					provider:         provider,
+					groupJID:         groupJID,
+					pendingGroupName: name,
+				}
+				m.chatState = chatStateOAuth
+				return m, m.startOAuthCmd(provider, groupJID)
+			}
+
 			m.creationPendingGroupName = ""
 			m.creationSelectedProvider = ""
 			m.creationPicker = creationPickerState{}
@@ -268,6 +284,17 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.chatState = chatStateConnecting
 			m.chatMessages = nil
 			return m, m.registerGroupCmd(name, provider, selectedModel)
+		}
+
+	case chatStateOAuth:
+		switch msg.String() {
+		case "ctrl+c":
+			if m.oauth.cancel != nil {
+				m.oauth.cancel()
+			}
+			return m, tea.Quit
+		case "esc":
+			return m.handleEscOAuth()
 		}
 
 	case chatStateConnecting:
@@ -323,18 +350,38 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.inboundStream = nil
 			return m, nil
 		case "enter":
-			text := strings.TrimSpace(m.chatInput.Value())
-			if text == "" {
+			input := strings.TrimSpace(m.chatInput.Value())
+			// :auth <provider> — re-authenticate the current group's OAuth
+			// credentials in place. Useful when refresh tokens are revoked or
+			// expire mid-session. Bare ":auth" surfaces a usage error.
+			if isAuthCommand(input) {
+				parts := strings.Fields(input)
+				if len(parts) < 2 {
+					m.chatErr = fmt.Errorf("usage: :auth <provider>")
+					return m, nil
+				}
+				provider := parts[1]
+				m.chatInput.Reset()
+				m.chatInput.SetValue("")
+				m.oauth = oauthState{
+					provider: provider,
+					groupJID: m.chatGroup.JID,
+				}
+				m.chatState = chatStateOAuth
+				m.chatErr = nil
+				return m, m.startOAuthCmd(provider, m.chatGroup.JID)
+			}
+			if input == "" {
 				return m, nil
 			}
-			if cmd, handled := m.handleLocalCommand(text); handled {
+			if cmd, handled := m.handleLocalCommand(input); handled {
 				m.chatInput.Reset()
 				m.chatInput.SetValue("")
 				return m, cmd
 			}
 			m.chatMessages = append(m.chatMessages, chatMessage{
 				sender:  "you",
-				content: text,
+				content: input,
 			})
 			m.chatInput.Reset()
 			m.chatInput.SetValue("")
@@ -346,7 +393,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.chatViewport.SetContent(m.formatChatMessages())
 			m.chatViewport.GotoBottom()
 			m.chatWaitingForAgent = true
-			return m, m.sendMessageCmd(text)
+			return m, m.sendMessageCmd(input)
 		case "ctrl+m":
 			m.modelPicker.Open = true
 			m.modelPicker.Loading = true
@@ -474,6 +521,12 @@ func (m model) renderChat() string {
 			renderPickerRow(&b, item.label, i == m.creationPicker.cursor, w)
 		}
 
+	case chatStateOAuth:
+		b.WriteString(sectionRule(w, "chatgpt oauth") + "\n")
+		b.WriteString(renderOAuth(m.oauth))
+		b.WriteString("\n")
+		b.WriteString("  " + dimStyle.Render("Esc: cancel"))
+
 	case chatStateConnecting:
 		b.WriteString(" " + coralStyle.Render("messages") + " " + dimStyle.Render("· connecting") + "\n\n")
 		name := ""
@@ -573,8 +626,6 @@ func (m model) renderModelPicker(width int) string {
 	return b.String()
 }
 
-// renderPickerRow writes a single picker line (selected rows get the coral
-// inverse highlight; others are plain).
 func renderPickerRow(b *strings.Builder, label string, selected bool, width int) {
 	raw := "  " + label
 	if selected {
@@ -585,10 +636,23 @@ func renderPickerRow(b *strings.Builder, label string, selected bool, width int)
 	b.WriteString("\n")
 }
 
-// coalesce returns s if non-empty, otherwise fallback.
 func coalesce(s, fallback string) string {
 	if s == "" {
 		return fallback
 	}
 	return s
+}
+
+func isAuthCommand(input string) bool {
+	parts := strings.Fields(input)
+	return len(parts) > 0 && parts[0] == ":auth"
+}
+
+func lookupAuthMode(providers []*kraclawv1.ProviderInfo, id string) string {
+	for _, p := range providers {
+		if p.GetId() == id {
+			return p.GetAuthMode()
+		}
+	}
+	return ""
 }

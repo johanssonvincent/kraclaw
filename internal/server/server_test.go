@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/johanssonvincent/kraclaw/internal/auth/chatgpt"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 )
 
 // --- Health endpoint tests ---
@@ -118,5 +122,30 @@ func TestLoggingInterceptor_SuccessfulHandler(t *testing.T) {
 	}
 	if resp != "ok" {
 		t.Errorf("response = %v, want %q", resp, "ok")
+	}
+}
+
+func TestAuthConfig_Validate(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		cfg     *AuthConfig
+		wantErr bool
+	}{
+		"nil sub-struct allowed (auth disabled)": {cfg: nil, wantErr: false},
+		"both set is valid":                      {cfg: &AuthConfig{ChatGPT: &chatgpt.Client{}, Credentials: &credproxy.CredentialStore{}}, wantErr: false},
+		"only chatgpt set is invalid":            {cfg: &AuthConfig{ChatGPT: &chatgpt.Client{}}, wantErr: true},
+		"only creds set is invalid":              {cfg: &AuthConfig{Credentials: &credproxy.CredentialStore{}}, wantErr: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate(%+v) err = %v, wantErr = %v", tt.cfg, err, tt.wantErr)
+			}
+			if tt.wantErr && !errors.Is(err, ErrAuthConfigIncomplete) {
+				t.Errorf("Validate err = %v, want ErrAuthConfigIncomplete", err)
+			}
+		})
 	}
 }

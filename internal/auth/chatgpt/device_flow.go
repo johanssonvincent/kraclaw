@@ -219,11 +219,24 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 			CodeVerifier: parsed.CodeVerifier,
 		}, nil
 	}
-	switch pollPendingCode(resp.StatusCode, respBody) {
-	case "authorization_pending":
-		return nil, ErrAuthorizationPending
-	case "slow_down":
-		return nil, ErrSlowDown
+	if code, parseErr := pollPendingCode(resp.StatusCode, respBody); code != "" {
+		switch code {
+		case "authorization_pending":
+			return nil, ErrAuthorizationPending
+		case "slow_down":
+			return nil, ErrSlowDown
+		}
+	} else if parseErr != nil {
+		c.logger.Debug("chatgpt: poll pending body unparseable",
+			slog.Int("status", resp.StatusCode),
+			slog.String("err", parseErr.Error()))
+	}
+	if terminalErr, parseErr := pollTerminalCode(resp.StatusCode, respBody); terminalErr != nil {
+		return nil, terminalErr
+	} else if parseErr != nil {
+		c.logger.Debug("chatgpt: poll terminal body unparseable",
+			slog.Int("status", resp.StatusCode),
+			slog.String("err", parseErr.Error()))
 	}
 	c.logger.Warn("chatgpt: poll returned non-pending non-success status",
 		slog.Int("status", resp.StatusCode),
@@ -232,25 +245,49 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 	return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 }
 
-// pollPendingCode returns the RFC 8628 pending error code
-// ("authorization_pending" or "slow_down") from a device-token response, or
-// "" if the response is not a pending error. HTTP 400 is the RFC-conformant
-// status; 403/404 are accepted for older Codex backends that used the same
-// body code at different status values.
-func pollPendingCode(status int, body []byte) string {
+// pollTerminalCode returns ErrAccessDenied if the response body carries a
+// terminal RFC 8628 error ("access_denied" or "expired_token"); otherwise
+// returns nil. Inspected only on the same status range as pollPendingCode.
+// The second return value is the json.Unmarshal error if the body was
+// non-empty but unparseable, so callers can log it at debug. A nil second
+// return means either the body parsed cleanly or the status was outside the
+// inspected range.
+func pollTerminalCode(status int, body []byte) (error, error) {
 	if status != http.StatusBadRequest && status != http.StatusForbidden && status != http.StatusNotFound {
-		return ""
+		return nil, nil
 	}
 	var parsed struct {
 		Error string `json:"error"`
 	}
-	_ = json.Unmarshal(body, &parsed)
+	parseErr := json.Unmarshal(body, &parsed)
+	switch strings.ToLower(strings.TrimSpace(parsed.Error)) {
+	case "access_denied", "expired_token":
+		return ErrAccessDenied, nil
+	}
+	return nil, parseErr
+}
+
+// pollPendingCode returns the RFC 8628 pending error code
+// ("authorization_pending" or "slow_down") from a device-token response, or
+// "" if the response is not a pending error. HTTP 400 is the RFC-conformant
+// status; 403/404 are accepted for older Codex backends that used the same
+// body code at different status values. The second return value is the
+// json.Unmarshal error if the body was non-empty but unparseable, so callers
+// can log it at debug.
+func pollPendingCode(status int, body []byte) (string, error) {
+	if status != http.StatusBadRequest && status != http.StatusForbidden && status != http.StatusNotFound {
+		return "", nil
+	}
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	parseErr := json.Unmarshal(body, &parsed)
 	code := strings.ToLower(strings.TrimSpace(parsed.Error))
 	switch code {
 	case "authorization_pending", "slow_down":
-		return code
+		return code, nil
 	}
-	return ""
+	return "", parseErr
 }
 
 // PollUntilCode loops PollOnce on the device-code interval until the user
@@ -352,6 +389,13 @@ func (c *Client) ExchangeCode(ctx context.Context, code *AuthorizationCode) (*To
 		return nil, fmt.Errorf("chatgpt: read token-exchange response: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
+		if terminalErr, parseErr := pollTerminalCode(resp.StatusCode, respBody); terminalErr != nil {
+			return nil, terminalErr
+		} else if parseErr != nil {
+			c.logger.Debug("chatgpt: token-exchange terminal body unparseable",
+				slog.Int("status", resp.StatusCode),
+				slog.String("err", parseErr.Error()))
+		}
 		c.logger.Warn("chatgpt: token-exchange returned non-2xx",
 			slog.Int("status", resp.StatusCode),
 			slog.String("url", endpoint),

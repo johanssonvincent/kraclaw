@@ -250,6 +250,63 @@ func TestChatProcessingIndicators(t *testing.T) {
 	}
 }
 
+func TestSelectModel_OpenAIBranchesToOAuth(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		provider     string
+		authMode     string
+		wantState    chatState
+		wantProvider string
+	}{
+		"openai with chatgpt auth_mode branches to OAuth": {
+			provider:     "openai",
+			authMode:     "chatgpt",
+			wantState:    chatStateOAuth,
+			wantProvider: "openai",
+		},
+		"anthropic with api_key auth_mode skips OAuth": {
+			provider:  "anthropic",
+			authMode:  "api_key",
+			wantState: chatStateConnecting,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+			m.chatState = chatStateSelectModel
+			m.creationProviders = []*kraclawv1.ProviderInfo{
+				{Id: tt.provider, AuthMode: tt.authMode, Models: []*kraclawv1.ModelInfo{{Id: "model-1"}}},
+			}
+			m.creationSelectedProvider = tt.provider
+			m.creationPendingGroupName = "g1"
+			m.creationPicker = creationPickerState{
+				items: []creationPickerItem{{id: "model-1", label: "Model 1"}},
+			}
+			updated, _ := m.updateChat(keyPress("enter"))
+			got := updated.(model)
+			if got.chatState != tt.wantState {
+				t.Errorf("provider=%q authMode=%q chatState = %v, want %v",
+					tt.provider, tt.authMode, got.chatState, tt.wantState)
+			}
+			if tt.wantState == chatStateOAuth {
+				if got.creationSelectedModelID != "model-1" {
+					t.Errorf("provider=%q creationSelectedModelID = %q, want %q",
+						tt.provider, got.creationSelectedModelID, "model-1")
+				}
+				if got.oauth.provider != tt.wantProvider {
+					t.Errorf("provider=%q oauth.provider = %q, want %q",
+						tt.provider, got.oauth.provider, tt.wantProvider)
+				}
+				if got.oauth.pendingGroupName != "g1" {
+					t.Errorf("provider=%q oauth.pendingGroupName = %q, want %q",
+						tt.provider, got.oauth.pendingGroupName, "g1")
+				}
+			}
+		})
+	}
+}
+
 func TestGroupHeaderShowsModelAndState(t *testing.T) {
 	m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
 	m.activeTab = tabMessages
@@ -272,5 +329,163 @@ func TestGroupHeaderShowsModelAndState(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "running") {
 		t.Fatalf("expected group header to show sandbox state, got %q", rendered)
+	}
+}
+
+func TestEscOnOAuth_RoutesByFlow(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		startState       chatState
+		pendingGroupName string
+		chatGroup        *GroupInfo // nil for new-group flow
+		wantState        chatState
+		// creation fields to pre-populate (only set in the regression case)
+		creationPendingGroupName string
+		creationSelectedProvider string
+		creationSelectedModelID  string
+		creationProviders        []*kraclawv1.ProviderInfo
+		creationProvidersLoaded  bool
+		creationPicker           creationPickerState
+	}{
+		"new-group flow returns to selectGroup": {
+			startState:       chatStateOAuth,
+			pendingGroupName: "g-new",
+			wantState:        chatStateSelectGroup,
+		},
+		"re-auth flow returns to chatting": {
+			startState:       chatStateOAuth,
+			pendingGroupName: "",
+			chatGroup:        &GroupInfo{JID: "tui:existing", Name: "existing"},
+			wantState:        chatStateChatting,
+		},
+		"new-group flow clears creation state": {
+			startState:               chatStateOAuth,
+			pendingGroupName:         "g-stale",
+			wantState:                chatStateSelectGroup,
+			creationPendingGroupName: "g-stale",
+			creationSelectedProvider: "openai",
+			creationSelectedModelID:  "gpt-4o",
+			creationProviders:        []*kraclawv1.ProviderInfo{{Id: "openai"}},
+			creationProvidersLoaded:  true,
+			creationPicker: creationPickerState{
+				items: []creationPickerItem{{id: "gpt-4o", label: "GPT-4o"}},
+			},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := model{
+				chatState:                tt.startState,
+				oauth:                    oauthState{pendingGroupName: tt.pendingGroupName},
+				chatGroup:                tt.chatGroup,
+				creationPendingGroupName: tt.creationPendingGroupName,
+				creationSelectedProvider: tt.creationSelectedProvider,
+				creationSelectedModelID:  tt.creationSelectedModelID,
+				creationProviders:        tt.creationProviders,
+				creationProvidersLoaded:  tt.creationProvidersLoaded,
+				creationPicker:           tt.creationPicker,
+			}
+			got, _ := m.handleEscOAuth()
+			gm := got.(model)
+			if gm.chatState != tt.wantState {
+				t.Errorf("Esc on oauth (pending=%q) → state %v, want %v", tt.pendingGroupName, gm.chatState, tt.wantState)
+			}
+			// oauthState is not directly comparable (holds func/interface fields),
+			// so check the scalar fields that must be zero after a cancel.
+			if gm.oauth.pendingGroupName != "" || gm.oauth.userCode != "" || gm.oauth.err != nil {
+				t.Errorf("oauth not cleared: pending=%q userCode=%q err=%v",
+					gm.oauth.pendingGroupName, gm.oauth.userCode, gm.oauth.err)
+			}
+			// All six creation fields must be zeroed regardless of flow to prevent
+			// stale context surviving cancel + re-entry.
+			if gm.creationPendingGroupName != "" {
+				t.Errorf("creationPendingGroupName = %q, want %q", gm.creationPendingGroupName, "")
+			}
+			if gm.creationSelectedProvider != "" {
+				t.Errorf("creationSelectedProvider = %q, want %q", gm.creationSelectedProvider, "")
+			}
+			if gm.creationSelectedModelID != "" {
+				t.Errorf("creationSelectedModelID = %q, want %q", gm.creationSelectedModelID, "")
+			}
+			if len(gm.creationPicker.items) != 0 {
+				t.Errorf("creationPicker.items len = %d, want 0", len(gm.creationPicker.items))
+			}
+			if gm.creationProviders != nil {
+				t.Errorf("creationProviders = %v, want nil", gm.creationProviders)
+			}
+			if gm.creationProvidersLoaded {
+				t.Errorf("creationProvidersLoaded = true, want false")
+			}
+		})
+	}
+}
+
+func TestComposerCommand_Auth(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		input        string
+		wantState    chatState
+		wantProvider string
+		wantPending  string
+		wantErr      bool
+	}{
+		":auth openai branches to OAuth re-auth": {
+			input:        ":auth openai",
+			wantState:    chatStateOAuth,
+			wantProvider: "openai",
+			wantPending:  "",
+		},
+		":auth without provider sets chatErr": {
+			input:     ":auth",
+			wantState: chatStateChatting,
+			wantErr:   true,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+			m.chatState = chatStateChatting
+			m.chatGroup = &GroupInfo{JID: "tui:g1"}
+			m.chatInput.SetValue(tt.input)
+
+			updated, _ := m.updateChat(keyPress("enter"))
+			got := updated.(model)
+
+			if got.chatState != tt.wantState {
+				t.Errorf("input=%q chatState = %v, want %v", tt.input, got.chatState, tt.wantState)
+			}
+			if tt.wantProvider != "" && got.oauth.provider != tt.wantProvider {
+				t.Errorf("input=%q oauth.provider = %q, want %q", tt.input, got.oauth.provider, tt.wantProvider)
+			}
+			if got.oauth.pendingGroupName != tt.wantPending {
+				t.Errorf("input=%q oauth.pendingGroupName = %q, want %q", tt.input, got.oauth.pendingGroupName, tt.wantPending)
+			}
+			if tt.wantErr && got.chatErr == nil {
+				t.Errorf("input=%q expected chatErr, got nil", tt.input)
+			}
+		})
+	}
+}
+
+func TestAuthCommand_PrefixCollision(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		input string
+		want  bool
+	}{
+		"exact :auth no provider":     {input: ":auth", want: true},
+		":auth openai triggers OAuth": {input: ":auth openai", want: true},
+		":authority does NOT trigger": {input: ":authority foo", want: false},
+		":authentic does NOT trigger": {input: ":authentic", want: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := isAuthCommand(tt.input); got != tt.want {
+				t.Errorf("isAuthCommand(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
 	}
 }
