@@ -79,6 +79,10 @@ func (s *Scheduler) poll(ctx context.Context) {
 		wg.Add(1)
 		go func(t store.ScheduledTask) {
 			defer wg.Done()
+			// If ctx is cancelled while waiting for a slot, Acquire returns an
+			// error and runTask is skipped. The task row is left untouched
+			// (LastRun/NextRun unchanged), so GetDueTasks will re-surface it on
+			// the next poll tick provided NextRun is still in the past.
 			if err := s.semaphore.Acquire(ctx, 1); err != nil {
 				s.log.Error("semaphore acquire cancelled", "task_id", t.ID, "error", err)
 				return
@@ -108,7 +112,7 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 		s.log.Info("task completed", "task_id", task.ID, "duration", duration)
 	}
 
-	// Log the task run.
+	// Log the task run regardless of outcome so the run history is always complete.
 	logErr := s.store.LogTaskRun(ctx, &store.TaskRunLog{
 		TaskID:      task.ID,
 		GroupFolder: task.GroupFolder,
@@ -121,7 +125,14 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 		s.log.Error("failed to log task run", "task_id", task.ID, "error", logErr)
 	}
 
-	// Compute next run and update the task.
+	if err != nil {
+		// Leave LastRun/NextRun/Status untouched so the task row is re-surfaced
+		// by GetDueTasks on the next poll tick. The TaskRunLog row above captures
+		// the failure history. UpdateTask is intentionally skipped here.
+		return
+	}
+
+	// Advance the schedule only on success.
 	now := time.Now()
 	task.LastRun = &now
 	nextRun := s.computeNextRun(&task)
@@ -131,7 +142,12 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 	}
 
 	if updateErr := s.store.UpdateTask(ctx, &task); updateErr != nil {
-		s.log.Error("failed to update task", "task_id", task.ID, "error", updateErr)
+		if task.ScheduleType == store.ScheduleOnce {
+			s.log.Error("failed to mark once-task completed; task will re-fire on next poll",
+				"task_id", task.ID, "error", updateErr)
+		} else {
+			s.log.Error("failed to update task", "task_id", task.ID, "error", updateErr)
+		}
 	}
 }
 

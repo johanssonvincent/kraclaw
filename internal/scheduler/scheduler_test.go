@@ -2,8 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,22 +13,32 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
-// mockTaskStore implements store.TaskStore for testing poll concurrency.
+// mockTaskStore implements store.TaskStore for testing poll concurrency and runTask.
 type mockTaskStore struct {
-	tasks []store.ScheduledTask
+	mu              sync.Mutex
+	tasks           []store.ScheduledTask
+	updateTaskCalls []store.ScheduledTask
+	updateTaskErr   error
 }
 
 func (m *mockTaskStore) CreateTask(context.Context, *store.ScheduledTask) error { return nil }
 func (m *mockTaskStore) GetTask(context.Context, string, string) (*store.ScheduledTask, error) {
 	return nil, nil
 }
-func (m *mockTaskStore) ListTasks(context.Context) ([]store.ScheduledTask, error)          { return nil, nil }
+func (m *mockTaskStore) ListTasks(context.Context) ([]store.ScheduledTask, error) { return nil, nil }
 func (m *mockTaskStore) ListTasksByGroup(context.Context, string) ([]store.ScheduledTask, error) {
 	return nil, nil
 }
-func (m *mockTaskStore) UpdateTask(context.Context, *store.ScheduledTask) error  { return nil }
-func (m *mockTaskStore) DeleteTask(context.Context, string, string) error        { return nil }
+func (m *mockTaskStore) UpdateTask(_ context.Context, t *store.ScheduledTask) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.updateTaskCalls = append(m.updateTaskCalls, *t)
+	return m.updateTaskErr
+}
+func (m *mockTaskStore) DeleteTask(context.Context, string, string) error { return nil }
 func (m *mockTaskStore) GetDueTasks(ctx context.Context) ([]store.ScheduledTask, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.tasks, nil
 }
 func (m *mockTaskStore) LogTaskRun(context.Context, *store.TaskRunLog) error { return nil }
@@ -357,6 +369,99 @@ func TestComputeNextRun(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := s.computeNextRun(&tt.task)
 			tt.checkFunc(t, result)
+		})
+	}
+}
+
+func TestRunTask_ExecutorError(t *testing.T) {
+	executorErr := errors.New("mysql: connection refused")
+
+	tests := []struct {
+		name             string
+		scheduleType     store.ScheduleType
+		executorErr      error
+		wantUpdateCalled bool
+		wantStatus       store.TaskStatus // only checked when non-empty
+		wantLastRunSet   bool
+	}{
+		{
+			name:             "ScheduleOnce executor error: row not advanced",
+			scheduleType:     store.ScheduleOnce,
+			executorErr:      executorErr,
+			wantUpdateCalled: false,
+			wantLastRunSet:   false,
+		},
+		{
+			name:             "ScheduleInterval executor error: row not advanced",
+			scheduleType:     store.ScheduleInterval,
+			executorErr:      executorErr,
+			wantUpdateCalled: false,
+			wantLastRunSet:   false,
+		},
+		{
+			name:             "ScheduleInterval happy path: row advanced",
+			scheduleType:     store.ScheduleInterval,
+			executorErr:      nil,
+			wantUpdateCalled: true,
+			wantLastRunSet:   true,
+		},
+		{
+			name:             "ScheduleOnce happy path: status set to TaskCompleted",
+			scheduleType:     store.ScheduleOnce,
+			executorErr:      nil,
+			wantUpdateCalled: true,
+			wantStatus:       store.TaskCompleted,
+			wantLastRunSet:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ms := &mockTaskStore{}
+			executor := func(_ context.Context, _ store.ScheduledTask) error {
+				return tt.executorErr
+			}
+
+			s, err := New(ms, executor, time.Minute)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			s.log = slog.Default()
+
+			initialStatus := store.TaskActive
+			task := store.ScheduledTask{
+				ID:            "task-1",
+				GroupFolder:   "group-folder",
+				Status:        initialStatus,
+				ScheduleType:  tt.scheduleType,
+				ScheduleValue: "1m",
+			}
+
+			s.runTask(context.Background(), task)
+
+			if tt.wantUpdateCalled {
+				if len(ms.updateTaskCalls) == 0 {
+					t.Fatal("UpdateTask was not called, expected one call")
+				}
+				updated := ms.updateTaskCalls[0]
+				if tt.wantLastRunSet && updated.LastRun == nil {
+					t.Error("UpdateTask called with LastRun == nil, want it set")
+				}
+				if tt.wantStatus != "" && updated.Status != tt.wantStatus {
+					t.Errorf("UpdateTask status = %v, want %v", updated.Status, tt.wantStatus)
+				}
+			} else {
+				if len(ms.updateTaskCalls) != 0 {
+					t.Errorf("UpdateTask called %d times on executor error, want 0", len(ms.updateTaskCalls))
+				}
+				// Original task row must be untouched (runTask receives by value).
+				if task.LastRun != nil {
+					t.Error("task.LastRun was mutated, want nil")
+				}
+				if task.Status != initialStatus {
+					t.Errorf("task.Status = %v, want %v", task.Status, initialStatus)
+				}
+			}
 		})
 	}
 }
