@@ -9,7 +9,6 @@ import (
 	"log/slog"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"google.golang.org/grpc/status"
 
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
@@ -205,7 +204,7 @@ func renderOAuth(s oauthState) string {
 			fmt.Sprintf("ChatGPT auth failed: %v\n\nPress Esc to return.", s.err))
 	}
 	if s.userCode == "" {
-		return lipgloss.NewStyle().Foreground(defaultChatTheme.Muted).Render("starting OAuth…")
+		return dimStyle.Render("starting OAuth…")
 	}
 	body := fmt.Sprintf(
 		"Open this URL in a browser and enter the code:\n\n  %s\n\n  code: %s\n\n  elapsed: %ds — waiting for approval…",
@@ -214,5 +213,5 @@ func renderOAuth(s oauthState) string {
 	if s.openURLErr != nil {
 		body += "\n\n  (couldn't open browser — copy the URL above)"
 	}
-	return lipgloss.NewStyle().Foreground(defaultChatTheme.Text).Render(body)
+	return fgStyle.Render(body)
 }

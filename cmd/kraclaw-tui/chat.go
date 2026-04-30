@@ -9,7 +9,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
 )
@@ -45,7 +44,7 @@ type streamOpenedMsg struct {
 	err    error
 }
 
-func (m model) registerGroupCmd(name, provider, model string) tea.Cmd {
+func (m model) registerGroupCmd(name, provider, modelID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -61,7 +60,7 @@ func (m model) registerGroupCmd(name, provider, model string) tea.Cmd {
 			cc := struct {
 				Provider string `json:"provider"`
 				Model    string `json:"model"`
-			}{Provider: provider, Model: model}
+			}{Provider: provider, Model: modelID}
 			b, err := json.Marshal(cc)
 			if err != nil {
 				slog.Error("marshal container config", "err", err)
@@ -119,7 +118,6 @@ func (m model) sendMessageCmd(text string) tea.Cmd {
 func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.chatState {
 	case chatStateSelectGroup:
-		// Check if reg input is focused (user is typing a new group name)
 		if m.chatRegInput.Focused() {
 			switch msg.String() {
 			case "ctrl+c":
@@ -242,7 +240,6 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
-			// Back to provider picker, restoring cursor to the previously selected provider.
 			m.chatState = chatStateSelectProvider
 			items, cursor := buildProviderItems(m.creationProviders, m.creationSelectedProvider)
 			m.creationPicker = creationPickerState{items: items, cursor: cursor}
@@ -377,6 +374,11 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if input == "" {
 				return m, nil
 			}
+			if cmd, handled := m.handleLocalCommand(input); handled {
+				m.chatInput.Reset()
+				m.chatInput.SetValue("")
+				return m, cmd
+			}
 			m.chatMessages = append(m.chatMessages, chatMessage{
 				sender:  "you",
 				content: input,
@@ -421,115 +423,112 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleLocalCommand intercepts composer text that begins with ":" so users
+// can change the theme without sending traffic to the agent. Returns true
+// when the input was consumed locally.
+func (m *model) handleLocalCommand(text string) (tea.Cmd, bool) {
+	if !strings.HasPrefix(text, ":") {
+		return nil, false
+	}
+	parts := strings.Fields(text)
+	switch parts[0] {
+	case ":theme":
+		next := "dark"
+		if len(parts) > 1 {
+			next = strings.ToLower(parts[1])
+		} else if activePalette.Name == "dark" {
+			next = "light"
+		}
+		if next != "light" && next != "dark" {
+			next = "dark"
+		}
+		setTheme(next)
+		_ = persistTheme(next)
+		return nil, true
+	}
+	return nil, false
+}
+
 func (m model) renderChat() string {
 	var b strings.Builder
+	w := m.contentWidth()
 
 	switch m.chatState {
 	case chatStateSelectGroup:
-		b.WriteString(titleStyle.Render("Chat - Select Group"))
-		b.WriteString("\n")
+		b.WriteString(" " + coralStyle.Render("messages") + " " + dimStyle.Render("· select a group") + "\n\n")
 
 		if m.chatErr != nil {
-			b.WriteString(errStyle.Render("  Error: "+m.chatErr.Error()) + "\n\n")
+			b.WriteString("  " + errStyle.Render("error: "+m.chatErr.Error()) + "\n\n")
 		}
 
 		if m.chatRegInput.Focused() {
-			b.WriteString("  New group name: ")
-			b.WriteString(m.chatRegInput.View())
-			b.WriteString("\n")
-			b.WriteString(dimStyle.Render("  Enter: create | Esc: cancel"))
+			b.WriteString(sectionRule(w, "new group") + "\n")
+			b.WriteString("  " + composerPromptStyle.Render("▌ ") + m.chatRegInput.View() + "\n\n")
+			b.WriteString("  " + dimStyle.Render("⏎ create · esc cancel") + "\n")
 			return b.String()
 		}
 
+		b.WriteString(sectionRule(w, "groups") + "\n")
 		if len(m.groups) == 0 {
-			b.WriteString(dimStyle.Render("  No groups available. Press 'n' to create one."))
+			b.WriteString("  " + dimStyle.Render("no groups yet. press ") + coralStyle.Render("n") + dimStyle.Render(" to create one.") + "\n")
 			return b.String()
 		}
-
 		for i, g := range m.groups {
-			cursor := "  "
-			if i == m.chatGroupCursor {
-				cursor = "> "
-			}
 			name := g.Name
 			if name == "" {
 				name = g.Folder
 			}
-			line := fmt.Sprintf("%s%-20s %s", cursor, name, dimStyle.Render(g.JID))
+			line := fmt.Sprintf("  %-24s %s", truncateWidth(name, 24), dimStyle.Render(g.JID))
 			if i == m.chatGroupCursor {
-				b.WriteString(okStyle.Render(line))
+				b.WriteString(selStrongStyle.Render(padRight(fmt.Sprintf("  %-24s %s", truncateWidth(name, 24), g.JID), w)))
 			} else {
-				b.WriteString(line)
+				b.WriteString(fgStyle.Render(line))
 			}
 			b.WriteString("\n")
 		}
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  n: new group | Enter: select | j/k: navigate"))
 
 	case chatStateSelectProvider:
-		b.WriteString(titleStyle.Render("Chat - Select Provider"))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  New group: %q\n", m.creationPendingGroupName)))
+		b.WriteString(" " + coralStyle.Render("messages") + " " + dimStyle.Render("· select provider") + "\n\n")
+		b.WriteString("  " + dimStyle.Render("new group ") + fgStyle.Render(fmt.Sprintf("%q", m.creationPendingGroupName)) + "\n\n")
+
 		if m.chatErr != nil {
-			b.WriteString(errStyle.Render("  Error: "+m.chatErr.Error()) + "\n")
+			b.WriteString("  " + errStyle.Render("error: "+m.chatErr.Error()) + "\n\n")
 		}
+
+		b.WriteString(sectionRule(w, "providers") + "\n")
 		switch {
 		case !m.creationProvidersLoaded:
-			b.WriteString("  " + m.spinner.View() + " Loading providers...\n")
+			b.WriteString("  " + m.spinner.View() + " " + dimStyle.Render("loading providers...") + "\n")
 		case len(m.creationPicker.items) == 0:
-			b.WriteString(errStyle.Render("  No providers are configured on this server.") + "\n")
-			b.WriteString(dimStyle.Render("  Press Esc to go back.") + "\n")
+			b.WriteString("  " + errStyle.Render("No providers are configured on this server.") + "\n")
+			b.WriteString("  " + dimStyle.Render("press esc to go back.") + "\n")
 		default:
 			for i, item := range m.creationPicker.items {
-				cursor := "  "
-				if i == m.creationPicker.cursor {
-					cursor = "> "
-				}
-				line := cursor + item.label
-				if i == m.creationPicker.cursor {
-					b.WriteString(okStyle.Render(line))
-				} else {
-					b.WriteString(line)
-				}
-				b.WriteString("\n")
+				renderPickerRow(&b, item.label, i == m.creationPicker.cursor, w)
 			}
 		}
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  Enter: select | Esc: back | j/k: navigate"))
 
 	case chatStateSelectModel:
-		b.WriteString(titleStyle.Render("Chat - Select Model"))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  Provider: %s\n", m.creationSelectedProvider)))
+		b.WriteString(" " + coralStyle.Render("messages") + " " + dimStyle.Render("· select model") + "\n\n")
+		b.WriteString("  " + dimStyle.Render("provider ") + fgStyle.Render(m.creationSelectedProvider) + "\n\n")
+
 		if m.chatErr != nil {
-			b.WriteString(errStyle.Render("  Error: "+m.chatErr.Error()) + "\n")
+			b.WriteString("  " + errStyle.Render("error: "+m.chatErr.Error()) + "\n\n")
 		}
+
+		b.WriteString(sectionRule(w, "models") + "\n")
 		for i, item := range m.creationPicker.items {
-			cursor := "  "
-			if i == m.creationPicker.cursor {
-				cursor = "> "
-			}
-			line := cursor + item.label
-			if i == m.creationPicker.cursor {
-				b.WriteString(okStyle.Render(line))
-			} else {
-				b.WriteString(line)
-			}
-			b.WriteString("\n")
+			renderPickerRow(&b, item.label, i == m.creationPicker.cursor, w)
 		}
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  Enter: create group | Esc: back | j/k: navigate"))
 
 	case chatStateOAuth:
-		b.WriteString(titleStyle.Render("Chat - ChatGPT OAuth"))
-		b.WriteString("\n")
+		b.WriteString(sectionRule(w, "chatgpt oauth") + "\n")
 		b.WriteString(renderOAuth(m.oauth))
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  Esc: cancel"))
+		b.WriteString("  " + dimStyle.Render("Esc: cancel"))
 
 	case chatStateConnecting:
-		b.WriteString(titleStyle.Render("Chat"))
-		b.WriteString("\n")
+		b.WriteString(" " + coralStyle.Render("messages") + " " + dimStyle.Render("· connecting") + "\n\n")
 		name := ""
 		if m.chatGroup != nil {
 			name = m.chatGroup.Name
@@ -537,102 +536,118 @@ func (m model) renderChat() string {
 				name = m.chatGroup.Folder
 			}
 		}
-		b.WriteString("  " + m.spinner.View() + " Connecting to " + name + "...")
+		b.WriteString("  " + m.spinner.View() + " " + dimStyle.Render("connecting to ") + fgStyle.Render(name) + dimStyle.Render("...") + "\n")
 
 	case chatStateChatting:
 		name := m.chatGroup.Name
 		if name == "" {
 			name = m.chatGroup.Folder
 		}
-		title := "Chat - " + name
-		if m.chatWaitingForAgent {
-			title += "  " + m.spinner.View() + " Waiting..."
-		}
-		b.WriteString(titleStyle.Render(title))
-		b.WriteString("\n")
-
-		if m.chatErr != nil {
-			b.WriteString(errStyle.Render("  Error: "+m.chatErr.Error()) + "\n")
-		}
-
-		// Populate sidebar with current state (must happen before View() call)
-		m.sidebar.messageCount = len(m.chatMessages)
-		if m.status != nil {
-			m.sidebar.uptime = m.status.UptimeSince
-		}
-		if m.chatGroup != nil {
-			for _, sb := range m.sandboxes {
-				if sb.GroupJID == m.chatGroup.JID && sb.SessionID != "" {
-					m.sidebar.sessionID = sb.SessionID
-					break
-				}
+		channel := "tui"
+		provider := coalesce(m.chatModel, "default")
+		var sbxID, sbxState string
+		for _, sb := range m.sandboxes {
+			if sb.GroupJID == m.chatGroup.JID {
+				sbxID = sb.Name
+				sbxState = sb.State
+				break
 			}
 		}
-		m.sidebar.model = coalesce(m.chatModel, "default")
-		m.sidebar.processing = "Idle"
+
+		// Group header: `groups › <name> · <channel> · <provider> · sbx-… · <state>`
+		parts := []string{
+			groupHeaderStyle.Render("groups ›"),
+			fgStyle.Render(name),
+			dimStyle.Render("· " + channel),
+			dimStyle.Render("· " + provider),
+		}
+		if sbxID != "" {
+			parts = append(parts, dimStyle.Render("· ")+coralStyle.Render(sbxID))
+		}
+		if sbxState != "" {
+			parts = append(parts, dimStyle.Render("· ")+stateStyle(sbxState).Render(sbxState))
+		}
 		if m.chatWaitingForAgent {
-			m.sidebar.processing = "Waiting"
+			parts = append(parts, dimStyle.Render("· ")+coralStyle.Render("typing "+m.spinner.View()))
+		}
+		b.WriteString(strings.Join(parts, " ") + "\n")
+
+		if m.chatErr != nil {
+			b.WriteString("  " + errStyle.Render("error: "+m.chatErr.Error()) + "\n")
 		}
 
-		// Compose horizontal layout: viewport | gap | sidebar (LAYOUT-01)
-		vpView := m.chatViewport.View()
-		if m.sidebarVisible {
-			sidebarView := m.sidebar.View()
-			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, vpView, " ", sidebarView))
-		} else {
-			b.WriteString(vpView)
-		}
+		b.WriteString(m.chatViewport.View())
 
 		if m.modelPicker.Open {
 			b.WriteString("\n")
-			var picker strings.Builder
-			picker.WriteString("Model selection\n")
-			if m.modelPicker.Loading {
-				picker.WriteString("Loading models...\n")
-			}
-			if m.modelPicker.LastError != "" {
-				picker.WriteString(m.modelPicker.LastError + "\n")
-			}
-			if !m.modelPicker.Loading && m.modelPicker.LastError == "" && len(m.modelPicker.Options) == 0 {
-				picker.WriteString("No models available\n")
-				picker.WriteString("Check your agent configuration or retry `/models` to load available models.\n")
-			}
-			for i, option := range m.modelPicker.Options {
-				cursor := "  "
-				if i == m.modelPicker.Cursor {
-					cursor = "> "
-				}
-				line := option.Label
-				if option.Current {
-					line += " (current)"
-				}
-				picker.WriteString(cursor + line + "\n")
-			}
-			picker.WriteString("Enter: apply | Esc: close")
-			b.WriteString(lipgloss.NewStyle().
-				BorderStyle(lipgloss.NormalBorder()).
-				BorderForeground(defaultChatTheme.PanelBorder).
-				PaddingLeft(1).
-				PaddingRight(1).
-				Render(strings.TrimRight(picker.String(), "\n")))
+			b.WriteString(m.renderModelPicker(w))
 		}
 
 		b.WriteString("\n")
 		b.WriteString(renderInputBox(m.chatInput.View(), m.width))
+		b.WriteString("\n")
+		b.WriteString(m.renderComposerMeta(name))
 	}
 
 	return b.String()
 }
 
-// isAuthCommand returns true when the first whitespace-delimited token of input
-// is exactly ":auth", preventing false matches against ":authority", ":authentic", etc.
+func (m model) renderComposerMeta(groupName string) string {
+	limit := m.chatInput.CharLimit
+	if limit <= 0 {
+		limit = 4000
+	}
+	used := len(m.chatInput.Value())
+	meta := fmt.Sprintf("%s · markdown · %d/%d", groupName, used, limit)
+	return "  " + composerMetaStyle.Render(meta)
+}
+
+func (m model) renderModelPicker(width int) string {
+	var b strings.Builder
+	b.WriteString(sectionRule(width, "model") + "\n")
+	if m.modelPicker.Loading {
+		b.WriteString("  " + m.spinner.View() + " " + dimStyle.Render("loading models...") + "\n")
+	}
+	if m.modelPicker.LastError != "" {
+		b.WriteString("  " + errStyle.Render(m.modelPicker.LastError) + "\n")
+	}
+	if !m.modelPicker.Loading && m.modelPicker.LastError == "" && len(m.modelPicker.Options) == 0 {
+		b.WriteString("  " + errStyle.Render("No models available") + "\n")
+		b.WriteString("  " + dimStyle.Render("Check your agent configuration or retry `/models` to load available models.") + "\n")
+	}
+	for i, option := range m.modelPicker.Options {
+		label := option.Label
+		if option.Current {
+			label += " (current)"
+		}
+		renderPickerRow(&b, label, i == m.modelPicker.Cursor, width)
+	}
+	b.WriteString("  " + dimStyle.Render("⏎ apply · esc close") + "\n")
+	return b.String()
+}
+
+func renderPickerRow(b *strings.Builder, label string, selected bool, width int) {
+	raw := "  " + label
+	if selected {
+		b.WriteString(selStrongStyle.Render(padRight(raw, width)))
+	} else {
+		b.WriteString(fgStyle.Render(raw))
+	}
+	b.WriteString("\n")
+}
+
+func coalesce(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
 func isAuthCommand(input string) bool {
 	parts := strings.Fields(input)
 	return len(parts) > 0 && parts[0] == ":auth"
 }
 
-// lookupAuthMode returns the auth_mode for the provider with the given id,
-// or the empty string if no matching provider is found.
 func lookupAuthMode(providers []*kraclawv1.ProviderInfo, id string) string {
 	for _, p := range providers {
 		if p.GetId() == id {

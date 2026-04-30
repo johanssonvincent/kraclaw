@@ -202,44 +202,49 @@ func TestModelPickerEmptyState(t *testing.T) {
 	}
 }
 
-func TestChatStatusTokens(t *testing.T) {
+func TestChatProcessingIndicators(t *testing.T) {
 	cases := []struct {
-		name             string
-		waiting          bool
-		wantStatusToken  string
-		wantWaitingTitle bool
+		name        string
+		waiting     bool
+		wantTyping  bool
 	}{
 		{
-			name:             "waiting shows Waiting status and title",
-			waiting:          true,
-			wantStatusToken:  "Status: Waiting",
-			wantWaitingTitle: true,
+			name:       "waiting renders typing suffix in group header",
+			waiting:    true,
+			wantTyping: true,
 		},
 		{
-			name:             "idle shows Idle status and no waiting title",
-			waiting:          false,
-			wantStatusToken:  "Status: Idle",
-			wantWaitingTitle: false,
+			name:       "idle has no typing suffix",
+			waiting:    false,
+			wantTyping: false,
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+			m.activeTab = tabMessages
 			m.chatState = chatStateChatting
 			m.chatGroup = &GroupInfo{JID: "chat:test", Name: "test"}
 			m.chatWaitingForAgent = c.waiting
 			m.width = 120
+			m.height = 40
 
 			statusBar := m.renderStatusBar()
-			if !strings.Contains(statusBar, c.wantStatusToken) {
-				t.Fatalf("expected status bar to contain %q, got %q", c.wantStatusToken, statusBar)
+			if !strings.Contains(statusBar, "kraclaw") {
+				t.Fatalf("expected status bar to contain kraclaw brand, got %q", statusBar)
+			}
+			if !strings.Contains(statusBar, "grpc://test") {
+				t.Fatalf("expected status bar to contain grpc URL, got %q", statusBar)
+			}
+			if !strings.Contains(statusBar, "theme:") {
+				t.Fatalf("expected status bar to contain theme cell, got %q", statusBar)
 			}
 
 			rendered := m.renderChat()
-			containsWaiting := strings.Contains(rendered, "Waiting...")
-			if containsWaiting != c.wantWaitingTitle {
-				t.Fatalf("expected waiting title=%v, got %v", c.wantWaitingTitle, containsWaiting)
+			containsTyping := strings.Contains(rendered, "typing")
+			if containsTyping != c.wantTyping {
+				t.Fatalf("expected typing indicator=%v, got %v", c.wantTyping, containsTyping)
 			}
 		})
 	}
@@ -251,7 +256,7 @@ func TestSelectModel_OpenAIBranchesToOAuth(t *testing.T) {
 		provider     string
 		authMode     string
 		wantState    chatState
-		wantProvider string // creationSelectedProvider stashed for OAuth
+		wantProvider string
 	}{
 		"openai with chatgpt auth_mode branches to OAuth": {
 			provider:     "openai",
@@ -302,22 +307,28 @@ func TestSelectModel_OpenAIBranchesToOAuth(t *testing.T) {
 	}
 }
 
-func TestSidebarShowsModelAndProcessing(t *testing.T) {
-	sidebar := newSidebarModel()
-	sidebar.width = 30
-	sidebar.height = 20
-	sidebar.sessionID = "sess-123"
-	sidebar.messageCount = 12
-	sidebar.uptime = "2026-03-24 01:02:03"
-	sidebar.model = "claude-3-7-sonnet-20250219"
-	sidebar.processing = "Waiting"
+func TestGroupHeaderShowsModelAndState(t *testing.T) {
+	m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+	m.activeTab = tabMessages
+	m.chatState = chatStateChatting
+	m.chatGroup = &GroupInfo{JID: "chat:test", Name: "test", Folder: "test"}
+	m.chatModel = "claude-sonnet-4-6"
+	m.sandboxes = []SandboxInfo{{Name: "sbx-abcd", GroupJID: "chat:test", State: "running"}}
+	m.width = 120
+	m.height = 40
 
-	view := sidebar.View()
-	if !strings.Contains(view, "Model") {
-		t.Fatalf("expected sidebar to contain Model label, got %q", view)
+	rendered := m.renderChat()
+	if !strings.Contains(rendered, "groups ›") {
+		t.Fatalf("expected group header breadcrumb, got %q", rendered)
 	}
-	if !strings.Contains(view, "Processing") {
-		t.Fatalf("expected sidebar to contain Processing label, got %q", view)
+	if !strings.Contains(rendered, "claude-sonnet-4-6") {
+		t.Fatalf("expected group header to show model, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "sbx-abcd") {
+		t.Fatalf("expected group header to show sandbox id, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "running") {
+		t.Fatalf("expected group header to show sandbox state, got %q", rendered)
 	}
 }
 
