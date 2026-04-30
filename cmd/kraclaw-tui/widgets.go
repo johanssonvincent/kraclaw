@@ -58,6 +58,9 @@ func statusLine(cells []string, width int) string {
 	}
 	joined := strings.Join(segs, sep)
 	visible := lipgloss.Width(joined)
+	if visible > width {
+		return lipgloss.NewStyle().MaxWidth(width).Render(joined)
+	}
 	if visible < width {
 		joined += statusLineStyle.Render(strings.Repeat(" ", width-visible))
 	}

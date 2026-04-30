@@ -42,7 +42,6 @@ type ServerStatus struct {
 	ActiveTasks       int
 	UptimeSince       string
 	MysqlConnected    bool
-	RedisConnected    bool
 	K8sConnected      bool
 }
 
@@ -220,9 +219,9 @@ type model struct {
 	sandboxCursor     int
 	sandboxDetailOpen bool
 
-	groups        []GroupInfo
-	groupsErr     error
-	groupsCursor  int
+	groups       []GroupInfo
+	groupsErr    error
+	groupsCursor int
 
 	tasks             []TaskInfo
 	tasksErr          error
@@ -417,7 +416,6 @@ func (m model) fetchStatus() tea.Cmd {
 				ActiveTasks:       int(resp.ActiveTasks),
 				UptimeSince:       formatProtoTime(resp.UptimeSince),
 				MysqlConnected:    resp.MysqlConnected,
-				RedisConnected:    resp.RedisConnected,
 				K8sConnected:      resp.K8SConnected,
 			},
 		}
@@ -1051,7 +1049,6 @@ func (m model) renderDashboard() string {
 		dotIndicator(boolState(m.statusErr == nil && m.status != nil)) + " grpc",
 		dotIndicator(boolState(m.eventStream != nil && m.eventsErr == nil)) + " events",
 		dotIndicator(boolState(s.MysqlConnected)) + " mysql",
-		dotIndicator(boolState(s.RedisConnected)) + " nats",
 		dotIndicator(boolState(s.K8sConnected)) + " k8s",
 	}
 	b.WriteString(strings.Join(systems, "    "))
@@ -1625,4 +1622,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-

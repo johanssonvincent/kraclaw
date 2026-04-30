@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 func TestPersistAndLoadTheme(t *testing.T) {
@@ -95,8 +97,21 @@ func TestKeyBarRendersHints(t *testing.T) {
 
 func TestStatusLineFillsWidth(t *testing.T) {
 	out := statusLine([]string{"a", "b"}, 40)
-	// width should be 40 visible cells (approximate — lipgloss.Width respects codes)
-	if len(out) == 0 {
-		t.Fatal("statusLine returned empty string")
+	if got := lipgloss.Width(out); got != 40 {
+		t.Fatalf("statusLine width = %d, want 40", got)
+	}
+}
+
+func TestStatusLineTruncatesToWidth(t *testing.T) {
+	out := statusLine([]string{
+		coralBold.Render("kraclaw") + " ctl",
+		"grpc://localhost:50051",
+		okStyle.Render("● TLS"),
+		"very-long-user@very-long-host",
+		"UTC 12:34:56",
+		"theme:dark",
+	}, 32)
+	if got := lipgloss.Width(out); got > 32 {
+		t.Fatalf("statusLine width = %d, want <= 32", got)
 	}
 }
