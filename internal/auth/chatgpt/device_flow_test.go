@@ -263,6 +263,10 @@ func TestPollOnce_Pending(t *testing.T) {
 		// Body-code-driven: RFC 8628 slow_down is also pending, regardless of
 		// the status the server picked.
 		"400 slow_down": {status: http.StatusBadRequest, body: slowDownBody},
+		"403 nested deviceauth_authorization_unknown": {
+			status: http.StatusForbidden,
+			body:   `{"error":{"message":"Device authorization is unknown. Please try again.","type":"invalid_request_error","param":null,"code":"deviceauth_authorization_unknown"}}`,
+		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -906,10 +910,10 @@ func TestExchangeCode_AccessDeniedReturnsSentinel(t *testing.T) {
 func TestPollTerminalCode(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
-		status           int
-		body             []byte
-		wantTerminal     error
-		wantParseErrSet  bool
+		status          int
+		body            []byte
+		wantTerminal    error
+		wantParseErrSet bool
 	}{
 		"in-range access_denied returns sentinel": {
 			status:          http.StatusBadRequest,
@@ -920,6 +924,12 @@ func TestPollTerminalCode(t *testing.T) {
 		"in-range expired_token returns sentinel": {
 			status:          http.StatusForbidden,
 			body:            []byte(`{"error":"expired_token"}`),
+			wantTerminal:    ErrAccessDenied,
+			wantParseErrSet: false,
+		},
+		"nested access_denied returns sentinel": {
+			status:          http.StatusForbidden,
+			body:            []byte(`{"error":{"code":"access_denied"}}`),
 			wantTerminal:    ErrAccessDenied,
 			wantParseErrSet: false,
 		},
@@ -976,6 +986,12 @@ func TestPollPendingCode(t *testing.T) {
 			status:          http.StatusBadRequest,
 			body:            []byte(`{"error":"slow_down"}`),
 			wantCode:        "slow_down",
+			wantParseErrSet: false,
+		},
+		"nested deviceauth_authorization_unknown": {
+			status:          http.StatusForbidden,
+			body:            []byte(`{"error":{"message":"Device authorization is unknown. Please try again.","type":"invalid_request_error","param":null,"code":"deviceauth_authorization_unknown"}}`),
+			wantCode:        "deviceauth_authorization_unknown",
 			wantParseErrSet: false,
 		},
 		"in-range terminal code is not pending": {

@@ -160,6 +160,14 @@ func TestRenderOAuth_StartingStateAndErrorScreen(t *testing.T) {
 			state:       oauthState{err: errors.New("boom")},
 			wantSubstrs: []string{"ChatGPT auth failed", "boom", "Esc"},
 		},
+		"error after device code keeps code visible": {
+			state: oauthState{
+				err:             errors.New("boom"),
+				userCode:        "ABCD-1234",
+				verificationURL: "https://auth.openai.com/codex/device",
+			},
+			wantSubstrs: []string{"ChatGPT auth failed", "boom", "ABCD-1234", "auth.openai.com/codex/device", "Esc"},
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -221,7 +221,7 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 	}
 	if code, parseErr := pollPendingCode(resp.StatusCode, respBody); code != "" {
 		switch code {
-		case "authorization_pending":
+		case "authorization_pending", "deviceauth_authorization_unknown", "authorization_unknown":
 			return nil, ErrAuthorizationPending
 		case "slow_down":
 			return nil, ErrSlowDown
@@ -253,41 +253,69 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 // return means either the body parsed cleanly or the status was outside the
 // inspected range.
 func pollTerminalCode(status int, body []byte) (error, error) {
-	if status != http.StatusBadRequest && status != http.StatusForbidden && status != http.StatusNotFound {
+	if !pollErrorStatus(status) {
 		return nil, nil
 	}
-	var parsed struct {
-		Error string `json:"error"`
-	}
-	parseErr := json.Unmarshal(body, &parsed)
-	switch strings.ToLower(strings.TrimSpace(parsed.Error)) {
+	code, parseErr := pollErrorCode(body)
+	switch code {
 	case "access_denied", "expired_token":
 		return ErrAccessDenied, nil
 	}
 	return nil, parseErr
 }
 
-// pollPendingCode returns the RFC 8628 pending error code
-// ("authorization_pending" or "slow_down") from a device-token response, or
-// "" if the response is not a pending error. HTTP 400 is the RFC-conformant
-// status; 403/404 are accepted for older Codex backends that used the same
-// body code at different status values. The second return value is the
+// pollPendingCode returns a pending error code from a device-token response,
+// or "" if the response is not a pending error. HTTP 400 is the RFC-conformant
+// status; 403/404 are accepted for OpenAI/Codex backends that use equivalent
+// pending bodies at different status values. The second return value is the
 // json.Unmarshal error if the body was non-empty but unparseable, so callers
 // can log it at debug.
 func pollPendingCode(status int, body []byte) (string, error) {
-	if status != http.StatusBadRequest && status != http.StatusForbidden && status != http.StatusNotFound {
+	if !pollErrorStatus(status) {
 		return "", nil
 	}
-	var parsed struct {
-		Error string `json:"error"`
-	}
-	parseErr := json.Unmarshal(body, &parsed)
-	code := strings.ToLower(strings.TrimSpace(parsed.Error))
+	code, parseErr := pollErrorCode(body)
 	switch code {
-	case "authorization_pending", "slow_down":
+	case "authorization_pending", "slow_down", "deviceauth_authorization_unknown", "authorization_unknown":
 		return code, nil
 	}
 	return "", parseErr
+}
+
+func pollErrorStatus(status int) bool {
+	return status == http.StatusBadRequest || status == http.StatusForbidden || status == http.StatusNotFound
+}
+
+func pollErrorCode(body []byte) (string, error) {
+	var parsed struct {
+		Error     json.RawMessage `json:"error"`
+		Code      string          `json:"code"`
+		ErrorCode string          `json:"error_code"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", err
+	}
+	if len(parsed.Error) == 0 || string(parsed.Error) == "null" {
+		return normalizePollErrorCode(firstNonEmpty(parsed.Code, parsed.ErrorCode)), nil
+	}
+
+	var code string
+	if err := json.Unmarshal(parsed.Error, &code); err == nil {
+		return normalizePollErrorCode(firstNonEmpty(code, parsed.Code, parsed.ErrorCode)), nil
+	}
+
+	var nested struct {
+		Code      string `json:"code"`
+		ErrorCode string `json:"error_code"`
+	}
+	if err := json.Unmarshal(parsed.Error, &nested); err != nil {
+		return "", err
+	}
+	return normalizePollErrorCode(firstNonEmpty(nested.Code, nested.ErrorCode, parsed.Code, parsed.ErrorCode)), nil
+}
+
+func normalizePollErrorCode(code string) string {
+	return strings.ToLower(strings.TrimSpace(code))
 }
 
 // PollUntilCode loops PollOnce on the device-code interval until the user

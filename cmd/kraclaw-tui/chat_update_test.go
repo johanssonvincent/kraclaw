@@ -206,9 +206,9 @@ func TestModelPickerEmptyState(t *testing.T) {
 
 func TestChatProcessingIndicators(t *testing.T) {
 	cases := []struct {
-		name        string
-		waiting     bool
-		wantTyping  bool
+		name       string
+		waiting    bool
+		wantTyping bool
 	}{
 		{
 			name:       "waiting renders typing suffix in group header",
