@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 func TestRenderContentAllTabs(t *testing.T) {
@@ -73,6 +75,28 @@ func TestRenderTabBarHighlightsActive(t *testing.T) {
 		if !strings.Contains(out, n) {
 			t.Fatalf("tab bar missing number %q", n)
 		}
+	}
+}
+
+func TestRenderTabBarFitsNormalTerminal(t *testing.T) {
+	m := initialModel("localhost:50051", &apiClient{channels: &mockChannelClient{}})
+	m.activeTab = tabDashboard
+	m.width = 80
+	m.height = 40
+	out := m.renderTabBar()
+	if got := lipgloss.Width(out); got > 80 {
+		t.Fatalf("tab bar width = %d, want <= 80: %q", got, out)
+	}
+}
+
+func TestRenderTabBarFitsNarrowTerminal(t *testing.T) {
+	m := initialModel("localhost:50051", &apiClient{channels: &mockChannelClient{}})
+	m.activeTab = tabDashboard
+	m.width = 40
+	m.height = 40
+	out := m.renderTabBar()
+	if got := lipgloss.Width(out); got > 40 {
+		t.Fatalf("tab bar width = %d, want <= 40: %q", got, out)
 	}
 }
 

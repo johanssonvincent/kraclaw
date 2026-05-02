@@ -81,6 +81,62 @@ func TestHandleLocalCommandTheme(t *testing.T) {
 	}
 }
 
+func TestCtrlTRefreshesChatViewportContent(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	restore := activePalette
+	t.Cleanup(func() {
+		activePalette = restore
+		rebuildStyles()
+	})
+
+	setTheme("dark")
+	m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+	m.activeTab = tabMessages
+	m.chatState = chatStateChatting
+	m.chatMessages = []chatMessage{{sender: "agent", content: "existing transcript"}}
+	m = m.refreshChatViewportContent()
+
+	updated, _ := m.Update(keyPress("ctrl+t"))
+	m1 := updated.(model)
+	if activePalette.Name != "light" {
+		t.Fatalf("active palette = %q, want light", activePalette.Name)
+	}
+	view := m1.chatViewport.View()
+	if !strings.Contains(view, "existing") || !strings.Contains(view, "transcript") {
+		t.Fatalf("chat viewport lost existing content: %q", m1.chatViewport.View())
+	}
+}
+
+func TestThemeCommandRefreshesChatViewportContent(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	restore := activePalette
+	t.Cleanup(func() {
+		activePalette = restore
+		rebuildStyles()
+	})
+
+	setTheme("dark")
+	m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+	m.activeTab = tabMessages
+	m.chatState = chatStateChatting
+	m.chatMessages = []chatMessage{{sender: "agent", content: "saved response"}}
+	m = m.refreshChatViewportContent()
+	m.chatInput.SetValue(":theme light")
+
+	updated, _ := m.updateChat(keyPress("enter"))
+	m1 := updated.(model)
+	if m1.chatInput.Value() != "" {
+		t.Fatalf("chat input = %q, want empty", m1.chatInput.Value())
+	}
+	if activePalette.Name != "light" {
+		t.Fatalf("active palette = %q, want light", activePalette.Name)
+	}
+	view := m1.chatViewport.View()
+	if !strings.Contains(view, "saved") || !strings.Contains(view, "response") {
+		t.Fatalf("chat viewport lost existing content: %q", m1.chatViewport.View())
+	}
+}
+
 func TestSectionRuleContainsLabel(t *testing.T) {
 	out := sectionRule(80, "resources")
 	if !strings.Contains(out, "resources") {

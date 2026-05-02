@@ -310,6 +310,20 @@ func (m *model) ensureMarkdownRenderer(width int) {
 	m.mdRendererWidth = width
 }
 
+func (m model) refreshChatViewportContent() model {
+	if m.chatState != chatStateChatting {
+		return m
+	}
+	contentWidth := m.chatViewport.Width() - 6
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
+	m.mdRenderer = nil
+	m.ensureMarkdownRenderer(contentWidth)
+	m.chatViewport.SetContent(m.formatChatMessages())
+	return m
+}
+
 const (
 	tabDashboard = iota
 	tabSandboxes
@@ -540,6 +554,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			setTheme(next)
 			_ = persistTheme(next) // best-effort; surface via slog only
+			m = m.refreshChatViewportContent()
 			return m, nil
 		}
 
@@ -960,17 +975,31 @@ func (m model) View() tea.View {
 }
 
 func (m model) renderTabBar() string {
+	out := m.renderTabBarWithLabels(m.tabs)
+	if m.width <= 0 || lipgloss.Width(out) <= m.width {
+		return out
+	}
+
+	compact := []string{"dash", "sbx", "grp", "tsk", "evt", "msg", "chn", "cfg"}
+	out = m.renderTabBarWithLabels(compact)
+	if lipgloss.Width(out) > m.width {
+		out = lipgloss.NewStyle().MaxWidth(m.width).Render(out)
+	}
+	return out
+}
+
+func (m model) renderTabBarWithLabels(labels []string) string {
 	var tabs []string
-	for i, t := range m.tabs {
+	for i, t := range labels {
 		num := fmt.Sprintf("[%d]", i+1)
 		if i == m.activeTab {
 			numSpan := activeTabNumStyle.Render(num)
-			labelSpan := activeTabStyle.Render(" " + t + " ")
-			tabs = append(tabs, activeTabStyle.Render(numSpan+labelSpan))
+			labelSpan := activeTabStyle.Render(t)
+			tabs = append(tabs, numSpan+labelSpan)
 		} else {
 			numSpan := inactiveTabNumStyle.Render(num)
-			labelSpan := inactiveTabStyle.Render(" " + t + " ")
-			tabs = append(tabs, inactiveTabStyle.Render(numSpan+labelSpan))
+			labelSpan := inactiveTabStyle.Render(t)
+			tabs = append(tabs, numSpan+labelSpan)
 		}
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)

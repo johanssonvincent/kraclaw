@@ -377,6 +377,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if cmd, handled := m.handleLocalCommand(input); handled {
 				m.chatInput.Reset()
 				m.chatInput.SetValue("")
+				m = m.refreshChatViewportContent()
 				return m, cmd
 			}
 			m.chatMessages = append(m.chatMessages, chatMessage{
