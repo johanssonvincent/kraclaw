@@ -252,60 +252,51 @@ func TestChatProcessingIndicators(t *testing.T) {
 	}
 }
 
-func TestSelectModel_OpenAIBranchesToOAuth(t *testing.T) {
+func TestSelectProvider_OpenAIBranchesToOAuthBeforeModel(t *testing.T) {
 	t.Parallel()
-	tests := map[string]struct {
-		provider     string
-		authMode     string
-		wantState    chatState
-		wantProvider string
-	}{
-		"openai with chatgpt auth_mode branches to OAuth": {
-			provider:     "openai",
-			authMode:     "chatgpt",
-			wantState:    chatStateOAuth,
-			wantProvider: "openai",
-		},
-		"anthropic with api_key auth_mode skips OAuth": {
-			provider:  "anthropic",
-			authMode:  "api_key",
-			wantState: chatStateConnecting,
-		},
+	m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectProvider
+	m.creationProvidersLoaded = true
+	m.creationPendingGroupName = "g1"
+	m.creationProviders = []*kraclawv1.ProviderInfo{
+		{Id: "openai", AuthMode: "chatgpt", Models: []*kraclawv1.ModelInfo{{Id: "model-1"}}},
 	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
-			m.chatState = chatStateSelectModel
-			m.creationProviders = []*kraclawv1.ProviderInfo{
-				{Id: tt.provider, AuthMode: tt.authMode, Models: []*kraclawv1.ModelInfo{{Id: "model-1"}}},
-			}
-			m.creationSelectedProvider = tt.provider
-			m.creationPendingGroupName = "g1"
-			m.creationPicker = creationPickerState{
-				items: []creationPickerItem{{id: "model-1", label: "Model 1"}},
-			}
-			updated, _ := m.updateChat(keyPress("enter"))
-			got := updated.(model)
-			if got.chatState != tt.wantState {
-				t.Errorf("provider=%q authMode=%q chatState = %v, want %v",
-					tt.provider, tt.authMode, got.chatState, tt.wantState)
-			}
-			if tt.wantState == chatStateOAuth {
-				if got.creationSelectedModelID != "model-1" {
-					t.Errorf("provider=%q creationSelectedModelID = %q, want %q",
-						tt.provider, got.creationSelectedModelID, "model-1")
-				}
-				if got.oauth.provider != tt.wantProvider {
-					t.Errorf("provider=%q oauth.provider = %q, want %q",
-						tt.provider, got.oauth.provider, tt.wantProvider)
-				}
-				if got.oauth.pendingGroupName != "g1" {
-					t.Errorf("provider=%q oauth.pendingGroupName = %q, want %q",
-						tt.provider, got.oauth.pendingGroupName, "g1")
-				}
-			}
-		})
+	m.creationPicker = creationPickerState{items: []creationPickerItem{{id: "openai", label: "OpenAI"}}}
+
+	updated, _ := m.updateChat(keyPress("enter"))
+	got := updated.(model)
+	if got.chatState != chatStateOAuth {
+		t.Fatalf("chatState = %v, want %v", got.chatState, chatStateOAuth)
+	}
+	if got.creationSelectedProvider != "openai" {
+		t.Fatalf("creationSelectedProvider = %q, want openai", got.creationSelectedProvider)
+	}
+	if got.creationSelectedModelID != "" {
+		t.Fatalf("creationSelectedModelID = %q, want empty before model selection", got.creationSelectedModelID)
+	}
+	if got.oauth.provider != "openai" || got.oauth.groupJID != "tui:g1" || got.oauth.pendingGroupName != "g1" {
+		t.Fatalf("oauth = %+v, want openai tui:g1 pending g1", got.oauth)
+	}
+}
+
+func TestSelectModel_APIKeyProviderRegistersDirectly(t *testing.T) {
+	t.Parallel()
+	m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+	m.chatState = chatStateSelectModel
+	m.creationProviders = []*kraclawv1.ProviderInfo{
+		{Id: "anthropic", AuthMode: "api_key", Models: []*kraclawv1.ModelInfo{{Id: "model-1"}}},
+	}
+	m.creationSelectedProvider = "anthropic"
+	m.creationPendingGroupName = "g1"
+	m.creationPicker = creationPickerState{items: []creationPickerItem{{id: "model-1", label: "Model 1"}}}
+
+	updated, _ := m.updateChat(keyPress("enter"))
+	got := updated.(model)
+	if got.chatState != chatStateConnecting {
+		t.Errorf("chatState = %v, want %v", got.chatState, chatStateConnecting)
+	}
+	if got.creationSelectedModelID != "model-1" {
+		t.Errorf("creationSelectedModelID = %q, want model-1", got.creationSelectedModelID)
 	}
 }
 
@@ -420,6 +411,33 @@ func TestEscOnOAuth_RoutesByFlow(t *testing.T) {
 				t.Errorf("creationProvidersLoaded = true, want false")
 			}
 		})
+	}
+}
+
+func TestOAuthSuccess_NewOpenAIGroupFetchesModelsBeforeRegister(t *testing.T) {
+	t.Parallel()
+	m := initialModel("test", &apiClient{groups: &fakeGroupClient{}, channels: &mockChannelClient{}})
+	m.chatState = chatStateOAuth
+	m.creationFlowID = 7
+	m.creationPendingGroupName = "g1"
+	m.creationSelectedProvider = "openai"
+	m.oauth = oauthState{provider: "openai", groupJID: "tui:g1", pendingGroupName: "g1"}
+
+	updated, cmd := m.handleAuthEvent(authEventMsg{event: &kraclawv1.DeviceAuthEvent{
+		Event: &kraclawv1.DeviceAuthEvent_Success_{Success: &kraclawv1.DeviceAuthEvent_Success{}},
+	}})
+	got := updated.(model)
+	if got.chatState != chatStateSelectModel {
+		t.Fatalf("chatState = %v, want %v", got.chatState, chatStateSelectModel)
+	}
+	if got.creationSelectedProvider != "openai" {
+		t.Fatalf("creationSelectedProvider = %q, want openai", got.creationSelectedProvider)
+	}
+	if got.creationProvidersLoaded {
+		t.Fatal("creationProvidersLoaded = true, want false while dynamic models load")
+	}
+	if cmd == nil {
+		t.Fatal("expected command to fetch dynamic models")
 	}
 }
 

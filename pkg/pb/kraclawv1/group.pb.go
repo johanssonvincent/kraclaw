@@ -627,7 +627,10 @@ func (x *UpdateSenderAllowlistRequest) GetEntries() []*SenderAllowlistEntry {
 }
 
 type ListProvidersRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// group_jid enables credential-aware dynamic model discovery for providers
+	// whose model access depends on the group's stored credentials.
+	GroupJid      string `protobuf:"bytes,1,opt,name=group_jid,json=groupJid,proto3" json:"group_jid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -660,6 +663,13 @@ func (x *ListProvidersRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ListProvidersRequest.ProtoReflect.Descriptor instead.
 func (*ListProvidersRequest) Descriptor() ([]byte, []int) {
 	return file_kraclaw_v1_group_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ListProvidersRequest) GetGroupJid() string {
+	if x != nil {
+		return x.GroupJid
+	}
+	return ""
 }
 
 type ListProvidersResponse struct {
@@ -877,8 +887,9 @@ const file_kraclaw_v1_group_proto_rawDesc = "" +
 	"\bchat_jid\x18\x01 \x01(\tR\achatJid\"u\n" +
 	"\x1cUpdateSenderAllowlistRequest\x12\x19\n" +
 	"\bchat_jid\x18\x01 \x01(\tR\achatJid\x12:\n" +
-	"\aentries\x18\x02 \x03(\v2 .kraclaw.v1.SenderAllowlistEntryR\aentries\"\x16\n" +
-	"\x14ListProvidersRequest\"O\n" +
+	"\aentries\x18\x02 \x03(\v2 .kraclaw.v1.SenderAllowlistEntryR\aentries\"3\n" +
+	"\x14ListProvidersRequest\x12\x1b\n" +
+	"\tgroup_jid\x18\x01 \x01(\tR\bgroupJid\"O\n" +
 	"\x15ListProvidersResponse\x126\n" +
 	"\tproviders\x18\x01 \x03(\v2\x18.kraclaw.v1.ProviderInfoR\tproviders\"\xb2\x01\n" +
 	"\fProviderInfo\x12\x0e\n" +

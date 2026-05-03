@@ -213,18 +213,20 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.creationPicker.items[m.creationPicker.cursor]
-			var modelItems []creationPickerItem
-			for _, p := range m.creationProviders {
-				if p.GetId() == selected.id {
-					for _, mi := range p.GetModels() {
-						modelItems = append(modelItems, creationPickerItem{
-							id:    mi.GetId(),
-							label: mi.GetDisplayName(),
-						})
-					}
-					break
+			authMode := lookupAuthMode(m.creationProviders, selected.id)
+			if authMode == "chatgpt" {
+				groupJID := "tui:" + m.creationPendingGroupName
+				m.creationSelectedProvider = selected.id
+				m.creationSelectedModelID = ""
+				m.oauth = oauthState{
+					provider:         selected.id,
+					groupJID:         groupJID,
+					pendingGroupName: m.creationPendingGroupName,
 				}
+				m.chatState = chatStateOAuth
+				return m, m.startOAuthCmd(selected.id, groupJID)
 			}
+			modelItems := buildModelItems(m.creationProviders, selected.id)
 			if len(modelItems) == 0 {
 				m.chatErr = fmt.Errorf("provider %q has no models configured — select a different provider or press Esc to cancel", selected.id)
 				return m, nil
@@ -261,20 +263,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			selectedModel := m.creationPicker.items[m.creationPicker.cursor].id
 			name := m.creationPendingGroupName
 			provider := m.creationSelectedProvider
-			authMode := lookupAuthMode(m.creationProviders, provider)
-
 			m.creationSelectedModelID = selectedModel
-
-			if authMode == "chatgpt" {
-				groupJID := "tui:" + name
-				m.oauth = oauthState{
-					provider:         provider,
-					groupJID:         groupJID,
-					pendingGroupName: name,
-				}
-				m.chatState = chatStateOAuth
-				return m, m.startOAuthCmd(provider, groupJID)
-			}
 
 			m.creationPendingGroupName = ""
 			m.creationSelectedProvider = ""
@@ -521,8 +510,16 @@ func (m model) renderChat() string {
 		}
 
 		b.WriteString(sectionRule(w, "models") + "\n")
-		for i, item := range m.creationPicker.items {
-			renderPickerRow(&b, item.label, i == m.creationPicker.cursor, w)
+		switch {
+		case !m.creationProvidersLoaded:
+			b.WriteString("  " + m.spinner.View() + " " + dimStyle.Render("loading models...") + "\n")
+		case len(m.creationPicker.items) == 0:
+			b.WriteString("  " + errStyle.Render("No models are configured for this provider.") + "\n")
+			b.WriteString("  " + dimStyle.Render("press esc to go back.") + "\n")
+		default:
+			for i, item := range m.creationPicker.items {
+				renderPickerRow(&b, item.label, i == m.creationPicker.cursor, w)
+			}
 		}
 
 	case chatStateOAuth:

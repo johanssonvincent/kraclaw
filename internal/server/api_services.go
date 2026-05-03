@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/johanssonvincent/kraclaw/internal/channel"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
@@ -45,6 +46,7 @@ type groupService struct {
 
 	store     store.Store
 	providers *provider.Registry
+	models    *credproxy.ModelLister
 	log       *slog.Logger
 }
 
@@ -88,6 +90,7 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 	groups := &groupService{
 		store:     cfg.Store,
 		providers: providers,
+		models:    cfg.ModelLister,
 		log:       cfg.Log.With("component", "grpc-groups"),
 	}
 	tasks := &taskService{
@@ -171,7 +174,7 @@ func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequ
 		// NATS migration in PR #23. Requires proto regeneration (make proto) and
 		// TUI update to remove the "Redis:" status line.
 		RedisConnected: false,
-		K8SConnected:      k8sConnected,
+		K8SConnected:   k8sConnected,
 	}, nil
 }
 
@@ -276,7 +279,7 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 	}
 
 	if group.ContainerConfig != nil && group.ContainerConfig.Provider != "" {
-		if err := s.providers.ValidateModel(group.ContainerConfig.Provider, group.ContainerConfig.Model); err != nil {
+		if err := s.validateModel(ctx, group.JID, group.ContainerConfig.Provider, group.ContainerConfig.Model); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid provider/model: %v", err)
 		}
 	}
@@ -299,7 +302,37 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 	}, nil
 }
 
-func (s *groupService) ListProviders(ctx context.Context, _ *kraclawv1.ListProvidersRequest) (*kraclawv1.ListProvidersResponse, error) {
+func (s *groupService) validateModel(ctx context.Context, groupJID string, providerID string, model string) error {
+	if model == "" || providerID != provider.ProviderOpenAI || s.models == nil {
+		return s.providers.ValidateModel(providerID, model)
+	}
+	models, err := s.models.ListModels(ctx, groupJID, providerID)
+	if err != nil {
+		s.log.Warn("failed to validate model dynamically; using static registry fallback",
+			"provider_id", providerID,
+			"group_jid", groupJID,
+			"model", model,
+			"error", err)
+		return s.providers.ValidateModel(providerID, model)
+	}
+	for _, m := range models {
+		if m.ID == model {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q is not valid for provider %q", model, providerID)
+}
+
+func modelListContains(models []provider.ModelInfo, id string) bool {
+	for _, m := range models {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *groupService) ListProviders(ctx context.Context, req *kraclawv1.ListProvidersRequest) (*kraclawv1.ListProvidersResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
@@ -316,14 +349,31 @@ func (s *groupService) ListProviders(ctx context.Context, _ *kraclawv1.ListProvi
 			s.log.Warn("provider listed but not retrievable; skipping", "provider_id", id)
 			continue
 		}
+		models := p.Models
+		defaultModel := p.DefaultModel
+		if req.GetGroupJid() != "" && p.ID == provider.ProviderOpenAI && s.models != nil {
+			dynamicModels, err := s.models.ListModels(ctx, req.GetGroupJid(), p.ID)
+			if err != nil {
+				s.log.Warn("failed to fetch dynamic provider models; using static fallback",
+					"provider_id", p.ID,
+					"group_jid", req.GetGroupJid(),
+					"error", err)
+			} else if len(dynamicModels) > 0 {
+				models = dynamicModels
+				if !modelListContains(models, defaultModel) {
+					defaultModel = models[0].ID
+				}
+			}
+		}
+
 		pi := &kraclawv1.ProviderInfo{
 			Id:           p.ID,
 			DisplayName:  p.DisplayName,
-			DefaultModel: p.DefaultModel,
+			DefaultModel: defaultModel,
 			AuthMode:     string(p.AuthMode),
-			Models:       make([]*kraclawv1.ModelInfo, 0, len(p.Models)),
+			Models:       make([]*kraclawv1.ModelInfo, 0, len(models)),
 		}
-		for _, m := range p.Models {
+		for _, m := range models {
 			pi.Models = append(pi.Models, &kraclawv1.ModelInfo{
 				Id:          m.ID,
 				DisplayName: m.DisplayName,
