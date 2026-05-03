@@ -432,6 +432,9 @@ func (m *model) handleLocalCommand(text string) (tea.Cmd, bool) {
 		return nil, false
 	}
 	parts := strings.Fields(text)
+	if len(parts) == 0 {
+		return nil, false
+	}
 	switch parts[0] {
 	case ":theme":
 		next := "dark"

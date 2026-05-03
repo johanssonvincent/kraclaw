@@ -79,6 +79,12 @@ func TestHandleLocalCommandTheme(t *testing.T) {
 	if _, handled := m.handleLocalCommand("hello world"); handled {
 		t.Fatal("plain text should not be handled as command")
 	}
+
+	for _, input := range []string{":", ":   "} {
+		if _, handled := m.handleLocalCommand(input); handled {
+			t.Fatalf("bare colon input %q should not be handled as command", input)
+		}
+	}
 }
 
 func TestCtrlTRefreshesChatViewportContent(t *testing.T) {
