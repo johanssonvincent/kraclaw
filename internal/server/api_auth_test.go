@@ -33,14 +33,16 @@ import (
 //	"approve":          usercode -> immediate authorization_code -> token bundle
 //	"deny":             usercode OK, then poll/exchange endpoint returns 400 access_denied (ErrAccessDenied)
 //	"slow_approve":     authorization_pending twice, then approves on the third poll
+//	"unknown_pending":  OpenAI nested deviceauth_authorization_unknown, then approves
 //	"5xx_during_poll":  usercode OK, then poll endpoint returns 502 (errBadStatus → INTERNAL)
 type issuerMode string
 
 const (
-	issuerModeApprove       issuerMode = "approve"
-	issuerModeDeny          issuerMode = "deny"
-	issuerModeSlowApprove   issuerMode = "slow_approve"
-	issuerMode5xxDuringPoll issuerMode = "5xx_during_poll"
+	issuerModeApprove        issuerMode = "approve"
+	issuerModeDeny           issuerMode = "deny"
+	issuerModeSlowApprove    issuerMode = "slow_approve"
+	issuerModeUnknownPending issuerMode = "unknown_pending"
+	issuerMode5xxDuringPoll  issuerMode = "5xx_during_poll"
 )
 
 func mintTestJWT(t *testing.T, payload map[string]any) string {
@@ -81,6 +83,13 @@ func newFakeIssuer(t *testing.T, mode issuerMode, idTokenJWT string, expiresIn i
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusBadRequest)
 					_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+					return
+				}
+			case issuerModeUnknownPending:
+				if n < 2 {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"error":{"message":"Device authorization is unknown. Please try again.","type":"invalid_request_error","param":null,"code":"deviceauth_authorization_unknown"}}`))
 					return
 				}
 			case issuerMode5xxDuringPoll:
@@ -293,6 +302,17 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 		},
 		"slow approval emits at least one tick before success": {
 			issuerMode: issuerModeSlowApprove,
+			req: &kraclawv1.StartChatGPTDeviceAuthRequest{
+				GroupJid: "tui:g",
+				Provider: provider.ProviderOpenAI,
+			},
+			wantSeq:       []string{"device_code", "tick", "success"},
+			wantAccountID: "acct_99",
+			expectUpsert:  true,
+			matchSeq:      equalSeqAtLeastOneTick,
+		},
+		"OpenAI unknown device auth poll waits before success": {
+			issuerMode: issuerModeUnknownPending,
 			req: &kraclawv1.StartChatGPTDeviceAuthRequest{
 				GroupJid: "tui:g",
 				Provider: provider.ProviderOpenAI,

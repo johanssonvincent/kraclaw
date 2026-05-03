@@ -1,56 +1,58 @@
 package main
 
 import (
-	"image/color"
 	"strings"
 
 	"charm.land/glamour/v2"
 )
 
 type chatMessage struct {
-	sender  string // "you" or "agent"
+	sender  string // "you", "agent", "system"
 	content string
 }
 
+// formatChatMessages groups consecutive messages from the same sender, prints
+// a coral/kraken label line on cluster boundaries, and renders content as
+// markdown for agent replies. Lines starting with "» " are treated as
+// tool-use sub-lines and rendered dim to match the design.
 func (m model) formatChatMessages() string {
-	w := m.chatViewport.Width()
-	if w < 10 {
-		w = 10
-	}
-
 	var b strings.Builder
+	var prevSender string
 	for i, msg := range m.chatMessages {
-		var borderColor color.Color
-		var label string
-		var content string
-
-		switch msg.sender {
-		case "you":
-			borderColor = defaultChatTheme.UserBorder
-			label = userLabelStyle.Render("You")
-			content = msg.content
-		case "agent":
-			borderColor = defaultChatTheme.AgentBorder
-			label = agentLabelStyle.Render("Sentia")
-			content = renderMarkdown(m.mdRenderer, msg.content)
-		default:
-			borderColor = defaultChatTheme.SystemBorder
-			label = systemLabelStyle.Render(msg.sender)
-			content = msg.content
+		if msg.sender != prevSender {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString("  " + renderSenderLabel(msg.sender) + "\n")
 		}
-
-		block := label + "\n" + content
-		bubble := messageBlockStyle.
-			BorderForeground(borderColor).
-			Width(w).
-			Render(block)
-
-		b.WriteString(bubble)
-		if i < len(m.chatMessages)-1 {
-			b.WriteString("\n")
+		body := msg.content
+		if msg.sender == "agent" {
+			body = renderMarkdown(m.mdRenderer, body)
 		}
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, "» ") {
+				b.WriteString("    " + dimStyle.Render(line) + "\n")
+			} else if line == "" {
+				b.WriteString("\n")
+			} else {
+				b.WriteString("    " + line + "\n")
+			}
+		}
+		prevSender = msg.sender
 	}
-	return b.String()
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderSenderLabel(sender string) string {
+	switch sender {
+	case "you":
+		return userLabelStyle.Render("you")
+	case "agent":
+		return agentLabelStyle.Render("kraclaw")
+	default:
+		return systemLabelStyle.Render(sender)
+	}
 }
 
 func renderMarkdown(r *glamour.TermRenderer, content string) string {
