@@ -27,7 +27,7 @@ require (
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	k8s.io/api v0.36.0
 	k8s.io/apimachinery v0.36.0
-	k8s.io/client-go v0.35.4
+	k8s.io/client-go v0.36.0
 	sigs.k8s.io/agent-sandbox v0.3.10
 	sigs.k8s.io/controller-runtime v0.23.3
 )
