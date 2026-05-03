@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -19,6 +21,8 @@ import (
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/johanssonvincent/kraclaw/internal/channel"
+	"github.com/johanssonvincent/kraclaw/internal/config"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
@@ -965,5 +969,48 @@ func TestListProviders_DefaultModelInModelList(t *testing.T) {
 		if !found {
 			t.Errorf("provider %q default_model %q not in model list", p.GetId(), p.GetDefaultModel())
 		}
+	}
+}
+
+func TestListProviders_UsesDynamicOpenAIModelsWhenGroupJIDProvided(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.5"},{"id":"whisper-1"}]}`))
+	}))
+	defer upstream.Close()
+
+	lister := credproxy.NewModelLister(credproxy.NewDefaultResolver(nil, config.ProxyConfig{
+		OpenAIAPIKey:      "sk-openai",
+		OpenAIUpstreamURL: upstream.URL,
+	}))
+	svc := &groupService{
+		providers: provider.NewRegistry(),
+		models:    lister,
+		log:       testLogger(),
+	}
+
+	resp, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{GroupJid: "tui:g1"})
+	if err != nil {
+		t.Fatalf("ListProviders() err = %v, want nil", err)
+	}
+	if gotAuth != "Bearer sk-openai" {
+		t.Fatalf("Authorization = %q, want Bearer sk-openai", gotAuth)
+	}
+	var openaiProvider *kraclawv1.ProviderInfo
+	for _, p := range resp.GetProviders() {
+		if p.GetId() == provider.ProviderOpenAI {
+			openaiProvider = p
+			break
+		}
+	}
+	if openaiProvider == nil {
+		t.Fatal("missing openai provider")
+	}
+	if len(openaiProvider.GetModels()) != 1 || openaiProvider.GetModels()[0].GetId() != "gpt-5.5" {
+		t.Fatalf("openai models = %#v, want only dynamic gpt-5.5", openaiProvider.GetModels())
+	}
+	if openaiProvider.GetDefaultModel() != "gpt-5.5" {
+		t.Fatalf("openai default_model = %q, want gpt-5.5", openaiProvider.GetDefaultModel())
 	}
 }

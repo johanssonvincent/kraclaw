@@ -13,12 +13,12 @@ import (
 func TestOAuthFlow_HandlesEvents(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
-		event         *kraclawv1.DeviceAuthEvent
-		startState    oauthState
-		wantState     chatState
-		wantErr       bool
-		wantUserCode  string
-		wantCanceled  bool
+		event        *kraclawv1.DeviceAuthEvent
+		startState   oauthState
+		wantState    chatState
+		wantErr      bool
+		wantUserCode string
+		wantCanceled bool
 	}{
 		"device code populates fields": {
 			event: &kraclawv1.DeviceAuthEvent{Event: &kraclawv1.DeviceAuthEvent_DeviceCode_{
@@ -38,12 +38,12 @@ func TestOAuthFlow_HandlesEvents(t *testing.T) {
 			startState: oauthState{userCode: "ABCD-1234"},
 			wantState:  chatStateOAuth,
 		},
-		"success transitions to connecting": {
+		"success transitions to model selection": {
 			event: &kraclawv1.DeviceAuthEvent{Event: &kraclawv1.DeviceAuthEvent_Success_{
 				Success: &kraclawv1.DeviceAuthEvent_Success{AccountId: "acct_123"},
 			}},
-			startState:   oauthState{pendingGroupName: "g1", provider: "openai"},
-			wantState:    chatStateConnecting,
+			startState:   oauthState{pendingGroupName: "g1", provider: "openai", groupJID: "tui:g1"},
+			wantState:    chatStateSelectModel,
 			wantCanceled: true,
 		},
 		"error stays on screen with err": {

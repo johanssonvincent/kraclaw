@@ -715,7 +715,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, readEventCmd(m.eventStream)
 
 	case providersLoadedMsg:
-		if m.chatState != chatStateSelectProvider || msg.flowID != m.creationFlowID {
+		if (m.chatState != chatStateSelectProvider && m.chatState != chatStateSelectModel) || msg.flowID != m.creationFlowID {
 			return m, nil
 		}
 		if msg.err != nil {
@@ -732,8 +732,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.creationProviders = msg.providers
-		items, _ := buildProviderItems(msg.providers, "")
-		m.creationPicker = creationPickerState{items: items}
+		if m.chatState == chatStateSelectModel && m.creationSelectedProvider != "" {
+			items := buildModelItems(msg.providers, m.creationSelectedProvider)
+			m.creationPicker = creationPickerState{items: items}
+			if len(items) == 0 {
+				m.chatErr = fmt.Errorf("provider %q has no models configured — press Esc to cancel", m.creationSelectedProvider)
+			} else {
+				m.chatErr = nil
+			}
+		} else {
+			items, _ := buildProviderItems(msg.providers, "")
+			m.creationPicker = creationPickerState{items: items}
+		}
 		m.creationProvidersLoaded = true
 		return m, nil
 

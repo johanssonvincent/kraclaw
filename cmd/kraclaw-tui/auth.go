@@ -139,14 +139,14 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 			m.oauth.cancel()
 		}
 		if m.oauth.pendingGroupName != "" {
-			// new-group: group was deferred until OAuth completed; register it.
-			name := m.oauth.pendingGroupName
-			provider := m.oauth.provider
-			modelID := m.creationSelectedModelID
+			// new-group: OAuth must complete before OpenAI models can be fetched.
+			groupJID := m.oauth.groupJID
 			m.oauth = oauthState{}
-			m.chatState = chatStateConnecting
-			m.chatMessages = nil
-			return m, m.registerGroupCmd(name, provider, modelID)
+			m.chatState = chatStateSelectModel
+			m.creationProvidersLoaded = false
+			m.creationPicker = creationPickerState{}
+			m.creationSelectedModelID = ""
+			return m, m.fetchProvidersCmd(m.creationFlowID, groupJID)
 		}
 		// re-auth: group already exists; return to chat without re-registering.
 		m.oauth = oauthState{}

@@ -89,6 +89,7 @@ type Config struct {
 	TUIChannel            *tui.TUI
 	Channels              []channel.Channel
 	Log                   *slog.Logger
+	ModelLister           *credproxy.ModelLister
 
 	// Auth wires the optional AuthService. nil disables auth-flow RPCs.
 	// Non-nil with either ChatGPT or Credentials unset is a startup error.
