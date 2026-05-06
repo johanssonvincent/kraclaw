@@ -30,7 +30,6 @@ func makeProviders(ids ...string) []*kraclawv1.ProviderInfo {
 	return providers
 }
 
-
 func TestCreationPickerNavigation(t *testing.T) {
 	fake := &fakeGroupClient{}
 	m := initialModel("test", &apiClient{groups: fake, channels: &mockChannelClient{}})
@@ -208,7 +207,8 @@ func TestProviderPickerEscClearsChatErr(t *testing.T) {
 // fakeGroupClient is a minimal GroupServiceClient that records the last
 // RegisterGroup request and returns a stub group.
 type fakeGroupClient struct {
-	lastRegisterReq *kraclawv1.RegisterGroupRequest
+	lastRegisterReq      *kraclawv1.RegisterGroupRequest
+	lastListProvidersReq *kraclawv1.ListProvidersRequest
 }
 
 func (f *fakeGroupClient) RegisterGroup(_ context.Context, in *kraclawv1.RegisterGroupRequest, _ ...grpc.CallOption) (*kraclawv1.Group, error) {
@@ -236,7 +236,8 @@ func (f *fakeGroupClient) UpdateSenderAllowlist(_ context.Context, _ *kraclawv1.
 	return nil, nil
 }
 
-func (f *fakeGroupClient) ListProviders(_ context.Context, _ *kraclawv1.ListProvidersRequest, _ ...grpc.CallOption) (*kraclawv1.ListProvidersResponse, error) {
+func (f *fakeGroupClient) ListProviders(_ context.Context, in *kraclawv1.ListProvidersRequest, _ ...grpc.CallOption) (*kraclawv1.ListProvidersResponse, error) {
+	f.lastListProvidersReq = in
 	return &kraclawv1.ListProvidersResponse{}, nil
 }
 

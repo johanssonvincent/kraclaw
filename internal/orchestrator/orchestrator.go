@@ -15,6 +15,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/auth"
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/config"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/queue"
@@ -51,6 +52,7 @@ type Orchestrator struct {
 	auth      *auth.Authorizer
 	sched     *scheduler.Scheduler
 	providers *provider.Registry
+	models    *credproxy.ModelLister
 
 	channels []channel.Channel
 	registry *channel.Registry
@@ -114,6 +116,7 @@ func New(
 	ctrl *sandbox.Controller,
 	reg *channel.Registry,
 	log *slog.Logger,
+	modelListers ...*credproxy.ModelLister,
 ) (*Orchestrator, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("orchestrator: config is required")
@@ -133,6 +136,10 @@ func New(
 	if log == nil {
 		return nil, fmt.Errorf("orchestrator: logger is required")
 	}
+	var modelLister *credproxy.ModelLister
+	if len(modelListers) > 0 {
+		modelLister = modelListers[0]
+	}
 	// ctrl may be nil (no K8s sandbox controller in test/local mode).
 	// Store as interface only when non-nil to preserve interface nil semantics for nil checks.
 	var sc sandboxController
@@ -147,6 +154,7 @@ func New(
 		sandbox:                sc,
 		registry:               reg,
 		providers:              provider.NewRegistry(),
+		models:                 modelLister,
 		lastAgentTimestamp:     make(map[string]time.Time),
 		lastConfirmedTimestamp: make(map[string]time.Time),
 		sessions:               make(map[string]string),

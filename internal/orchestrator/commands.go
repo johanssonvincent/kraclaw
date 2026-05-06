@@ -69,6 +69,17 @@ func (o *Orchestrator) handleModelsCommand(ctx context.Context, chatJID string) 
 	}
 
 	models := o.providers.Models(providerID)
+	if providerID == "openai" && o.models != nil {
+		dynamicModels, err := o.models.ListModels(ctx, chatJID, providerID)
+		if err != nil {
+			o.log.Warn("failed to fetch dynamic models; using static fallback",
+				"chat_jid", chatJID,
+				"provider", providerID,
+				"error", err)
+		} else if len(dynamicModels) > 0 {
+			models = dynamicModels
+		}
+	}
 	currentModel := ""
 	if group.ContainerConfig != nil {
 		currentModel = group.ContainerConfig.Model
