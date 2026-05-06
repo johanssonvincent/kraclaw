@@ -18,6 +18,7 @@ func TestModelLister_ListOpenAIModels(t *testing.T) {
 			"data": [
 				{"id": "gpt-5.5"},
 				{"id": "whisper-1"},
+				{"id": "omni-moderation-latest"},
 				{"id": "o3-mini"},
 				{"id": "gpt-5.5"}
 			]

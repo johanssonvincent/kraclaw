@@ -3,10 +3,14 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/johanssonvincent/kraclaw/internal/channel"
+	"github.com/johanssonvincent/kraclaw/internal/config"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
@@ -327,6 +331,67 @@ func TestHandleModelCommand_ProviderRegistryValidation(t *testing.T) {
 	}
 	if !strings.Contains(ch.sent[0].text, "Model set to claude-opus-4-6") {
 		t.Fatalf("sent text = %q, want model set confirmation", ch.sent[0].text)
+	}
+}
+
+func TestHandleModelCommand_UsesDynamicOpenAIValidation(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %q, want /v1/models", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{
+			"data": [
+				{"id": "gpt-99-test"},
+				{"id": "omni-moderation-latest"}
+			]
+		}`))
+	}))
+	defer upstream.Close()
+
+	tests := []struct {
+		name      string
+		requested string
+		wantText  string
+	}{
+		{
+			name:      "accepts dynamic OpenAI chat model",
+			requested: "gpt-99-test",
+			wantText:  "Model set to gpt-99-test",
+		},
+		{
+			name:      "rejects filtered non-chat OpenAI model",
+			requested: "omni-moderation-latest",
+			wantText:  `Unknown model "omni-moderation-latest"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newMockStore()
+			s.groups = []store.Group{{
+				JID:    "group1@g.us",
+				Folder: "group1",
+				Name:   "Test",
+				ContainerConfig: &store.ContainerConfig{
+					Provider: "openai",
+				},
+			}}
+			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+			o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
+			o.models = credproxy.NewModelLister(credproxy.NewDefaultResolver(nil, config.ProxyConfig{
+				OpenAIAPIKey:      "sk-test",
+				OpenAIUpstreamURL: upstream.URL,
+			}))
+
+			o.handleModelCommand(context.Background(), "group1@g.us", tt.requested)
+
+			if len(ch.sent) == 0 {
+				t.Fatal("expected sent message")
+			}
+			if !strings.Contains(ch.sent[0].text, tt.wantText) {
+				t.Fatalf("sent text = %q, want substring %q", ch.sent[0].text, tt.wantText)
+			}
+		})
 	}
 }
 

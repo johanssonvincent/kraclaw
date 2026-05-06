@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
@@ -141,7 +142,7 @@ func (o *Orchestrator) handleModelCommand(ctx context.Context, chatJID string, r
 		providerID = group.ContainerConfig.Provider
 	}
 
-	if err := o.providers.ValidateModel(providerID, requested); err != nil {
+	if err := o.validateModelForChat(ctx, chatJID, providerID, requested); err != nil {
 		o.sendSystemMessage(ctx, chatJID, fmt.Sprintf("Unknown model %q for provider %s. Use /models to list available models.", requested, providerID))
 		return
 	}
@@ -161,6 +162,28 @@ func (o *Orchestrator) handleModelCommand(ctx context.Context, chatJID string, r
 	}
 
 	o.sendSystemMessage(ctx, chatJID, fmt.Sprintf("Model set to %s.", requested))
+}
+
+func (o *Orchestrator) validateModelForChat(ctx context.Context, chatJID string, providerID string, model string) error {
+	if model == "" || providerID != provider.ProviderOpenAI || o.models == nil {
+		return o.providers.ValidateModel(providerID, model)
+	}
+
+	models, err := o.models.ListModels(ctx, chatJID, providerID)
+	if err != nil {
+		o.log.Warn("failed to validate model dynamically; using static registry fallback",
+			"chat_jid", chatJID,
+			"provider", providerID,
+			"model", model,
+			"error", err)
+		return o.providers.ValidateModel(providerID, model)
+	}
+	for _, m := range models {
+		if m.ID == model {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q is not valid for provider %q", model, providerID)
 }
 
 func (o *Orchestrator) currentModelForChat(ctx context.Context, chatJID string) (string, string, error) {

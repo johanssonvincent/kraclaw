@@ -105,7 +105,12 @@ func isUserSelectableOpenAIModel(id string) bool {
 	if id == "" {
 		return false
 	}
-	return strings.HasPrefix(id, "gpt-") || strings.HasPrefix(id, "o")
+	if strings.HasPrefix(id, "gpt-") {
+		return true
+	}
+	return id == "o1" || strings.HasPrefix(id, "o1-") ||
+		id == "o3" || strings.HasPrefix(id, "o3-") ||
+		id == "o4" || strings.HasPrefix(id, "o4-")
 }
 
 func displayNameFromModelID(id string) string {
