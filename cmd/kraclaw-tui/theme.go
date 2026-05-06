@@ -59,8 +59,8 @@ var (
 		SelBg:       lipgloss.Color("#3A2218"),
 		SelStrongBg: lipgloss.Color("#E8704A"),
 		SelStrongFg: lipgloss.Color("#0B1220"),
-		InverseBg:   lipgloss.Color("#E8EDF5"),
-		InverseFg:   lipgloss.Color("#0B1220"),
+		InverseBg:   lipgloss.Color("#111A2E"),
+		InverseFg:   lipgloss.Color("#E8EDF5"),
 	}
 
 	paletteLight = Palette{
@@ -112,14 +112,14 @@ var (
 	agentLabelStyle  lipgloss.Style
 	systemLabelStyle lipgloss.Style
 
-	okStyle    lipgloss.Style
-	errStyle   lipgloss.Style
-	warnStyle  lipgloss.Style
-	dimStyle   lipgloss.Style
-	fgStyle    lipgloss.Style
+	okStyle     lipgloss.Style
+	errStyle    lipgloss.Style
+	warnStyle   lipgloss.Style
+	dimStyle    lipgloss.Style
+	fgStyle     lipgloss.Style
 	krakenStyle lipgloss.Style
-	coralStyle lipgloss.Style
-	coralBold  lipgloss.Style
+	coralStyle  lipgloss.Style
+	coralBold   lipgloss.Style
 
 	bigMetricValueStyle lipgloss.Style
 	bigMetricUnitStyle  lipgloss.Style

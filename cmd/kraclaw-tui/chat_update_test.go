@@ -131,6 +131,21 @@ func TestWaitingStateTransitions(t *testing.T) {
 	}
 }
 
+func TestStreamOpenedReflowsChatComposerIntoView(t *testing.T) {
+	m := initialModel("test", &apiClient{channels: &mockChannelClient{}})
+	m.chatGroup = &GroupInfo{JID: "chat:test", Name: "test"}
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(model)
+
+	updated, _ = m.Update(streamOpenedMsg{})
+	m = updated.(model)
+	out := m.View().Content
+	if !strings.Contains(out, "markdown · 0/4096") {
+		t.Fatalf("chat composer should be visible immediately after stream opens:\n%s", out)
+	}
+}
+
 func TestModelPickerEmptyState(t *testing.T) {
 	cases := []struct {
 		name           string

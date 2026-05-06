@@ -295,6 +295,25 @@ func (m model) calculateLayout() layoutDims {
 	return d
 }
 
+func (m model) applyLayout() model {
+	d := m.calculateLayout()
+	m.chatViewport.SetWidth(d.viewportWidth)
+	m.chatViewport.SetHeight(d.viewportHeight)
+	m.chatInput.SetWidth(d.inputWidth)
+	m.mdRenderer = nil
+
+	if m.chatState == chatStateChatting {
+		contentWidth := m.chatViewport.Width() - 6
+		if contentWidth < 10 {
+			contentWidth = 10
+		}
+		m.ensureMarkdownRenderer(contentWidth)
+		m.chatViewport.SetContent(m.formatChatMessages())
+	}
+
+	return m
+}
+
 func (m *model) ensureMarkdownRenderer(width int) {
 	if m.mdRenderer != nil && m.mdRendererWidth == width {
 		return
@@ -631,21 +650,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-
-		d := m.calculateLayout()
-		m.chatViewport.SetWidth(d.viewportWidth)
-		m.chatViewport.SetHeight(d.viewportHeight)
-		m.chatInput.SetWidth(d.inputWidth)
-		m.mdRenderer = nil
-
-		if m.chatState == chatStateChatting {
-			contentWidth := m.chatViewport.Width() - 6
-			if contentWidth < 10 {
-				contentWidth = 10
-			}
-			m.ensureMarkdownRenderer(contentWidth)
-			m.chatViewport.SetContent(m.formatChatMessages())
-		}
+		m = m.applyLayout()
 		return m, nil
 
 	case tickMsg:
@@ -783,6 +788,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatState = chatStateChatting
 		m.chatErr = nil
 		m.chatInput.Focus()
+		m = m.applyLayout()
 		return m, readInboundCmd(msg.stream)
 
 	case channelOutputMsg:
