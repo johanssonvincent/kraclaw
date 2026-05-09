@@ -52,7 +52,9 @@ type Orchestrator struct {
 	auth      *auth.Authorizer
 	sched     *scheduler.Scheduler
 	providers *provider.Registry
-	models    *credproxy.ModelLister
+	// listDynamicModels allows tests to stub dynamic model listing.
+	// When nil, dynamic model listing is disabled.
+	listDynamicModels func(context.Context, string, string) ([]provider.ModelInfo, error)
 
 	channels []channel.Channel
 	registry *channel.Registry
@@ -142,6 +144,10 @@ func New(
 	if ctrl != nil {
 		sc = ctrl
 	}
+	var listDynamicModels func(context.Context, string, string) ([]provider.ModelInfo, error)
+	if modelLister != nil {
+		listDynamicModels = modelLister.ListModels
+	}
 	return &Orchestrator{
 		cfg:                    cfg,
 		store:                  s,
@@ -150,7 +156,7 @@ func New(
 		sandbox:                sc,
 		registry:               reg,
 		providers:              provider.NewRegistry(),
-		models:                 modelLister,
+		listDynamicModels:      listDynamicModels,
 		lastAgentTimestamp:     make(map[string]time.Time),
 		lastConfirmedTimestamp: make(map[string]time.Time),
 		sessions:               make(map[string]string),

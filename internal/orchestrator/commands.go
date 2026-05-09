@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
@@ -69,8 +70,8 @@ func (o *Orchestrator) handleModelsCommand(ctx context.Context, chatJID string) 
 	}
 
 	models := o.providers.Models(providerID)
-	if providerID == "openai" && o.models != nil {
-		dynamicModels, err := o.models.ListModels(ctx, chatJID, providerID)
+	if providerID == provider.ProviderOpenAI && o.listDynamicModels != nil {
+		dynamicModels, err := o.listDynamicModels(ctx, chatJID, providerID)
 		if err != nil {
 			o.log.Warn("failed to fetch dynamic models; using static fallback",
 				"chat_jid", chatJID,
@@ -141,7 +142,7 @@ func (o *Orchestrator) handleModelCommand(ctx context.Context, chatJID string, r
 		providerID = group.ContainerConfig.Provider
 	}
 
-	if err := o.providers.ValidateModel(providerID, requested); err != nil {
+	if err := o.validateRequestedModel(ctx, chatJID, providerID, requested); err != nil {
 		o.sendSystemMessage(ctx, chatJID, fmt.Sprintf("Unknown model %q for provider %s. Use /models to list available models.", requested, providerID))
 		return
 	}
@@ -175,6 +176,26 @@ func (o *Orchestrator) currentModelForChat(ctx context.Context, chatJID string) 
 		return "", "default", nil
 	}
 	return group.ContainerConfig.Model, group.ContainerConfig.Model, nil
+}
+
+func (o *Orchestrator) validateRequestedModel(ctx context.Context, chatJID string, providerID string, requested string) error {
+	if providerID == provider.ProviderOpenAI && o.listDynamicModels != nil {
+		dynamicModels, err := o.listDynamicModels(ctx, chatJID, providerID)
+		if err != nil {
+			o.log.Warn("failed to fetch dynamic models for /model; using static fallback",
+				"chat_jid", chatJID,
+				"provider", providerID,
+				"error", err)
+		} else if len(dynamicModels) > 0 {
+			for _, m := range dynamicModels {
+				if m.ID == requested {
+					return nil
+				}
+			}
+			return fmt.Errorf("model %q is not valid for provider %q", requested, providerID)
+		}
+	}
+	return o.providers.ValidateModel(providerID, requested)
 }
 
 func (o *Orchestrator) updateGroupModel(ctx context.Context, chatJID string, model string) error {
