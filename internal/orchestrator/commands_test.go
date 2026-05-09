@@ -362,6 +362,14 @@ func TestHandleModelCommand_OpenAIDynamicValidation(t *testing.T) {
 			},
 			wantText: "Model set to gpt-5.4",
 		},
+		{
+			name:      "falls back to static validation when dynamic listing is empty",
+			requested: "gpt-5.4",
+			listDynamicModels: func(context.Context, string, string) ([]provider.ModelInfo, error) {
+				return []provider.ModelInfo{}, nil
+			},
+			wantText: "Model set to gpt-5.4",
+		},
 	}
 
 	for _, tt := range tests {
