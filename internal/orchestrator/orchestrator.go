@@ -116,7 +116,7 @@ func New(
 	ctrl *sandbox.Controller,
 	reg *channel.Registry,
 	log *slog.Logger,
-	modelListers ...*credproxy.ModelLister,
+	modelLister *credproxy.ModelLister,
 ) (*Orchestrator, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("orchestrator: config is required")
@@ -135,10 +135,6 @@ func New(
 	}
 	if log == nil {
 		return nil, fmt.Errorf("orchestrator: logger is required")
-	}
-	var modelLister *credproxy.ModelLister
-	if len(modelListers) > 0 {
-		modelLister = modelListers[0]
 	}
 	// ctrl may be nil (no K8s sandbox controller in test/local mode).
 	// Store as interface only when non-nil to preserve interface nil semantics for nil checks.

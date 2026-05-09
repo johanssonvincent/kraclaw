@@ -353,7 +353,7 @@ func newTestOrchestrator(s *mockStore, q *mockQueue, b *mockIPCBroker) *Orchestr
 	log := slog.Default()
 	reg := channel.NewRegistry()
 
-	o, err := New(cfg, s, q, b, nil, reg, log)
+	o, err := New(cfg, s, q, b, nil, reg, log, nil)
 	if err != nil {
 		panic("newTestOrchestrator: " + err.Error())
 	}
@@ -704,7 +704,7 @@ func TestMaxConcurrent_AtLimit_SkipsCreateSandbox(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, log)
+	o, err := New(cfg, s, mq, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -755,7 +755,7 @@ func TestMaxConcurrent_BelowLimit_ProceedsToCreateSandbox(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, log)
+	o, err := New(cfg, s, mq, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -805,7 +805,7 @@ func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, log)
+	o, err := New(cfg, s, mq, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -847,7 +847,7 @@ func TestProcessGroupMessages_SendInputFailure_TeardownAndErrors(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, q, b, nil, reg, log)
+	o, err := New(cfg, s, q, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -902,7 +902,7 @@ func TestProcessGroupMessages_MarkActiveFailure_StopsSandbox(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, q, b, nil, reg, log)
+	o, err := New(cfg, s, q, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -1194,7 +1194,7 @@ func TestProcessGroupMessages_MarshalInitialInputFailure_ReturnsEarly(t *testing
 		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
-	o, err := New(cfg, s, mq, b, nil, channel.NewRegistry(), slog.Default())
+	o, err := New(cfg, s, mq, b, nil, channel.NewRegistry(), slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -1605,7 +1605,7 @@ func newTestOrchestratorWithSandbox(s *mockStore, q *mockQueue, b *mockIPCBroker
 	log := slog.Default()
 	reg := channel.NewRegistry()
 
-	o, err := New(cfg, s, q, b, nil, reg, log)
+	o, err := New(cfg, s, q, b, nil, reg, log, nil)
 	if err != nil {
 		panic("newTestOrchestratorWithSandbox: " + err.Error())
 	}
@@ -2045,7 +2045,7 @@ func TestStart_CleanupOrphansOnStartup(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 
-	o, err := New(cfg, s, q, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, q, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2080,7 +2080,7 @@ func TestStart_CleanupOrphansSkippedWhenNilSandbox(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 
-	o, err := New(cfg, s, q, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, q, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2122,7 +2122,7 @@ func TestReconcileActiveSet_RemovesStaleJIDs(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2171,7 +2171,7 @@ func TestReconcileActiveSet_RemovesUnregisteredJIDs(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2198,7 +2198,7 @@ func TestReconcileActiveSet_EmptySet_NoOp(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2229,7 +2229,7 @@ func TestHandleSandboxEvent_CompletedSandbox_MarksGroupInactive(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2269,7 +2269,7 @@ func TestHandleSandboxEvent_DeletedSandbox_MarksGroupInactive(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2309,7 +2309,7 @@ func TestHandleSandboxEvent_RunningUpdate_NoChange(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2347,7 +2347,7 @@ func TestHandleSandboxEvent_UnknownFolder_NoOp(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2385,7 +2385,7 @@ func TestHandleSandboxEvent_StaleSandboxDeletion_PreservesActiveState(t *testing
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2429,7 +2429,7 @@ func TestHandleSandboxEvent_CurrentSandboxDeletion_MarksInactive(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2708,7 +2708,7 @@ func TestHandleSandboxEvent_UntrackedSandbox_StillMarksInactive(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2948,7 +2948,7 @@ func TestPollMessages_ConcurrentSpawn_SingleSandbox(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -3018,7 +3018,7 @@ func TestMaxConcurrent_IncludesInflight(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -3360,7 +3360,7 @@ func TestMaxConcurrent_ExcludesOwnJID(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -3696,7 +3696,7 @@ func TestDeactivate_OnceGuardPreventsDoubleCleanup(t *testing.T) {
 	}
 	reg := channel.NewRegistry()
 	log := slog.Default()
-	o, err := New(cfg, s, cq, b, nil, reg, log)
+	o, err := New(cfg, s, cq, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -3900,7 +3900,7 @@ func TestSlot_PollAndRecoveryContendConcurrently(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -4010,7 +4010,7 @@ func TestProcessGroupMessages_SlotReleasedEarlyAfterMarkActive(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
