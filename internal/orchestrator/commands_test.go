@@ -335,13 +335,13 @@ func TestHandleModelCommand_OpenAIDynamicValidation(t *testing.T) {
 	tests := []struct {
 		name             string
 		requested        string
-		listDynamicModel func(context.Context, string, string) ([]provider.ModelInfo, error)
+		listDynamicModels func(context.Context, string, string) ([]provider.ModelInfo, error)
 		wantText         string
 	}{
 		{
 			name:      "accepts model from dynamic list",
 			requested: "gpt-5.4-chat-latest",
-			listDynamicModel: func(context.Context, string, string) ([]provider.ModelInfo, error) {
+			listDynamicModels: func(context.Context, string, string) ([]provider.ModelInfo, error) {
 				return []provider.ModelInfo{{ID: "gpt-5.4-chat-latest"}}, nil
 			},
 			wantText: "Model set to gpt-5.4-chat-latest",
@@ -349,7 +349,7 @@ func TestHandleModelCommand_OpenAIDynamicValidation(t *testing.T) {
 		{
 			name:      "rejects model not in dynamic list",
 			requested: "gpt-unknown",
-			listDynamicModel: func(context.Context, string, string) ([]provider.ModelInfo, error) {
+			listDynamicModels: func(context.Context, string, string) ([]provider.ModelInfo, error) {
 				return []provider.ModelInfo{{ID: "gpt-5.4-chat-latest"}}, nil
 			},
 			wantText: `Unknown model "gpt-unknown"`,
@@ -357,7 +357,7 @@ func TestHandleModelCommand_OpenAIDynamicValidation(t *testing.T) {
 		{
 			name:      "falls back to static validation when dynamic listing fails",
 			requested: "gpt-5.4",
-			listDynamicModel: func(context.Context, string, string) ([]provider.ModelInfo, error) {
+			listDynamicModels: func(context.Context, string, string) ([]provider.ModelInfo, error) {
 				return nil, errors.New("dynamic listing failed")
 			},
 			wantText: "Model set to gpt-5.4",
@@ -378,7 +378,7 @@ func TestHandleModelCommand_OpenAIDynamicValidation(t *testing.T) {
 			q := newMockQueue()
 			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 			o := newTestOrchestratorWithRouter(s, q, &mockIPCBroker{}, []channel.Channel{ch})
-			o.listDynamicModels = tt.listDynamicModel
+			o.listDynamicModels = tt.listDynamicModels
 
 			o.handleModelCommand(context.Background(), "group1@g.us", tt.requested)
 

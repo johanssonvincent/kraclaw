@@ -192,7 +192,7 @@ func (o *Orchestrator) validateRequestedModel(ctx context.Context, chatJID strin
 					return nil
 				}
 			}
-			return fmt.Errorf("model %q is not valid for provider %q", requested, providerID)
+			return fmt.Errorf("unknown model %q for provider %s", requested, providerID)
 		}
 	}
 	return o.providers.ValidateModel(providerID, requested)
