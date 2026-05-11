@@ -451,8 +451,9 @@ func (m *mockGroupStore) GetGroupByFolder(context.Context, string) (*store.Group
 }
 func (m *mockGroupStore) ListGroups(context.Context) ([]store.Group, error)  { return nil, nil }
 func (m *mockGroupStore) DeleteGroup(context.Context, string) error          { return nil }
-func (m *mockGroupStore) StoreMessage(context.Context, *store.Message) error { return nil }
-func (m *mockGroupStore) StoreBatch(context.Context, []store.Message) error  { return nil }
+func (m *mockGroupStore) StoreMessage(context.Context, *store.Message) error  { return nil }
+func (m *mockGroupStore) StoreBatch(context.Context, []store.Message) error   { return nil }
+func (m *mockGroupStore) DeleteMessage(context.Context, string, string) error { return nil }
 func (m *mockGroupStore) GetNewMessages(context.Context, []string, time.Time, int) ([]store.Message, error) {
 	return nil, nil
 }

@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,8 +33,13 @@ type mockStore struct {
 	chats    map[string]*store.Chat
 	tasks    map[string]*store.ScheduledTask
 
-	storeMessageCalled   bool
-	storeMessageErr      error
+	storeMessageCalled     bool
+	storeMessageCalledWith *store.Message
+	storeMessageErr        error
+
+	deleteMessageCalled bool
+	deleteMessageArgs   struct{ ID, ChatJID string }
+	deleteMessageErr    error
 	upsertSessionErr     error
 	deleteSessionErr     error
 	allowlist            map[string][]store.SenderAllowlistEntry
@@ -42,7 +48,8 @@ type mockStore struct {
 
 	updateTaskCalled     bool
 	deleteTaskCalledWith [2]string // [id, groupFolder]
-	setStateCalls        []string  // records keys passed to SetState for counting
+	setStateCalls []string // records keys passed to SetState for counting
+	setStateErr   error   // if non-nil, SetState returns this error
 }
 
 func newMockStore() *mockStore {
@@ -61,6 +68,9 @@ func (m *mockStore) GetState(_ context.Context, key string) (string, error) {
 }
 
 func (m *mockStore) SetState(_ context.Context, key, value string) error {
+	if m.setStateErr != nil {
+		return m.setStateErr
+	}
 	m.state[key] = value
 	m.setStateCalls = append(m.setStateCalls, key)
 	return nil
@@ -92,6 +102,7 @@ func (m *mockStore) DeleteSession(_ context.Context, groupFolder string) error {
 
 func (m *mockStore) StoreMessage(_ context.Context, msg *store.Message) error {
 	m.storeMessageCalled = true
+	m.storeMessageCalledWith = msg
 	if m.storeMessageErr != nil {
 		return m.storeMessageErr
 	}
@@ -100,6 +111,24 @@ func (m *mockStore) StoreMessage(_ context.Context, msg *store.Message) error {
 }
 
 func (m *mockStore) StoreBatch(_ context.Context, msgs []store.Message) error { return nil }
+
+func (m *mockStore) DeleteMessage(_ context.Context, id, chatJID string) error {
+	m.deleteMessageCalled = true
+	m.deleteMessageArgs.ID = id
+	m.deleteMessageArgs.ChatJID = chatJID
+	if m.deleteMessageErr != nil {
+		return m.deleteMessageErr
+	}
+	msgs := m.messages[chatJID]
+	filtered := msgs[:0]
+	for _, msg := range msgs {
+		if msg.ID != id {
+			filtered = append(filtered, msg)
+		}
+	}
+	m.messages[chatJID] = filtered
+	return nil
+}
 
 func (m *mockStore) GetNewMessages(_ context.Context, jids []string, since time.Time, limit int) ([]store.Message, error) {
 	var result []store.Message
@@ -216,15 +245,22 @@ func (m *mockStore) ActiveGroupJIDs(_ context.Context) ([]string, error)     { r
 type mockQueue struct {
 	active          map[string]bool
 	markActiveErr   error // if non-nil, MarkActive returns this error
-	markInactiveErr error // if non-nil, MarkInactive returns this error and skips delete
-	isActiveErr     error // if non-nil, IsActive returns false, isActiveErr
+	markInactiveErr error // if non-nil, MarkInactive returns this error
+	isActiveErr     error // if non-nil, IsActive returns this error
+	enqueueErr      error
+	enqueueCalled   bool
+	enqueueMsg      *queue.QueueMessage
 }
 
 func newMockQueue() *mockQueue {
 	return &mockQueue{active: make(map[string]bool)}
 }
 
-func (m *mockQueue) Enqueue(_ context.Context, _ string, _ *queue.QueueMessage) error { return nil }
+func (m *mockQueue) Enqueue(_ context.Context, _ string, msg *queue.QueueMessage) error {
+	m.enqueueCalled = true
+	m.enqueueMsg = msg
+	return m.enqueueErr
+}
 func (m *mockQueue) Dequeue(_ context.Context, _ string) (*queue.QueueMessage, error) {
 	return nil, nil
 }
@@ -371,6 +407,12 @@ func newTestOrchestratorWithRouter(s *mockStore, q *mockQueue, b *mockIPCBroker,
 	}
 	o.router = rtr
 	o.auth = auth.New(s)
+	return o
+}
+
+func newTestOrchestratorWithLogger(s *mockStore, q *mockQueue, b *mockIPCBroker, logger *slog.Logger) *Orchestrator {
+	o := newTestOrchestrator(s, q, b)
+	o.log = logger
 	return o
 }
 
@@ -648,6 +690,55 @@ func TestSaveState_InitialSaveWritesAll(t *testing.T) {
 	}
 }
 
+// TestFlushConfirmedCursor verifies that flushConfirmedCursor retains the dirty
+// flag on saveState failure and clears it on success.
+func TestFlushConfirmedCursor_RetainsOnErrorClearsOnSuccess(t *testing.T) {
+	s := newMockStore()
+	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
+
+	// Seed one group so saveState has actual data to write.
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us"}
+	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	o.lastConfirmedTimestamp["group1@g.us"] = ts
+
+	// Inject a SetState error so saveState will fail.
+	s.setStateErr = errors.New("mysql write error")
+	o.confirmedCursorDirty.Store(true)
+
+	// Flush should fail and leave dirty=true.
+	if err := o.flushConfirmedCursor(context.Background()); err == nil {
+		t.Error("flushConfirmedCursor() error = nil, want non-nil on saveState failure")
+	}
+	if !o.confirmedCursorDirty.Load() {
+		t.Error("confirmedCursorDirty = false after failed flush, want true (retry pending)")
+	}
+
+	// Clear the error; next flush should succeed.
+	s.setStateErr = nil
+
+	if err := o.flushConfirmedCursor(context.Background()); err != nil {
+		t.Errorf("flushConfirmedCursor() error = %v, want nil on saveState success", err)
+	}
+	if o.confirmedCursorDirty.Load() {
+		t.Error("confirmedCursorDirty = true after successful flush, want false")
+	}
+}
+
+// TestFlushConfirmedCursor_NoopWhenClean verifies that a clean (not-dirty) call
+// is a no-op and does not write to the store.
+func TestFlushConfirmedCursor_NoopWhenClean(t *testing.T) {
+	s := newMockStore()
+	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
+	o.confirmedCursorDirty.Store(false)
+
+	if err := o.flushConfirmedCursor(context.Background()); err != nil {
+		t.Errorf("flushConfirmedCursor() error = %v, want nil when not dirty", err)
+	}
+	if len(s.setStateCalls) != 0 {
+		t.Errorf("SetState called %d times on clean flush, want 0", len(s.setStateCalls))
+	}
+}
+
 // --- MAX_CONCURRENT Tests ---
 
 // mockQueueWithActiveCount extends mockQueue with a configurable ActiveCount return.
@@ -826,6 +917,121 @@ func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "check active count") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "check active count")
+	}
+}
+
+// TestClaimSandboxSlot_LoserReturnsNilFalse verifies that:
+//   - The first claim on a JID succeeds (non-nil release, true).
+//   - A second concurrent claim for the same JID loses (nil, false).
+//   - After the first release, a new claim succeeds (entry was deleted).
+//   - Calling release() twice is a no-op and does not panic.
+func TestClaimSandboxSlot_LoserReturnsNilFalse(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	o, err := New(cfg, s, q, &mockIPCBroker{}, nil, channel.NewRegistry(), slog.Default())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	const jid = "group-slot@g.us"
+
+	// First claim wins.
+	release1, ok := o.claimSandboxSlot(jid)
+	if !ok {
+		t.Fatal("first claimSandboxSlot returned ok=false, want true")
+	}
+	if release1 == nil {
+		t.Fatal("first claimSandboxSlot returned nil release, want non-nil")
+	}
+
+	// Second claim loses.
+	release2, ok := o.claimSandboxSlot(jid)
+	if ok {
+		t.Error("second claimSandboxSlot returned ok=true, want false")
+	}
+	if release2 != nil {
+		t.Error("second claimSandboxSlot returned non-nil release, want nil")
+	}
+
+	// Release the first claim; entry should be deleted.
+	release1()
+
+	// Third claim wins again (entry was deleted by release).
+	release3, ok := o.claimSandboxSlot(jid)
+	if !ok {
+		t.Fatal("third claimSandboxSlot returned ok=false after release, want true")
+	}
+	if release3 == nil {
+		t.Fatal("third claimSandboxSlot returned nil release after release, want non-nil")
+	}
+
+	// Calling release1 a second time must be a no-op (sync.Once idempotency).
+	release1() // must not panic
+
+	release3()
+}
+
+// TestMaxConcurrent_InflightSlotsCountedInAdmission verifies that sandboxes
+// already in-flight for *other* groups count towards the MAX_CONCURRENT gate.
+func TestMaxConcurrent_InflightSlotsCountedInAdmission(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueueWithActiveCount{
+		mockQueue:   mockQueue{active: make(map[string]bool)},
+		activeCount: 1, // one group already active in MySQL
+	}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group2@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{}
+
+	cfg := &config.Config{
+		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
+		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 2},
+		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
+	}
+	log := slog.Default()
+	reg := channel.NewRegistry()
+	o, err := New(cfg, s, mq, b, nil, reg, log)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	o.sandbox = sb
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	// Register the group and queue a pending message.
+	o.registeredGroups["group2@g.us"] = store.Group{
+		JID: "group2@g.us", Folder: "test-group2", IsMain: true,
+	}
+	s.messages["group2@g.us"] = []store.Message{
+		{ChatJID: "group2@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	// Pre-populate inflightSandboxes with a *different* JID so others=1.
+	o.inflightSandboxes.Store("other@g.us", struct{}{})
+
+	// Claim slot for our group (as production does before calling processGroupMessages).
+	releaseSlot, ok := o.claimSandboxSlot("group2@g.us")
+	if !ok {
+		t.Fatal("failed to claim sandbox slot for test group")
+	}
+	defer releaseSlot()
+
+	// activeCount(1) + others(1) >= MaxConcurrent(2) → should skip CreateSandbox.
+	spawned, err := o.processGroupMessages(context.Background(), "group2@g.us", func() {})
+	if err != nil {
+		t.Fatalf("processGroupMessages() error = %v, want nil", err)
+	}
+	if spawned {
+		t.Error("processGroupMessages() returned spawned=true, want false (at MAX_CONCURRENT)")
+	}
+	if sb.createCalled.Load() {
+		t.Error("CreateSandbox was called, want skipped when inflight others fill the limit")
 	}
 }
 
@@ -2774,1365 +2980,281 @@ func TestWatchGroupOutput_ReconnectUsesGroupFolder(t *testing.T) {
 	}
 }
 
-// --- Double-Sandbox TOCTOU Fix Tests ---
+// --- executeScheduledTask tests ---
 
-// TestClaimSandboxSlot_AtomicClaimAndRelease is a unit test for the
-// claimSandboxSlot helper. It verifies atomic claim semantics: one winner per
-// chatJID, no collisions across different JIDs, and release restores availability.
-func TestClaimSandboxSlot_AtomicClaimAndRelease(t *testing.T) {
-	o := &Orchestrator{}
+func TestExecuteScheduledTask_StoresPromptThenEnqueues(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
 
-	// First claim wins.
-	release, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("first claimSandboxSlot() = false, want true")
-	}
-	if release == nil {
-		t.Fatal("first claimSandboxSlot() release = nil, want non-nil")
+	task := store.ScheduledTask{
+		ID:      "task-abc",
+		ChatJID: "test-group@g.us",
+		Prompt:  "Run daily report",
 	}
 
-	// Second claim for same JID must be rejected.
-	_, ok2 := o.claimSandboxSlot("group1@g.us")
-	if ok2 {
-		t.Error("second claimSandboxSlot() = true, want false (slot already held)")
+	if err := o.executeScheduledTask(context.Background(), task); err != nil {
+		t.Fatalf("executeScheduledTask: unexpected error: %v", err)
 	}
 
-	// Different JID must not collide with the held slot.
-	release2, ok3 := o.claimSandboxSlot("group2@g.us")
-	if !ok3 {
-		t.Error("claimSandboxSlot() for different JID = false, want true")
+	if !s.storeMessageCalled {
+		t.Fatal("StoreMessage was not called")
 	}
-	if release2 != nil {
-		release2()
+	if s.storeMessageCalledWith == nil {
+		t.Fatal("storeMessageCalledWith is nil")
 	}
-
-	// After release, the same JID is claimable again.
-	release()
-	release3, ok4 := o.claimSandboxSlot("group1@g.us")
-	if !ok4 {
-		t.Error("claimSandboxSlot() after release = false, want true")
+	got := s.storeMessageCalledWith
+	if got.ID == "" || got.ID == task.ID {
+		t.Errorf("stored message ID = %q: want a fresh UUID (non-empty, not equal to task.ID %q)", got.ID, task.ID)
 	}
-	if release3 != nil {
-		release3()
+	if got.ChatJID != task.ChatJID {
+		t.Errorf("stored message ChatJID = %q, want %q", got.ChatJID, task.ChatJID)
+	}
+	if got.Content != task.Prompt {
+		t.Errorf("stored message Content = %q, want %q", got.Content, task.Prompt)
+	}
+	if got.Sender != "scheduler" {
+		t.Errorf("stored message Sender = %q, want %q", got.Sender, "scheduler")
+	}
+	if got.SenderName != "Scheduled Task" {
+		t.Errorf("stored message SenderName = %q, want %q", got.SenderName, "Scheduled Task")
+	}
+	if !q.enqueueCalled {
+		t.Fatal("Enqueue was not called after StoreMessage succeeded")
+	}
+	if q.enqueueMsg == nil {
+		t.Fatal("enqueueMsg is nil")
+	}
+	if q.enqueueMsg.GroupJID != task.ChatJID {
+		t.Errorf("enqueueMsg.GroupJID = %q, want %q", q.enqueueMsg.GroupJID, task.ChatJID)
+	}
+	if q.enqueueMsg.Content != task.Prompt {
+		t.Errorf("enqueued content = %q, want %q", q.enqueueMsg.Content, task.Prompt)
+	}
+	if q.enqueueMsg.TaskID != task.ID {
+		t.Errorf("enqueued TaskID = %q, want %q", q.enqueueMsg.TaskID, task.ID)
+	}
+	if !q.enqueueMsg.IsTask {
+		t.Error("enqueued IsTask = false, want true")
 	}
 }
 
-// waitSlotReleased polls o.inflightSandboxes until jid is absent or timeout
-// elapses. Uses a ticker to avoid busy-wait under -race.
-func waitSlotReleased(t *testing.T, o *Orchestrator, jid string, timeout time.Duration) {
+func TestExecuteScheduledTask_StoreFailureShortCircuitsEnqueue(t *testing.T) {
+	s := newMockStore()
+	s.storeMessageErr = errors.New("db down")
+	q := newMockQueue()
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	task := store.ScheduledTask{
+		ID:      "task-xyz",
+		ChatJID: "test-group@g.us",
+		Prompt:  "Morning standup",
+	}
+
+	err := o.executeScheduledTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, s.storeMessageErr) {
+		t.Errorf("error does not wrap store error: %v", err)
+	}
+	if q.enqueueCalled {
+		t.Error("Enqueue was called despite StoreMessage failure")
+	}
+}
+
+func TestExecuteScheduledTask_UTCEnforced(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	task := store.ScheduledTask{
+		ID:      "task-utc",
+		ChatJID: "utc-group@g.us",
+		Prompt:  "UTC check",
+	}
+
+	before := time.Now().UTC()
+	if err := o.executeScheduledTask(context.Background(), task); err != nil {
+		t.Fatalf("executeScheduledTask: unexpected error: %v", err)
+	}
+	after := time.Now().UTC()
+
+	if s.storeMessageCalledWith == nil {
+		t.Fatal("storeMessageCalledWith is nil")
+	}
+	storedTS := s.storeMessageCalledWith.Timestamp
+	if storedTS.Location() != time.UTC {
+		t.Errorf("stored message timestamp location = %v, want UTC", storedTS.Location())
+	}
+	if storedTS.Before(before) || storedTS.After(after) {
+		t.Errorf("stored message timestamp %v outside [%v, %v]", storedTS, before, after)
+	}
+
+	if q.enqueueMsg == nil {
+		t.Fatal("enqueueMsg is nil")
+	}
+	enqueuedTS := q.enqueueMsg.Timestamp
+	if enqueuedTS.Location() != time.UTC {
+		t.Errorf("enqueued message timestamp location = %v, want UTC", enqueuedTS.Location())
+	}
+	if enqueuedTS != storedTS {
+		t.Errorf("enqueued timestamp %v != stored timestamp %v (must use same now)", enqueuedTS, storedTS)
+	}
+}
+
+func TestScheduledTaskPromptReachesAgentFormatting(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	rtr, err := router.New(nil, s)
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+
+	task := store.ScheduledTask{
+		ID:      "task-format",
+		ChatJID: "format-group@g.us",
+		Prompt:  "Weekly summary: please report.",
+	}
+
+	if err := o.executeScheduledTask(context.Background(), task); err != nil {
+		t.Fatalf("executeScheduledTask: %v", err)
+	}
+
+	msgs, err := s.GetMessagesSince(context.Background(), task.ChatJID, time.Time{}, 100)
+	if err != nil {
+		t.Fatalf("GetMessagesSince: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("GetMessagesSince returned %d messages, want 1", len(msgs))
+	}
+
+	formatted := rtr.FormatMessagesForAgent(msgs, "TestBot")
+	if !strings.Contains(formatted, task.Prompt) {
+		t.Errorf("formatted output does not contain task prompt %q:\n%s", task.Prompt, formatted)
+	}
+	if !strings.Contains(formatted, "Scheduled Task") {
+		t.Errorf("formatted output does not contain sender name %q:\n%s", "Scheduled Task", formatted)
+	}
+}
+
+func TestExecuteScheduledTask_EnqueueFailureCompensates(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	enqueueErr := errors.New("nats unavailable")
+	q.enqueueErr = enqueueErr
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	task := store.ScheduledTask{
+		ID:      "task-enq-fail",
+		ChatJID: "group-enq@g.us",
+		Prompt:  "Compensating delete test",
+	}
+
+	err := o.executeScheduledTask(context.Background(), task)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, enqueueErr) {
+		t.Errorf("error = %v, want it to wrap enqueueErr", err)
+	}
+	if !s.deleteMessageCalled {
+		t.Error("DeleteMessage was not called after enqueue failure")
+	}
+	if s.deleteMessageArgs.ChatJID != task.ChatJID {
+		t.Errorf("DeleteMessage chatJID = %q, want %q", s.deleteMessageArgs.ChatJID, task.ChatJID)
+	}
+	if s.storeMessageCalledWith == nil {
+		t.Fatal("StoreMessage was not called")
+	}
+	if s.deleteMessageArgs.ID != s.storeMessageCalledWith.ID {
+		t.Errorf("DeleteMessage ID = %q, want stored message ID %q", s.deleteMessageArgs.ID, s.storeMessageCalledWith.ID)
+	}
+	if len(s.messages[task.ChatJID]) != 0 {
+		t.Errorf("messages[%q] has %d entries after compensating delete, want 0", task.ChatJID, len(s.messages[task.ChatJID]))
+	}
+}
+
+func TestExecuteScheduledTask_EnqueueFailureCleanupAlsoFails(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	enqueueErr := errors.New("nats unavailable")
+	cleanupErr := errors.New("mysql gone")
+	q.enqueueErr = enqueueErr
+	s.deleteMessageErr = cleanupErr
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	o := newTestOrchestratorWithLogger(s, q, &mockIPCBroker{}, logger)
+
+	task := store.ScheduledTask{
+		ID:      "task-double-fail",
+		ChatJID: "group-df@g.us",
+		Prompt:  "Double failure test",
+	}
+
+	err := o.executeScheduledTask(context.Background(), task)
+	if !errors.Is(err, enqueueErr) {
+		t.Errorf("error = %v, want it to wrap enqueueErr", err)
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "compensating delete also failed") {
+		t.Errorf("error string missing cleanup fragment: %s", errStr)
+	}
+	if !strings.Contains(errStr, cleanupErr.Error()) {
+		t.Errorf("error string missing cleanupErr text: %s", errStr)
+	}
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "enqueue_error") {
+		t.Errorf("log output missing enqueue_error field:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "cleanup_error") {
+		t.Errorf("log output missing cleanup_error field:\n%s", logOutput)
+	}
+}
+
+func TestExecuteScheduledTask_RecurringTaskWritesDistinctRows(t *testing.T) {
+	s := newMockStore()
+	q := newMockQueue()
+	o := newTestOrchestrator(s, q, &mockIPCBroker{})
+
+	task := store.ScheduledTask{
+		ID:      "task-recurring",
+		ChatJID: "group-rec@g.us",
+		Prompt:  "Daily digest",
+	}
+
+	if err := o.executeScheduledTask(context.Background(), task); err != nil {
+		t.Fatalf("first firing: %v", err)
+	}
+	if err := o.executeScheduledTask(context.Background(), task); err != nil {
+		t.Fatalf("second firing: %v", err)
+	}
+
+	msgs := s.messages[task.ChatJID]
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 rows in messages[%q], got %d", task.ChatJID, len(msgs))
+	}
+	if msgs[0].ID == msgs[1].ID {
+		t.Errorf("both firings wrote the same message ID %q — recurring task overwrites history", msgs[0].ID)
+	}
+	if msgs[0].Content != task.Prompt || msgs[1].Content != task.Prompt {
+		t.Errorf("message content mismatch: got %q and %q, want %q", msgs[0].Content, msgs[1].Content, task.Prompt)
+	}
+}
+
+// waitSlotReleased polls inflightSandboxes until chatJID is absent (the
+// in-flight slot was released) or the deadline is reached.
+func waitSlotReleased(t *testing.T, o *Orchestrator, chatJID string, timeout time.Duration) {
 	t.Helper()
-	tick := time.NewTicker(5 * time.Millisecond)
-	defer tick.Stop()
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	for {
-		select {
-		case <-tick.C:
-			if _, held := o.inflightSandboxes.Load(jid); !held {
-				return
-			}
-		case <-deadline.C:
-			t.Errorf("in-flight slot for %q was not released within %v", jid, timeout)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, loaded := o.inflightSandboxes.Load(chatJID); !loaded {
 			return
 		}
+		time.Sleep(5 * time.Millisecond)
 	}
-}
-
-// TestPollMessages_PanicReleasesSlot verifies that a panic inside
-// processGroupMessages still releases the in-flight slot via the deferred
-// release() in the spawn goroutine's defer stack.
-func TestPollMessages_PanicReleasesSlot(t *testing.T) {
-	s := newMockStore()
-	q := newMockQueue()
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
-
-	// Inject a panic via store hook — fires inside processGroupMessages.
-	s.getMessagesSinceHook = func() { panic("injected panic for slot-release test") }
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	s.groups = append(s.groups, group)
-	o.registeredGroups["group1@g.us"] = group
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	o.pollMessages(context.Background())
-
-	// Allow the spawned goroutine to run, panic, recover, and release the slot.
-	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
-
-	// The panic fired inside GetMessagesSince — before MarkActive — so the group
-	// was never inserted into activeSandboxes. With the wasActive guard, the panic handler
-	// skips MarkInactive and must not leave a stale activeSandboxes entry.
-	o.mu.Lock()
-	_, inActive := o.activeSandboxes["group1@g.us"]
-	o.mu.Unlock()
-	if inActive {
-		t.Error("activeSandboxes still contains group1@g.us after pre-MarkActive panic; handler should have skipped cleanup")
-	}
-}
-
-// mockSandboxWithGate is a sandbox mock that supports an atomic call counter and
-// a synchronisation gate so concurrent spawn tests can inspect in-progress state.
-type mockSandboxWithGate struct {
-	createCount    atomic.Int32
-	createErr      error
-	createDoneOnce sync.Once
-	// If createStarted is non-nil, it is signalled before createGate is waited on.
-	createStarted chan struct{}
-	// If createGate is non-nil, CreateSandbox blocks until the gate is closed.
-	createGate chan struct{}
-	// If createDone is non-nil, it is closed when CreateSandbox returns.
-	// Protected by createDoneOnce to prevent a double-close channel panic if
-	// CreateSandbox is called more than once (which is itself a test failure, but
-	// the panic would mask the real assertion).
-	createDone chan struct{}
-}
-
-func (m *mockSandboxWithGate) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
-	if m.createDone != nil {
-		defer m.createDoneOnce.Do(func() { close(m.createDone) })
-	}
-	m.createCount.Add(1)
-	if m.createStarted != nil {
-		select {
-		case m.createStarted <- struct{}{}:
-		default:
-		}
-	}
-	if m.createGate != nil {
-		<-m.createGate
-	}
-	if m.createErr != nil {
-		return nil, m.createErr
-	}
-	return &sandbox.SandboxStatus{Name: "test-sandbox", State: sandbox.StatePending}, nil
-}
-func (m *mockSandboxWithGate) StopSandbox(_ context.Context, _ string) error { return nil }
-func (m *mockSandboxWithGate) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
-	return false, nil
-}
-func (m *mockSandboxWithGate) CleanupOrphans(_ context.Context) error { return nil }
-func (m *mockSandboxWithGate) WatchSandboxes(_ context.Context) (<-chan sandbox.SandboxEvent, error) {
-	return make(chan sandbox.SandboxEvent), nil
-}
-
-// TestPollMessages_ConcurrentSpawn_SingleSandbox is the primary regression test
-// for the double-sandbox TOCTOU. It verifies that two concurrent pollMessages
-// calls for the same group result in exactly one CreateSandbox call, even when
-// the first goroutine is still inside processGroupMessages when the second poll
-// fires.
-func TestPollMessages_ConcurrentSpawn_SingleSandbox(t *testing.T) {
-	s := newMockStore()
-	mq := &mockQueueWithActiveCount{
-		mockQueue:   mockQueue{active: make(map[string]bool)},
-		activeCount: 0,
-	}
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-
-	createStarted := make(chan struct{}, 1)
-	createGate := make(chan struct{})
-	createDone := make(chan struct{})
-	sb := &mockSandboxWithGate{
-		createStarted: createStarted,
-		createGate:    createGate,
-		createDone:    createDone,
-	}
-
-	cfg := &config.Config{
-		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
-		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
-		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
-	}
-	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	o.sandbox = sb
-	rtr, _ := router.New([]channel.Channel{ch}, s)
-	o.router = rtr
-	o.auth = auth.New(s)
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	// Seed both the store (for refreshGroups) and the in-memory map.
-	s.groups = append(s.groups, group)
-	o.registeredGroups["group1@g.us"] = group
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	// First pollMessages: wins the claim, spawns a goroutine that blocks in CreateSandbox.
-	o.pollMessages(context.Background())
-
-	// Wait until the first goroutine has entered CreateSandbox (slot is still held).
-	select {
-	case <-createStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for first goroutine to reach CreateSandbox")
-	}
-
-	// Second pollMessages: the in-flight slot is already held — must skip.
-	o.pollMessages(context.Background())
-
-	// Unblock the first goroutine.
-	close(createGate)
-
-	// Wait for CreateSandbox to return. Note: defer release() fires only after
-	// processGroupMessages returns entirely (MarkActive, SubscribeOutput, etc.
-	// still run after CreateSandbox). waitSlotReleased polls until the slot is
-	// gone rather than assuming release() is immediate after createDone.
-	select {
-	case <-createDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for first goroutine to finish CreateSandbox")
-	}
-	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
-
-	if got := sb.createCount.Load(); got != 1 {
-		t.Errorf("CreateSandbox called %d times, want 1", got)
-	}
-}
-
-// TestMaxConcurrent_IncludesInflight verifies that in-flight spawns for OTHER
-// groups count toward the MaxConcurrent limit, closing the cross-group TOCTOU
-// between ActiveCount() and MarkActive().
-func TestMaxConcurrent_IncludesInflight(t *testing.T) {
-	s := newMockStore()
-	// One group is already committed-active.
-	mq := &mockQueueWithActiveCount{
-		mockQueue:   mockQueue{active: make(map[string]bool)},
-		activeCount: 1,
-	}
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	sb := &mockSandboxControllerWithTracking{}
-
-	const maxConcurrent = 3
-	cfg := &config.Config{
-		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
-		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: maxConcurrent},
-		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
-	}
-	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	o.sandbox = sb
-	rtr, _ := router.New([]channel.Channel{ch}, s)
-	o.router = rtr
-	o.auth = auth.New(s)
-
-	o.registeredGroups["group1@g.us"] = store.Group{
-		JID: "group1@g.us", Folder: "test-group", IsMain: true,
-	}
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
-	}
-	// processGroupMessages is called directly; no need to seed s.groups.
-
-	// Pre-seed inflightSandboxes with (maxConcurrent - 1) OTHER groups so that
-	// activeCount(1) + inflight(maxConcurrent-1) == maxConcurrent.
-	// Range excludes own JID, so others = maxConcurrent-1 = 2.
-	// activeCount(1) + others(2) = maxConcurrent(3) → must skip CreateSandbox.
-	for i := range maxConcurrent - 1 {
-		o.inflightSandboxes.Store(fmt.Sprintf("other%d@g.us", i), struct{}{})
-	}
-	// Also claim the slot for the group under test (as pollMessages would do).
-	release, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("failed to claim sandbox slot for test group")
-	}
-	defer release()
-
-	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
-	if err != nil {
-		t.Fatalf("processGroupMessages() error = %v, want nil", err)
-	}
-	if sb.createCalled.Load() {
-		t.Error("CreateSandbox was called, want skipped: activeCount+inflight >= MaxConcurrent")
-	}
-}
-
-// TestDeactivateRecovery_TakesSlotWhenFree is the positive companion to
-// TestDeactivateRecovery_SkipsWhenSlotHeld. It verifies that when the slot is
-// NOT pre-held, the recovery goroutine claims it (the slot is present in
-// inflightSandboxes while processGroupMessages is running) and releases it
-// when the recovery goroutine exits, via defer release() wrapping the
-// processGroupMessages call inside the spawned goroutine.
-func TestDeactivateRecovery_TakesSlotWhenFree(t *testing.T) {
-	s := newMockStore()
-	q := newMockQueue()
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-	q.active["group1@g.us"] = true
-
-	// Seed a pending message so the recovery path fires.
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "pending", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	var slotHeldDuringRecovery atomic.Bool
-	var callCount atomic.Int32
-	recoveryEntered := make(chan struct{}, 1)
-	s.getMessagesSinceHook = func() {
-		if callCount.Add(1) < 2 {
-			return // first call is deactivate()'s own pending check
-		}
-		if _, held := o.inflightSandboxes.Load("group1@g.us"); held {
-			slotHeldDuringRecovery.Store(true)
-		}
-		select {
-		case recoveryEntered <- struct{}{}:
-		default:
-		}
-	}
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	select {
-	case <-recoveryEntered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("recovery goroutine was not spawned")
-	}
-	if !slotHeldDuringRecovery.Load() {
-		t.Error("slot was NOT held during recovery goroutine execution")
-	}
-	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
-}
-
-// TestDeactivateRecovery_SkipsWhenSlotHeld verifies that when the
-// watchGroupOutput recovery goroutine tries to spawn a processGroupMessages call
-// but the in-flight slot is already held, it skips rather than spawning a second
-// concurrent goroutine for the same group.
-func TestDeactivateRecovery_SkipsWhenSlotHeld(t *testing.T) {
-	s := newMockStore()
-	q := newMockQueue()
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-	q.active["group1@g.us"] = true
-
-	// Seed a pending message so the recovery path would normally fire.
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "pending", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	// Track whether processGroupMessages was entered (second GetMessagesSince call).
-	var callCount atomic.Int32
-	recoveryEntered := make(chan struct{}, 1)
-	s.getMessagesSinceHook = func() {
-		if callCount.Add(1) < 2 {
-			return // first call is deactivate()'s own pending check
-		}
-		select {
-		case recoveryEntered <- struct{}{}:
-		default:
-		}
-	}
-
-	// Pre-claim the slot BEFORE watchGroupOutput can claim it.
-	release, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("failed to pre-claim sandbox slot")
-	}
-	defer release()
-
-	// Close IPC channel to trigger deactivate + recovery path.
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	// Recovery goroutine must have been skipped — no second GetMessagesSince call.
-	// The slot claim fails, so the recovery goroutine is never spawned.
-	// callCount reflects only the synchronous pending-check call.
-	if got := callCount.Load(); got != 1 {
-		t.Errorf("GetMessagesSince called %d times, want 1 (recovery goroutine must have been skipped)", got)
-	}
-	// Drain recoveryEntered in case of a latent send from a scheduler-paused goroutine.
-	select {
-	case <-recoveryEntered:
-		t.Error("recovery goroutine was spawned despite pre-held in-flight slot")
-	default:
-	}
-}
-
-// TestDeactivateRecovery_ReenqueuesDequeuedMsgWhenSlotHeld verifies that when
-// the in-flight slot is already held and a non-nil qMsg was dequeued, the
-// message is re-enqueued so it is not silently lost.
-func TestDeactivateRecovery_ReenqueuesDequeuedMsgWhenSlotHeld(t *testing.T) {
-	s := newMockStore()
-	mq := &mockQueueRecording{mockQueue: newMockQueue()}
-	mq.active["group1@g.us"] = true
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	// Build the orchestrator with the base mock, then replace queue with the recording wrapper.
-	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
-	o.queue = mq
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-
-	// Arrange for Dequeue to return a non-nil message once.
-	mq.dequeueOnce = &queue.QueueMessage{GroupJID: "group1@g.us", Content: "task payload", IsTask: true}
-
-	// Track processGroupMessages spawns (second GetMessagesSince call).
-	var callCount atomic.Int32
-	recoveryEntered := make(chan struct{}, 1)
-	s.getMessagesSinceHook = func() {
-		if callCount.Add(1) < 2 {
-			return // first call is deactivate()'s own pending check
-		}
-		select {
-		case recoveryEntered <- struct{}{}:
-		default:
-		}
-	}
-
-	// Pre-claim the slot so the recovery goroutine cannot claim it.
-	release, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("failed to pre-claim sandbox slot")
-	}
-	defer release()
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	// Enqueue must have been called exactly once (to re-enqueue the dequeued message).
-	if got := mq.count(); got != 1 {
-		t.Errorf("Enqueue called %d times, want 1 (dequeued message must be re-enqueued)", got)
-	}
-	// processGroupMessages must NOT have been spawned.
-	select {
-	case <-recoveryEntered:
-		t.Error("recovery goroutine was spawned despite pre-held in-flight slot")
-	default:
-	}
-}
-
-// TestDeactivateRecovery_ReenqueueErrorLoggedAndMessageLost verifies that when
-// re-enqueueing a dequeued message fails, the error is absorbed (not propagated)
-// and processGroupMessages is still not spawned.
-func TestDeactivateRecovery_ReenqueueErrorLoggedAndMessageLost(t *testing.T) {
-	s := newMockStore()
-	mq := &mockQueueRecording{
-		mockQueue:  newMockQueue(),
-		enqueueErr: errors.New("enqueue failure"),
-	}
-	mq.active["group1@g.us"] = true
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	// Build the orchestrator with the base mock, then replace queue with the recording wrapper.
-	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
-	o.queue = mq
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-
-	mq.dequeueOnce = &queue.QueueMessage{GroupJID: "group1@g.us", Content: "task payload", IsTask: true}
-
-	var callCount atomic.Int32
-	recoveryEntered := make(chan struct{}, 1)
-	s.getMessagesSinceHook = func() {
-		if callCount.Add(1) < 2 {
-			return // first call is deactivate()'s own pending check
-		}
-		select {
-		case recoveryEntered <- struct{}{}:
-		default:
-		}
-	}
-
-	release, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("failed to pre-claim sandbox slot")
-	}
-	defer release()
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-
-	// Must not deadlock or panic despite Enqueue returning an error.
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	// processGroupMessages must NOT have been spawned.
-	select {
-	case <-recoveryEntered:
-		t.Error("recovery goroutine was spawned despite pre-held in-flight slot")
-	default:
-	}
-}
-
-// TestDeactivate_EmptyQueueSkipsRecovery verifies that when Dequeue returns
-// (nil, nil) on every attempt and there are no pending MySQL messages,
-// deactivate() does NOT spawn a recovery goroutine. The recovery gate
-// (len(pending) > 0 || qMsg != nil || pendingCheckFailed) must remain false
-// when the queue is genuinely empty.
-func TestDeactivate_EmptyQueueSkipsRecovery(t *testing.T) {
-	s := newMockStore()
-	mq := &mockQueueRecording{mockQueue: newMockQueue()}
-	mq.active["group1@g.us"] = true
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
-	o.queue = mq
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-	// No pending MySQL messages and Dequeue always returns (nil, nil) — empty queue.
-
-	var callCount atomic.Int32
-	recoveryEntered := make(chan struct{}, 1)
-	s.getMessagesSinceHook = func() {
-		if callCount.Add(1) < 2 {
-			return
-		}
-		select {
-		case recoveryEntered <- struct{}{}:
-		default:
-		}
-	}
-
-	// Close IPC channel to trigger deactivate. Dequeue always returns (nil, nil)
-	// by default, so all 5 retries will be exhausted — queue is empty, no recovery.
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	select {
-	case <-recoveryEntered:
-		t.Fatal("recovery goroutine was spawned despite empty queue (exhaustion must not trigger recovery)")
-	case <-time.After(100 * time.Millisecond):
-		// expected: no recovery goroutine spawned
-	}
-	if got := callCount.Load(); got != 1 {
-		t.Errorf("GetMessagesSince called %d times, want 1 (only deactivate's own pending check)", got)
-	}
-}
-
-// TestMaxConcurrent_ExcludesOwnJID is a regression guard for the jid != chatJID
-// guard inside the inflightSandboxes.Range call. If that guard were removed,
-// the group under test would count itself among "others" and the total would
-// reach MaxConcurrent, suppressing CreateSandbox. With the guard in place,
-// others == 1 (the foreign JID), 0+1 < 2 == MaxConcurrent, and CreateSandbox
-// IS called.
-func TestMaxConcurrent_ExcludesOwnJID(t *testing.T) {
-	s := newMockStore()
-	// activeCount = 0, MaxConcurrent = 2. One OTHER group is in-flight.
-	// The group under test claims its own slot. With correct own-JID exclusion:
-	//   others = 1, activeCount = 0 → total = 1 < 2 → CreateSandbox called.
-	// Without own-JID exclusion:
-	//   others = 2, activeCount = 0 → total = 2 >= 2 → CreateSandbox skipped.
-	mq := &mockQueueWithActiveCount{
-		mockQueue:   mockQueue{active: make(map[string]bool)},
-		activeCount: 0,
-	}
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	sb := &mockSandboxControllerWithTracking{}
-
-	const maxConcurrent = 2
-	cfg := &config.Config{
-		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
-		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: maxConcurrent},
-		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
-	}
-	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	o.sandbox = sb
-	rtr, _ := router.New([]channel.Channel{ch}, s)
-	o.router = rtr
-	o.auth = auth.New(s)
-
-	o.registeredGroups["group1@g.us"] = store.Group{
-		JID: "group1@g.us", Folder: "test-group", IsMain: true,
-	}
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	// Pre-seed one OTHER group in inflightSandboxes.
-	o.inflightSandboxes.Store("other1@g.us", struct{}{})
-
-	// Claim the slot for the group under test (as pollMessages would do).
-	release, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("failed to claim sandbox slot for test group")
-	}
-	defer release()
-
-	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
-	if err != nil {
-		t.Fatalf("processGroupMessages() error = %v, want nil", err)
-	}
-	if !sb.createCalled.Load() {
-		t.Error("CreateSandbox was NOT called; own-JID exclusion guard may be broken")
-	}
-}
-
-// TestDeactivateRecovery_DequeueErrorTriggersRecovery verifies that when Dequeue
-// fails during the deactivate() check, the error is treated as a defensive trigger
-// for recovery (pendingCheckFailed = true) so the re-enqueue / respawn path runs
-// rather than silently dropping any work sitting in the NATS queue.
-func TestDeactivateRecovery_DequeueErrorTriggersRecovery(t *testing.T) {
-	s := newMockStore()
-	mq := &mockQueueRecording{
-		mockQueue:  newMockQueue(),
-		dequeueErr: errors.New("NATS transient error"),
-	}
-	mq.active["group1@g.us"] = true
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
-	o.queue = mq
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-
-	// Track whether the recovery goroutine was spawned (second GetMessagesSince call).
-	var callCount atomic.Int32
-	var slotHeldDuringRecovery atomic.Bool
-	recoveryEntered := make(chan struct{}, 1)
-	s.getMessagesSinceHook = func() {
-		if callCount.Add(1) < 2 {
-			return // first call is deactivate()'s own pending check
-		}
-		if _, held := o.inflightSandboxes.Load("group1@g.us"); held {
-			slotHeldDuringRecovery.Store(true)
-		}
-		select {
-		case recoveryEntered <- struct{}{}:
-		default:
-		}
-	}
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	select {
-	case <-recoveryEntered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("recovery goroutine was not spawned after Dequeue error")
-	}
-	if !slotHeldDuringRecovery.Load() {
-		t.Error("slot was NOT held during recovery goroutine execution")
-	}
-	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
-}
-
-// TestDeactivateRecovery_PendingCheckFailedAndSlotHeld covers the combined path
-// where Dequeue fails (triggering pendingCheckFailed = true) AND the in-flight
-// slot is already held. Expects: no recovery goroutine is spawned (callCount == 1
-// from deactivate()'s own pending-check call), and the recoveryEntered channel
-// remains empty.
-func TestDeactivateRecovery_PendingCheckFailedAndSlotHeld(t *testing.T) {
-	s := newMockStore()
-	mq := &mockQueueRecording{
-		mockQueue:  newMockQueue(),
-		dequeueErr: errors.New("NATS transient error"),
-	}
-	mq.active["group1@g.us"] = true
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
-	o.queue = mq
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-
-	// Pre-claim the slot so the recovery path sees it as in-flight.
-	preRelease, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("failed to pre-claim sandbox slot")
-	}
-	defer preRelease()
-
-	// Track calls into GetMessagesSince to confirm no second (recovery) call.
-	var callCount atomic.Int32
-	recoveryEntered := make(chan struct{}, 1)
-	s.getMessagesSinceHook = func() {
-		if callCount.Add(1) >= 2 {
-			select {
-			case recoveryEntered <- struct{}{}:
-			default:
-			}
-		}
-	}
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	// Give a moment for any unexpected goroutine to surface.
-	select {
-	case <-recoveryEntered:
-		t.Error("recovery goroutine was spawned despite slot being held")
-	case <-time.After(100 * time.Millisecond):
-		// expected: no recovery goroutine
-	}
-
-	if got := callCount.Load(); got != 1 {
-		t.Errorf("GetMessagesSince called %d times, want 1 (only deactivate's own check)", got)
-	}
-}
-
-// TestDeactivate_InactiveGroupSkipsCleanup verifies that deactivate() is a no-op
-// when IsActive returns false — MarkInactive must not be called and no recovery
-// goroutine must be spawned.
-func TestDeactivate_InactiveGroupSkipsCleanup(t *testing.T) {
-	s := newMockStore()
-	q := newMockQueue()
-	// q.active["group1@g.us"] deliberately NOT set — IsActive returns (false, nil).
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-
-	var callCount atomic.Int32
-	s.getMessagesSinceHook = func() { callCount.Add(1) }
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	if got := callCount.Load(); got != 0 {
-		t.Errorf("GetMessagesSince called %d times, want 0 (inactive group skips all cleanup)", got)
-	}
-	if q.active["group1@g.us"] {
-		t.Error("MarkInactive was called (active key set), want skipped")
-	}
-}
-
-// TestDeactivate_MarkInactiveFailureSkipsRecovery verifies that when MarkInactive
-// fails, deactivate() logs and returns early — the activeSandboxes entry is
-// preserved so handleSandboxEvent can retry cleanup, and no recovery goroutine
-// is spawned.
-func TestDeactivate_MarkInactiveFailureSkipsRecovery(t *testing.T) {
-	s := newMockStore()
-	q := newMockQueue()
-	q.active["group1@g.us"] = true
-	q.markInactiveErr = errors.New("db error")
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-
-	// Pre-seed activeSandboxes so we can verify it is NOT removed on MarkInactive failure.
-	o.mu.Lock()
-	o.activeSandboxes["group1@g.us"] = "test-sandbox-job"
-	o.mu.Unlock()
-
-	var callCount atomic.Int32
-	s.getMessagesSinceHook = func() { callCount.Add(1) }
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	if got := callCount.Load(); got != 0 {
-		t.Errorf("GetMessagesSince called %d times, want 0 (MarkInactive failure skips pending check)", got)
-	}
-	o.mu.Lock()
-	_, stillHeld := o.activeSandboxes["group1@g.us"]
-	o.mu.Unlock()
-	if !stillHeld {
-		t.Error("activeSandboxes entry was removed, want preserved so handleSandboxEvent can retry")
-	}
-}
-
-// TestDeactivate_IsActiveErrorProceedsWithCleanup verifies that when IsActive
-// returns an error in deactivate(), MarkInactive is skipped but the code still
-// reaches the pending-message check (GetMessagesSince is called), confirming
-// the IsActive error path falls through rather than returning early.
-func TestDeactivate_IsActiveErrorProceedsWithCleanup(t *testing.T) {
-	s := newMockStore()
-	q := newMockQueue()
-	q.active["group1@g.us"] = true
-	q.isActiveErr = errors.New("db error")
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-
-	var callCount atomic.Int32
-	s.getMessagesSinceHook = func() { callCount.Add(1) }
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	// GetMessagesSince must be called — the IsActive error path falls through
-	// rather than returning early; only MarkInactive is skipped.
-	if got := callCount.Load(); got == 0 {
-		t.Error("GetMessagesSince not called, want called (cursor rollback and recovery proceed on IsActive error)")
-	}
-	// MarkInactive must still be skipped to avoid inconsistent MySQL state.
-	if !q.active["group1@g.us"] {
-		t.Error("MarkInactive was called (active key deleted), want skipped on IsActive error")
-	}
-}
-
-// TestDeactivate_IsActiveError_RecoveryGoroutineSpawns is the positive companion
-// to TestDeactivate_IsActiveErrorProceedsWithCleanup. It verifies that when IsActive
-// errors AND there are pending messages, the recovery goroutine is actually spawned
-// and enters processGroupMessages (slot held during execution). The IsActive error
-// causes MarkInactive to be skipped but must not block the recovery path.
-func TestDeactivate_IsActiveError_RecoveryGoroutineSpawns(t *testing.T) {
-	s := newMockStore()
-	q := newMockQueue()
-	q.active["group1@g.us"] = true
-	q.isActiveErr = errors.New("db error") // forces IsActive error → fall-through path
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-
-	// Seed a pending message so len(pending) > 0 triggers the recovery goroutine.
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "pending", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	var slotHeldDuringRecovery atomic.Bool
-	var callCount atomic.Int32
-	recoveryEntered := make(chan struct{}, 1)
-	s.getMessagesSinceHook = func() {
-		if callCount.Add(1) < 2 {
-			return // first call is deactivate()'s own pending check
-		}
-		if _, held := o.inflightSandboxes.Load("group1@g.us"); held {
-			slotHeldDuringRecovery.Store(true)
-		}
-		select {
-		case recoveryEntered <- struct{}{}:
-		default:
-		}
-	}
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	select {
-	case <-recoveryEntered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("recovery goroutine was not spawned after IsActive error + pending messages")
-	}
-	if !slotHeldDuringRecovery.Load() {
-		t.Error("slot was NOT held during recovery goroutine execution")
-	}
-	// MarkInactive must be skipped since IsActive returned an error.
-	if !q.active["group1@g.us"] {
-		t.Error("MarkInactive was called (active key deleted), want skipped on IsActive error")
-	}
-	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
-}
-
-// countingQueue wraps mockQueue and counts MarkInactive invocations.
-type countingQueue struct {
-	*mockQueue
-	markInactiveCalls atomic.Int32
-}
-
-func (c *countingQueue) MarkInactive(ctx context.Context, groupJID string) error {
-	c.markInactiveCalls.Add(1)
-	return c.mockQueue.MarkInactive(ctx, groupJID)
-}
-
-// TestDeactivate_OnceGuardPreventsDoubleCleanup verifies that the sync.Once
-// wrapper inside deactivate() prevents MarkInactive from being called more than
-// once when two concurrent deactivate() triggers fire: the channel-close path
-// (normal) and the panic-recovery path (inside the recovery goroutine).
-func TestDeactivate_OnceGuardPreventsDoubleCleanup(t *testing.T) {
-	s := newMockStore()
-	inner := newMockQueue()
-	inner.active["group1@g.us"] = true
-	cq := &countingQueue{mockQueue: inner}
-
-	b := &mockIPCBroker{}
-	cfg := &config.Config{
-		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
-		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, RateLimitTokensPerSec: 1000, MaxMessageSizeBytes: 32768, MessageLimit: 500},
-		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
-	}
-	reg := channel.NewRegistry()
-	log := slog.Default()
-	o, err := New(cfg, s, cq, b, nil, reg, log)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	o.ipcReconnectDelays = []time.Duration{time.Millisecond, time.Millisecond}
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	s.groups = append(s.groups, group)
-	o.registeredGroups["group1@g.us"] = group
-
-	// Seed a message so deactivate's pending check finds work and spawns the
-	// recovery goroutine.
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	// First call to GetMessagesSince (inside deactivate's pending check) succeeds.
-	// Second call (inside processGroupMessages in the recovery goroutine) panics,
-	// which triggers the defer-recover path that calls deactivate() a second time.
-	var callSeq atomic.Int32
-	s.getMessagesSinceHook = func() {
-		if callSeq.Add(1) >= 2 {
-			panic("injected once-guard panic")
-		}
-	}
-
-	// Pre-closed channel triggers the channel-close deactivate path immediately.
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	// Wait for the recovery goroutine to panic, recover, and release its slot.
-	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
-
-	// Both the channel-close path and the panic-recovery path called deactivate(),
-	// but sync.Once must ensure MarkInactive ran exactly once.
-	if got := cq.markInactiveCalls.Load(); got != 1 {
-		t.Errorf("MarkInactive called %d times, want 1 (sync.Once must prevent double cleanup)", got)
-	}
-}
-
-// TestDeactivateRecovery_PanicRollsBackCursor verifies that a panic inside the
-// recovery goroutine's processGroupMessages rolls back lastAgentTimestamp to
-// lastConfirmedTimestamp, even when the cursor was advanced before the panic.
-func TestDeactivateRecovery_PanicRollsBackCursor(t *testing.T) {
-	s := newMockStore()
-	q := newMockQueue()
-	q.active["group1@g.us"] = true // active so deactivate runs and recovery is spawned
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	o := newTestOrchestratorWithRouter(s, q, b, []channel.Channel{ch})
-	o.cfg.Queue.MaxConcurrent = 5 // must be > 0 for processGroupMessages admission gate
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-
-	baseTs := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
-	advancedTs := baseTs.Add(10 * time.Second)
-
-	// Seed both cursors equal (deactivate's rollback won't fire for equal values).
-	o.mu.Lock()
-	o.lastConfirmedTimestamp["group1@g.us"] = baseTs
-	o.lastAgentTimestamp["group1@g.us"] = baseTs
-	o.mu.Unlock()
-
-	// Seed a message so deactivate's pending check triggers the recovery goroutine.
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "msg", Timestamp: baseTs.Add(time.Second), Sender: "alice"},
-	}
-
-	// On the second GetMessagesSince call (inside processGroupMessages in the recovery
-	// goroutine), simulate the cursor being advanced before a mid-function panic.
-	var callCount atomic.Int32
-	s.getMessagesSinceHook = func() {
-		if callCount.Add(1) < 2 {
-			return // first call: deactivate's pending check — let it run normally
-		}
-		// Second call: recovery goroutine's processGroupMessages. Advance cursor to
-		// simulate the real processGroupMessages advancing lastAgentTimestamp at line
-		// 833, then panic to trigger the recovery goroutine's panic handler.
-		o.mu.Lock()
-		o.lastAgentTimestamp["group1@g.us"] = advancedTs
-		o.mu.Unlock()
-		panic("injected post-advance panic in recovery processGroupMessages")
-	}
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-	b.subscribeCh = ipcCh
-
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	// Wait for the recovery goroutine's slot to be released (panic handler exits, defer fires).
-	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
-
-	// After the panic handler: lastAgentTimestamp must equal lastConfirmedTimestamp.
-	o.mu.Lock()
-	gotAgent := o.lastAgentTimestamp["group1@g.us"]
-	gotConfirmed := o.lastConfirmedTimestamp["group1@g.us"]
-	o.mu.Unlock()
-
-	if !gotAgent.Equal(gotConfirmed) {
-		t.Errorf("after recovery panic: lastAgentTimestamp=%v want lastConfirmedTimestamp=%v (cursor must be rolled back)",
-			gotAgent.Format(time.RFC3339Nano), gotConfirmed.Format(time.RFC3339Nano))
-	}
-}
-
-// TestDeactivateRecovery_DoesNotReenqueueWhenSpawned verifies that when the recovery
-// goroutine's processGroupMessages successfully spawns a sandbox (spawned=true), the
-// dequeued qMsg is NOT re-enqueued. Re-enqueueing would duplicate the scheduled-task
-// prompt delivered to the already-live agent on the next pollMessages tick.
-func TestDeactivateRecovery_DoesNotReenqueueWhenSpawned(t *testing.T) {
-	s := newMockStore()
-	mq := &mockQueueRecording{mockQueue: newMockQueue()}
-	mq.active["group1@g.us"] = true // active so deactivate proceeds
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-
-	// Build the orchestrator with the recording queue wrapper.
-	o := newTestOrchestratorWithRouter(s, mq.mockQueue, b, []channel.Channel{ch})
-	o.queue = mq
-	o.cfg.Queue.MaxConcurrent = 5 // must be > 0 for processGroupMessages to admit the spawn
-
-	// Inject a working sandbox so CreateSandbox succeeds and processGroupMessages returns spawned=true.
-	o.sandbox = &mockSandboxControllerWithTracking{}
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	o.registeredGroups["group1@g.us"] = group
-
-	// Arrange for Dequeue to return a scheduled-task message once.
-	mq.dequeueOnce = &queue.QueueMessage{GroupJID: "group1@g.us", Content: "task payload", IsTask: true}
-
-	// Seed messages so processGroupMessages has work to do (spawns sandbox).
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "msg", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	// SubscribeOutput: exhaust reconnect attempts (to trigger deactivate) then succeed
-	// for processGroupMessages so it completes with spawned=true.
-	var subCount atomic.Int32
-	reconnectBudget := int32(len(o.ipcReconnectDelays)) // ipcReconnectDelays = {1ms, 1ms}
-	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, <-chan error, error) {
-		if subCount.Add(1) <= reconnectBudget {
-			return nil, nil, fmt.Errorf("reconnect failed (%d)", subCount.Load())
-		}
-		return make(chan *ipc.IPCMessage), make(chan error), nil
-	}
-
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-
-	o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-
-	// Wait for the recovery goroutine to finish (slot released after processGroupMessages returns).
-	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
-
-	// processGroupMessages should have succeeded (spawned=true); CreateSandbox was called.
-	sb := o.sandbox.(*mockSandboxControllerWithTracking)
-	if !sb.createCalled.Load() {
-		t.Error("CreateSandbox was not called; recovery goroutine should have spawned a sandbox")
-	}
-
-	// Enqueue must NOT have been called for qMsg (re-enqueue is gated on !spawned).
-	if got := mq.count(); got != 0 {
-		t.Errorf("Enqueue called %d times, want 0: qMsg must not be re-enqueued when sandbox was spawned", got)
-	}
-}
-
-// TestSlot_PollAndRecoveryContendConcurrently verifies that when pollMessages and the
-// watchGroupOutput deactivate-recovery path race for the same group's slot, exactly one
-// CreateSandbox call is made.
-//
-// Sequence: watchGroupOutput deactivates the group (MarkInactive + pending check) and
-// pauses before claiming the slot. pollMessages runs while the pause holds: it sees
-// IsActive=false and wins the slot. When the deactivate path resumes, the slot is
-// already held → recovery skipped. CreateSandbox is called exactly once.
-func TestSlot_PollAndRecoveryContendConcurrently(t *testing.T) {
-	s := newMockStore()
-	mq := &mockQueueWithActiveCount{
-		mockQueue:   mockQueue{active: make(map[string]bool)},
-		activeCount: 0,
-	}
-	mq.active["group1@g.us"] = true // active so deactivate runs
-
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-
-	createStarted := make(chan struct{}, 1)
-	createGate := make(chan struct{})
-	createDone := make(chan struct{})
-	sb := &mockSandboxWithGate{
-		createStarted: createStarted,
-		createGate:    createGate,
-		createDone:    createDone,
-	}
-
-	cfg := &config.Config{
-		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
-		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
-		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
-	}
-	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	o.sandbox = sb
-	rtr, _ := router.New([]channel.Channel{ch}, s)
-	o.router = rtr
-	o.auth = auth.New(s)
-	o.ipcReconnectDelays = []time.Duration{time.Millisecond, time.Millisecond}
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	s.groups = []store.Group{group}
-	o.registeredGroups["group1@g.us"] = group
-
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	// Pause the deactivate-recovery path at the pending check (first GetMessagesSince call,
-	// inside deactivate before claimSandboxSlot). MarkInactive has already run at this point.
-	// The pause lets pollMessages run and win the slot while the recovery path is blocked.
-	recoveryPaused := make(chan struct{}, 1)
-	resumeRecovery := make(chan struct{})
-	var getMessagesCallCount atomic.Int32
-	s.getMessagesSinceHook = func() {
-		// The first call is deactivate's pending check; subsequent calls are from
-		// processGroupMessages. Block only the first call (recovery pending check).
-		if getMessagesCallCount.Add(1) == 1 {
-			select {
-			case recoveryPaused <- struct{}{}:
-			default:
-			}
-			<-resumeRecovery
-		}
-	}
-
-	// Make SubscribeOutput always fail (reconnects exhaust → deactivate; processGroupMessages
-	// doesn't reach SubscribeOutput because pollMessages wins the slot and holds it in
-	// CreateSandbox via createGate).
-	b.subscribeOutputFn = func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, <-chan error, error) {
-		return nil, nil, errors.New("reconnect failed for concurrency test")
-	}
-
-	// Start watchGroupOutput in a background goroutine. It will deactivate, pause, then
-	// try to claim the slot after resumeRecovery is closed.
-	ipcCh := make(chan *ipc.IPCMessage)
-	close(ipcCh)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		o.watchGroupOutput(context.Background(), "group1@g.us", ipcCh, make(chan error))
-	}()
-
-	// Wait for deactivate to have called MarkInactive and reached the pending check.
-	// At this point IsActive=false and no slot is held.
-	select {
-	case <-recoveryPaused:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for deactivate to reach pending check")
-	}
-
-	// pollMessages sees IsActive=false → claims slot → spawns goroutine → blocks in CreateSandbox.
-	o.pollMessages(context.Background())
-	select {
-	case <-createStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for pollMessages goroutine to enter CreateSandbox")
-	}
-
-	// Resume the deactivate-recovery path. It will find the slot already held → skip recovery.
-	close(resumeRecovery)
-	wg.Wait()
-
-	// Unblock CreateSandbox and wait for the pollMessages goroutine to finish.
-	close(createGate)
-	select {
-	case <-createDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for CreateSandbox to return")
-	}
-	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
-
-	// Exactly one sandbox was created despite both paths running concurrently.
-	if got := sb.createCount.Load(); got != 1 {
-		t.Errorf("CreateSandbox called %d times, want 1", got)
-	}
-}
-
-// TestProcessGroupMessages_SlotReleasedEarlyAfterMarkActive verifies the early
-// slot release at line 938: after MarkActive succeeds, releaseSlot() is called
-// immediately, freeing the in-flight slot before processGroupMessages returns and
-// before the spawning goroutine's deferred release fires.
-func TestProcessGroupMessages_SlotReleasedEarlyAfterMarkActive(t *testing.T) {
-	s := newMockStore()
-	mq := &mockQueueWithActiveCount{
-		mockQueue:   mockQueue{active: make(map[string]bool)},
-		activeCount: 0,
-	}
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	sb := &mockSandboxController{} // CreateSandbox returns immediately
-
-	cfg := &config.Config{
-		Channels:  config.ChannelsConfig{AssistantName: "TestBot"},
-		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
-		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
-	}
-	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	o.sandbox = sb
-	rtr, _ := router.New([]channel.Channel{ch}, s)
-	o.router = rtr
-	o.auth = auth.New(s)
-
-	group := store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	s.groups = append(s.groups, group)
-	o.registeredGroups["group1@g.us"] = group
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	// Gate: block SendInput so the processGroupMessages goroutine stays alive
-	// after releaseSlot() fires (which happens at line 938, after MarkActive,
-	// before SendInput).
-	sendGate := make(chan struct{})
-	b.sendInputFn = func(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {
-		select {
-		case <-sendGate:
-		case <-ctx.Done():
-		}
-		return nil
-	}
-	// Never-closing subscribeCh so SubscribeOutput succeeds and watchGroupOutput
-	// parks on the channel without triggering reconnect.
-	b.subscribeCh = make(chan *ipc.IPCMessage)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// pollMessages claims the slot and spawns a goroutine for processGroupMessages.
-	o.pollMessages(ctx)
-
-	// waitSlotReleased: the slot is released at line 938 (after MarkActive,
-	// before SendInput). sendGate is not yet closed, so the goroutine is blocked
-	// in SendInput — proving this is the early release, not the deferred one.
-	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
-
-	// Unblock SendInput and cancel ctx to stop watchGroupOutput.
-	close(sendGate)
-	cancel()
-}
-
-// --- confirmedCursorFlusher Tests ---
-
-// TestConfirmedCursorFlusher_DirtyTriggersSave verifies that the shutdown flush
-// branch saves state and clears the dirty flag when confirmedCursorDirty is true.
-func TestConfirmedCursorFlusher_DirtyTriggersSave(t *testing.T) {
-	s := newMockStore()
-	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
-
-	// Mark dirty so the shutdown branch flushes.
-	o.confirmedCursorDirty.Store(true)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		o.confirmedCursorFlusher(ctx)
-	}()
-
-	// Cancel context to trigger the shutdown-flush branch immediately.
-	cancel()
-	<-done
-
-	if o.confirmedCursorDirty.Load() {
-		t.Error("confirmedCursorDirty should be false after shutdown flush")
-	}
-	if len(s.setStateCalls) == 0 {
-		t.Error("saveState should have been called on shutdown flush when dirty")
-	}
-}
-
-// TestConfirmedCursorFlusher_CleanSkipsSave verifies that when
-// confirmedCursorDirty is false, the shutdown branch does not call saveState.
-func TestConfirmedCursorFlusher_CleanSkipsSave(t *testing.T) {
-	s := newMockStore()
-	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
-
-	// dirty is false (default).
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		o.confirmedCursorFlusher(ctx)
-	}()
-
-	cancel()
-	<-done
-
-	if len(s.setStateCalls) != 0 {
-		t.Errorf("saveState should not have been called when dirty=false, got calls: %v", s.setStateCalls)
-	}
-}
-
-// TestConfirmedCursorFlusher_FinalFlushSavesUnderCanceledCtx verifies that the
-// shutdown flush uses context.Background() internally, not the passed (cancelled)
-// context, so the save succeeds even when the orchestrator is shutting down.
-func TestConfirmedCursorFlusher_FinalFlushSavesUnderCanceledCtx(t *testing.T) {
-	s := newMockStore()
-	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
-
-	o.confirmedCursorDirty.Store(true)
-
-	// Start the flusher with an already-cancelled context: it should still flush.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already done before flusher starts
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		o.confirmedCursorFlusher(ctx)
-	}()
-	<-done
-
-	if o.confirmedCursorDirty.Load() {
-		t.Error("confirmedCursorDirty should be false after flush with already-cancelled ctx")
-	}
-	if len(s.setStateCalls) == 0 {
-		t.Error("saveState should succeed using context.Background() even when passed ctx is cancelled")
-	}
+	t.Errorf("timed out waiting for in-flight slot to be released for %q", chatJID)
 }

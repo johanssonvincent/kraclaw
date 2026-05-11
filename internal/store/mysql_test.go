@@ -27,6 +27,9 @@ var (
 	realStoreErr  error
 	realStorePool *dockertest.Pool
 	realStoreRes  *dockertest.Resource
+
+	// errConnLost is a sentinel used to test that store methods wrap driver errors.
+	errConnLost = errors.New("connection lost")
 )
 
 func requireTestStore(t *testing.T) *MySQLStore {
@@ -503,6 +506,70 @@ func TestStoreBatch(t *testing.T) {
 			err := store.StoreBatch(context.Background(), tt.msgs)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("StoreBatch() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("unmet expectations: %v", err)
+			}
+		})
+	}
+}
+
+func TestDeleteMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		id      string
+		chatJID string
+		setup   func(sqlmock.Sqlmock)
+		wantErr bool
+	}{
+		{
+			name:    "happy path",
+			id:      "msg1",
+			chatJID: "chat1@g.us",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectExec("DELETE FROM messages").
+					WithArgs("msg1", "chat1@g.us").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+			},
+		},
+		{
+			name:    "no match is idempotent",
+			id:      "nonexistent",
+			chatJID: "chat1@g.us",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectExec("DELETE FROM messages").
+					WithArgs("nonexistent", "chat1@g.us").
+					WillReturnResult(sqlmock.NewResult(0, 0))
+			},
+		},
+		{
+			name:    "sql error is wrapped",
+			id:      "msg1",
+			chatJID: "chat1@g.us",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectExec("DELETE FROM messages").
+					WithArgs("msg1", "chat1@g.us").
+					WillReturnError(errConnLost)
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, mock := newTestStore(t)
+			if tt.setup != nil {
+				tt.setup(mock)
+			}
+
+			err := s.DeleteMessage(context.Background(), tt.id, tt.chatJID)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("DeleteMessage() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && err != nil {
+				if !errors.Is(err, errConnLost) {
+					t.Errorf("DeleteMessage() error = %v, want it to wrap errConnLost", err)
+				}
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("unmet expectations: %v", err)

@@ -199,6 +199,9 @@ type MessageStore interface {
 	StoreBatch(ctx context.Context, msgs []Message) error
 	GetNewMessages(ctx context.Context, jids []string, since time.Time, limit int) ([]Message, error)
 	GetMessagesSince(ctx context.Context, chatJID string, since time.Time, limit int) ([]Message, error)
+	// DeleteMessage removes a single message row identified by (id, chatJID).
+	// Returns nil if no row matched (idempotent).
+	DeleteMessage(ctx context.Context, id, chatJID string) error
 }
 
 // ChatStore handles chat metadata operations.

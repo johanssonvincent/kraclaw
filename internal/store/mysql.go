@@ -333,6 +333,16 @@ func (s *MySQLStore) StoreBatch(ctx context.Context, msgs []Message) error {
 	return nil
 }
 
+func (s *MySQLStore) DeleteMessage(ctx context.Context, id, chatJID string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM messages WHERE id = ? AND chat_jid = ?`,
+		id, chatJID,
+	); err != nil {
+		return fmt.Errorf("delete message: %w", err)
+	}
+	return nil
+}
+
 func (s *MySQLStore) GetNewMessages(ctx context.Context, jids []string, since time.Time, limit int) ([]Message, error) {
 	if len(jids) == 0 {
 		return nil, nil
