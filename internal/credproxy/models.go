@@ -101,11 +101,29 @@ func (l *ModelLister) listOpenAIModels(ctx context.Context, groupJID string) ([]
 	return models, nil
 }
 
+func hasOpenAIModelFamilyPrefix(id string, family string) bool {
+	if !strings.HasPrefix(id, family) {
+		return false
+	}
+	if len(id) == len(family) {
+		return true
+	}
+	switch id[len(family)] {
+	case '-', '_':
+		return true
+	default:
+		return false
+	}
+}
+
 func isUserSelectableOpenAIModel(id string) bool {
 	if id == "" {
 		return false
 	}
-	return strings.HasPrefix(id, "gpt-") || strings.HasPrefix(id, "o")
+	return strings.HasPrefix(id, "gpt-") ||
+		hasOpenAIModelFamilyPrefix(id, "o1") ||
+		hasOpenAIModelFamilyPrefix(id, "o3") ||
+		hasOpenAIModelFamilyPrefix(id, "o4")
 }
 
 func displayNameFromModelID(id string) string {
