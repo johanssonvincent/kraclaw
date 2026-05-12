@@ -15,6 +15,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/auth"
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/config"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/queue"
@@ -51,6 +52,9 @@ type Orchestrator struct {
 	auth      *auth.Authorizer
 	sched     *scheduler.Scheduler
 	providers *provider.Registry
+	// listDynamicModels allows tests to stub dynamic model listing.
+	// When nil, dynamic model listing is disabled.
+	listDynamicModels func(context.Context, string, string) ([]provider.ModelInfo, error)
 
 	channels []channel.Channel
 	registry *channel.Registry
@@ -114,6 +118,7 @@ func New(
 	ctrl *sandbox.Controller,
 	reg *channel.Registry,
 	log *slog.Logger,
+	modelLister *credproxy.ModelLister,
 ) (*Orchestrator, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("orchestrator: config is required")
@@ -139,6 +144,10 @@ func New(
 	if ctrl != nil {
 		sc = ctrl
 	}
+	var listDynamicModels func(context.Context, string, string) ([]provider.ModelInfo, error)
+	if modelLister != nil {
+		listDynamicModels = modelLister.ListModels
+	}
 	return &Orchestrator{
 		cfg:                    cfg,
 		store:                  s,
@@ -147,6 +156,7 @@ func New(
 		sandbox:                sc,
 		registry:               reg,
 		providers:              provider.NewRegistry(),
+		listDynamicModels:      listDynamicModels,
 		lastAgentTimestamp:     make(map[string]time.Time),
 		lastConfirmedTimestamp: make(map[string]time.Time),
 		sessions:               make(map[string]string),

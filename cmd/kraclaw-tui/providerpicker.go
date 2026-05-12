@@ -33,11 +33,15 @@ type providersLoadedMsg struct {
 }
 
 // fetchProvidersCmd calls ListProviders and returns a providersLoadedMsg tagged with flowID.
-func (m model) fetchProvidersCmd(flowID int) tea.Cmd {
+func (m model) fetchProvidersCmd(flowID int, groupJID ...string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		resp, err := m.api.groups.ListProviders(ctx, &kraclawv1.ListProvidersRequest{})
+		req := &kraclawv1.ListProvidersRequest{}
+		if len(groupJID) > 0 {
+			req.GroupJid = groupJID[0]
+		}
+		resp, err := m.api.groups.ListProviders(ctx, req)
 		if err != nil {
 			return providersLoadedMsg{flowID: flowID, err: translateListProvidersErr(err)}
 		}
@@ -74,4 +78,21 @@ func buildProviderItems(providers []*kraclawv1.ProviderInfo, selectedID string) 
 		}
 	}
 	return items, cursor
+}
+
+func buildModelItems(providers []*kraclawv1.ProviderInfo, providerID string) []creationPickerItem {
+	for _, p := range providers {
+		if p.GetId() != providerID {
+			continue
+		}
+		items := make([]creationPickerItem, 0, len(p.GetModels()))
+		for _, mi := range p.GetModels() {
+			items = append(items, creationPickerItem{
+				id:    mi.GetId(),
+				label: mi.GetDisplayName(),
+			})
+		}
+		return items
+	}
+	return nil
 }

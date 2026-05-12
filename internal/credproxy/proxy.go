@@ -52,15 +52,21 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 		}
 		if cred != nil {
 			if cred.AuthMode == AuthModeChatGPT {
-				// Fail loud: falling through to platform credentials would silently
-				// downgrade a chatgpt-authed group to the shared API key.
-				slog.Error("chatgpt credential rejected by router",
-					"group", groupJID,
-					"provider", cred.Provider,
-				)
-				return nil, fmt.Errorf("resolve credential: chatgpt auth mode is not supported by the current router build for group %q", groupJID)
-			}
-			if requestedProvider != "" && cred.Provider != requestedProvider {
+				if requestedProvider != "" && cred.Provider != requestedProvider {
+					slog.Debug("per-group chatgpt credential provider mismatch, falling through to platform",
+						"group", groupJID,
+						"stored_provider", cred.Provider,
+						"requested_provider", requestedProvider,
+					)
+				} else {
+					tokens := cred.ChatGPT()
+					return &resolvedCredential{
+						Provider:    provider.ProviderOpenAI,
+						APIKey:      tokens.AccessToken,
+						UpstreamURL: r.cfg.OpenAIUpstreamURL,
+					}, nil
+				}
+			} else if requestedProvider != "" && cred.Provider != requestedProvider {
 				slog.Debug("per-group credential provider mismatch, falling through to platform",
 					"group", groupJID,
 					"stored_provider", cred.Provider,
@@ -476,4 +482,3 @@ func (rw *responseWriter) Flush() {
 func (rw *responseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
 }
-

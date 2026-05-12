@@ -73,7 +73,11 @@ message UpdateSenderAllowlistRequest {
   repeated SenderAllowlistEntry entries = 2;
 }
 
-message ListProvidersRequest {}
+message ListProvidersRequest {
+  // group_jid enables credential-aware dynamic model discovery for providers
+  // whose model access depends on the group's stored credentials.
+  string group_jid = 1;
+}
 
 message ListProvidersResponse {
   repeated ProviderInfo providers = 1;

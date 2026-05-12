@@ -146,6 +146,33 @@ func main() {
 		}
 	}
 
+	// Shared credential resolver/model lister. The resolver is reused by both
+	// credproxy request routing and dynamic OpenAI model discovery.
+	var (
+		credStore   *credproxy.CredentialStore
+		resolver    credproxy.CredentialResolver
+		modelLister *credproxy.ModelLister
+	)
+	needsMultiProvider := cfg.Proxy.CredentialEncryptionKey != "" || cfg.Proxy.OpenAIAPIKey != ""
+	if needsMultiProvider {
+		if cfg.Proxy.CredentialEncryptionKey != "" {
+			enc, err := credproxy.NewEncryptor(cfg.Proxy.CredentialEncryptionKey)
+			if err != nil {
+				log.Error("failed to create credential encryptor", "error", err)
+				os.Exit(1)
+			}
+			credStore, err = credproxy.NewCredentialStore(mysqlStore.DB(), enc)
+			if err != nil {
+				log.Error("failed to create credential store", "error", err)
+				os.Exit(1)
+			}
+			resolver = credproxy.NewDefaultResolver(credStore, cfg.Proxy)
+		} else {
+			resolver = credproxy.NewDefaultResolver(nil, cfg.Proxy)
+		}
+		modelLister = credproxy.NewModelLister(resolver)
+	}
+
 	// Create TUI channel and orchestrator
 	tuiChannel := tui.New(log)
 
@@ -156,7 +183,7 @@ func main() {
 		return tuiChannel, nil
 	})
 
-	orch, err := orchestrator.New(cfg, mysqlStore, natsQueue, ipcBroker, sandboxCtrl, channel.DefaultRegistry, log)
+	orch, err := orchestrator.New(cfg, mysqlStore, natsQueue, ipcBroker, sandboxCtrl, channel.DefaultRegistry, log, modelLister)
 	if err != nil {
 		log.Error("failed to create orchestrator", "error", err)
 		return
@@ -187,33 +214,7 @@ func main() {
 
 	// Start credential proxy
 	var proxy *credproxy.Proxy
-	// credStore is shared with the AuthService when per-group credential
-	// encryption is configured; otherwise it stays nil and AuthService is
-	// not registered.
-	var credStore *credproxy.CredentialStore
-
-	// Multi-provider proxy is needed when:
-	// 1. Per-group credential encryption is configured, OR
-	// 2. OpenAI platform credentials are set (needs provider-aware routing)
-	needsMultiProvider := cfg.Proxy.CredentialEncryptionKey != "" || cfg.Proxy.OpenAIAPIKey != ""
-
 	if needsMultiProvider {
-		var resolver credproxy.CredentialResolver
-		if cfg.Proxy.CredentialEncryptionKey != "" {
-			enc, err := credproxy.NewEncryptor(cfg.Proxy.CredentialEncryptionKey)
-			if err != nil {
-				log.Error("failed to create credential encryptor", "error", err)
-				os.Exit(1)
-			}
-			credStore, err = credproxy.NewCredentialStore(mysqlStore.DB(), enc)
-			if err != nil {
-				log.Error("failed to create credential store", "error", err)
-				os.Exit(1)
-			}
-			resolver = credproxy.NewDefaultResolver(credStore, cfg.Proxy)
-		} else {
-			resolver = credproxy.NewDefaultResolver(nil, cfg.Proxy)
-		}
 		proxy, err = credproxy.NewMultiProviderProxy(cfg.Proxy, resolver)
 		if err != nil {
 			log.Error("failed to create multi-provider credential proxy", "error", err)
@@ -302,6 +303,7 @@ func main() {
 		TUIChannel:            tuiChannel,
 		Channels:              []channel.Channel{tuiChannel},
 		Log:                   log,
+		ModelLister:           modelLister,
 		Auth:                  authCfg,
 	})
 	if err != nil {

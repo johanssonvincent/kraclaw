@@ -1,10 +1,10 @@
 version: v2
 plugins:
   - remote: buf.build/protocolbuffers/go
-    out: pkg/pb
-    opt: paths=import
+    out: .
+    opt: paths=import,module=github.com/johanssonvincent/kraclaw
   - remote: buf.build/grpc/go
-    out: pkg/pb
-    opt: paths=import
+    out: .
+    opt: paths=import,module=github.com/johanssonvincent/kraclaw
 managed:
   enabled: true
