@@ -46,6 +46,41 @@ func TestModelLister_ListOpenAIModels(t *testing.T) {
 	}
 }
 
+func TestModelLister_ListOpenAIModelsChatGPTAuth(t *testing.T) {
+	var gotAuth string
+	var gotAccount string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotAccount = r.Header.Get("ChatGPT-Account-ID")
+		if r.URL.Path != "/backend-api/codex/models" {
+			t.Fatalf("path = %q, want /backend-api/codex/models", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-5.5","display_name":"GPT 5.5","supported_in_api":true}]}`))
+	}))
+	defer upstream.Close()
+
+	lister := NewModelLister(&staticCredentialResolver{cred: &resolvedCredential{
+		Provider:    "openai",
+		AuthMode:    AuthModeChatGPT,
+		APIKey:      "oauth-token",
+		AccountID:   "acct_123",
+		UpstreamURL: upstream.URL + "/backend-api/codex",
+	}})
+	models, err := lister.ListModels(context.Background(), "tui:g1", "openai")
+	if err != nil {
+		t.Fatalf("ListModels() err = %v, want nil", err)
+	}
+	if gotAuth != "Bearer oauth-token" {
+		t.Fatalf("Authorization = %q, want Bearer oauth-token", gotAuth)
+	}
+	if gotAccount != "acct_123" {
+		t.Fatalf("ChatGPT-Account-ID = %q, want acct_123", gotAccount)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-5.5" {
+		t.Fatalf("models = %#v, want gpt-5.5", models)
+	}
+}
+
 func TestModelLister_ListOpenAIModelsResolverError(t *testing.T) {
 	lister := NewModelLister(&staticCredentialResolver{err: context.Canceled})
 	_, err := lister.ListModels(context.Background(), "tui:g1", "openai")

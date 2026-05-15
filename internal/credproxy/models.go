@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -55,11 +56,21 @@ func (l *ModelLister) listOpenAIModels(ctx context.Context, groupJID string) ([]
 	if upstream == "" {
 		upstream = "https://api.openai.com"
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream+"/v1/models", nil)
+	modelsPath := "/v1/models"
+	if cred.AuthMode == AuthModeChatGPT {
+		modelsPath = "/models"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream+modelsPath, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+cred.APIKey)
+	if cred.AuthMode == AuthModeChatGPT {
+		req.Header.Set("ChatGPT-Account-ID", cred.AccountID)
+		if cred.IsFedRAMP {
+			req.Header.Set("X-OpenAI-Fedramp", "true")
+		}
+	}
 
 	client := l.client
 	if client == nil {
@@ -74,23 +85,11 @@ func (l *ModelLister) listOpenAIModels(ctx context.Context, groupJID string) ([]
 		return nil, fmt.Errorf("openai list models returned %s", resp.Status)
 	}
 
-	var body struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	modelsByID, err := decodeOpenAIModels(resp.Body, cred.AuthMode)
+	if err != nil {
 		return nil, err
 	}
 
-	modelsByID := make(map[string]provider.ModelInfo, len(body.Data))
-	for _, item := range body.Data {
-		id := strings.TrimSpace(item.ID)
-		if !isUserSelectableOpenAIModel(id) {
-			continue
-		}
-		modelsByID[id] = provider.ModelInfo{ID: id, DisplayName: displayNameFromModelID(id)}
-	}
 	models := make([]provider.ModelInfo, 0, len(modelsByID))
 	for _, model := range modelsByID {
 		models = append(models, model)
@@ -99,6 +98,52 @@ func (l *ModelLister) listOpenAIModels(ctx context.Context, groupJID string) ([]
 		return models[i].ID < models[j].ID
 	})
 	return models, nil
+}
+
+func decodeOpenAIModels(r io.Reader, authMode AuthMode) (map[string]provider.ModelInfo, error) {
+	if authMode == AuthModeChatGPT {
+		var body struct {
+			Models []struct {
+				Slug           string `json:"slug"`
+				DisplayName    string `json:"display_name"`
+				SupportedInAPI bool   `json:"supported_in_api"`
+			} `json:"models"`
+		}
+		if err := json.NewDecoder(r).Decode(&body); err != nil {
+			return nil, err
+		}
+		modelsByID := make(map[string]provider.ModelInfo, len(body.Models))
+		for _, item := range body.Models {
+			id := strings.TrimSpace(item.Slug)
+			if id == "" || !item.SupportedInAPI || !isUserSelectableOpenAIModel(id) {
+				continue
+			}
+			displayName := strings.TrimSpace(item.DisplayName)
+			if displayName == "" {
+				displayName = displayNameFromModelID(id)
+			}
+			modelsByID[id] = provider.ModelInfo{ID: id, DisplayName: displayName}
+		}
+		return modelsByID, nil
+	}
+
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(r).Decode(&body); err != nil {
+		return nil, err
+	}
+	modelsByID := make(map[string]provider.ModelInfo, len(body.Data))
+	for _, item := range body.Data {
+		id := strings.TrimSpace(item.ID)
+		if !isUserSelectableOpenAIModel(id) {
+			continue
+		}
+		modelsByID[id] = provider.ModelInfo{ID: id, DisplayName: displayNameFromModelID(id)}
+	}
+	return modelsByID, nil
 }
 
 func isUserSelectableOpenAIModel(id string) bool {

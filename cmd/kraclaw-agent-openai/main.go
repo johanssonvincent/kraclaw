@@ -10,9 +10,16 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/shared"
 
 	"github.com/johanssonvincent/kraclaw/pkg/agent"
 )
+
+type conversationTurn struct {
+	role string
+	text string
+}
 
 func main() {
 	if err := agent.Run(runOpenAI); err != nil {
@@ -46,7 +53,7 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 
 	log.Info("openai agent ready", "model", model, "proxy", proxyURL)
 
-	var history []openai.ChatCompletionMessageParamUnion
+	var history []conversationTurn
 
 	inputCh, ipcErrCh, err := ipc.ReadInput(ctx)
 	if err != nil {
@@ -72,21 +79,17 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 					continue
 				}
 
-				msgs := make([]openai.ChatCompletionMessageParamUnion, len(history)+1)
-				copy(msgs, history)
-				msgs[len(history)] = openai.UserMessage(text)
-				stream := client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
-					Model:    model,
-					Messages: msgs,
+				input := responseInput(history, text)
+				stream := client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
+					Model: shared.ResponsesModel(model),
+					Input: responses.ResponseNewParamsInputUnion{OfString: openai.String(input)},
 				})
 
 				var buf strings.Builder
 				for stream.Next() {
-					chunk := stream.Current()
-					for _, choice := range chunk.Choices {
-						if choice.Delta.Content != "" {
-							buf.WriteString(choice.Delta.Content)
-						}
+					event := stream.Current()
+					if delta, ok := event.AsAny().(responses.ResponseTextDeltaEvent); ok {
+						buf.WriteString(delta.Delta)
 					}
 				}
 				fullResponse := buf.String()
@@ -114,8 +117,8 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 					continue
 				}
 				// Only append to history after successful send.
-				history = append(history, openai.UserMessage(text))
-				history = append(history, openai.AssistantMessage(fullResponse))
+				history = append(history, conversationTurn{role: "user", text: text})
+				history = append(history, conversationTurn{role: "assistant", text: fullResponse})
 
 			case "set_model":
 				var payload struct {
@@ -139,6 +142,20 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 			}
 		}
 	}
+}
+
+func responseInput(history []conversationTurn, text string) string {
+	var b strings.Builder
+	for _, msg := range history {
+		b.WriteString(strings.ToUpper(msg.role[:1]))
+		b.WriteString(msg.role[1:])
+		b.WriteString(": ")
+		b.WriteString(msg.text)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("User: ")
+	b.WriteString(text)
+	return b.String()
 }
 
 func extractMessageText(payload json.RawMessage) (string, error) {

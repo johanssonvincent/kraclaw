@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/johanssonvincent/kraclaw/internal/config"
@@ -21,9 +22,14 @@ import (
 // resolvedCredential contains provider-specific routing info for a single request.
 type resolvedCredential struct {
 	Provider    string
+	AuthMode    AuthMode
 	APIKey      string
+	AccountID   string
+	IsFedRAMP   bool
 	UpstreamURL string
 }
+
+const chatGPTCodexUpstreamURL = "https://chatgpt.com/backend-api/codex"
 
 // CredentialResolver looks up credentials for a group.
 type CredentialResolver interface {
@@ -52,15 +58,24 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 		}
 		if cred != nil {
 			if cred.AuthMode == AuthModeChatGPT {
-				// Fail loud: falling through to platform credentials would silently
-				// downgrade a chatgpt-authed group to the shared API key.
-				slog.Error("chatgpt credential rejected by router",
-					"group", groupJID,
-					"provider", cred.Provider,
-				)
-				return nil, fmt.Errorf("resolve credential: chatgpt auth mode is not supported by the current router build for group %q", groupJID)
-			}
-			if requestedProvider != "" && cred.Provider != requestedProvider {
+				if requestedProvider != "" && cred.Provider != requestedProvider {
+					slog.Debug("per-group chatgpt credential provider mismatch, falling through to platform",
+						"group", groupJID,
+						"stored_provider", cred.Provider,
+						"requested_provider", requestedProvider,
+					)
+				} else {
+					tokens := cred.ChatGPT()
+					return &resolvedCredential{
+						Provider:    provider.ProviderOpenAI,
+						AuthMode:    AuthModeChatGPT,
+						APIKey:      tokens.AccessToken,
+						AccountID:   tokens.AccountID,
+						IsFedRAMP:   tokens.IsFedRAMP,
+						UpstreamURL: chatGPTCodexUpstreamURL,
+					}, nil
+				}
+			} else if requestedProvider != "" && cred.Provider != requestedProvider {
 				slog.Debug("per-group credential provider mismatch, falling through to platform",
 					"group", groupJID,
 					"stored_provider", cred.Provider,
@@ -69,6 +84,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 			} else {
 				rc := &resolvedCredential{
 					Provider: cred.Provider,
+					AuthMode: AuthModeAPIKey,
 					APIKey:   cred.APIKey(),
 				}
 				switch cred.Provider {
@@ -88,6 +104,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 		if r.cfg.OpenAIAPIKey != "" {
 			return &resolvedCredential{
 				Provider:    provider.ProviderOpenAI,
+				AuthMode:    AuthModeAPIKey,
 				APIKey:      r.cfg.OpenAIAPIKey,
 				UpstreamURL: r.cfg.OpenAIUpstreamURL,
 			}, nil
@@ -96,6 +113,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 		if r.cfg.AnthropicAPIKey != "" {
 			return &resolvedCredential{
 				Provider:    provider.ProviderAnthropic,
+				AuthMode:    AuthModeAPIKey,
 				APIKey:      r.cfg.AnthropicAPIKey,
 				UpstreamURL: r.cfg.AnthropicUpstreamURL,
 			}, nil
@@ -105,6 +123,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 		if r.cfg.AnthropicAPIKey != "" {
 			return &resolvedCredential{
 				Provider:    provider.ProviderAnthropic,
+				AuthMode:    AuthModeAPIKey,
 				APIKey:      r.cfg.AnthropicAPIKey,
 				UpstreamURL: r.cfg.AnthropicUpstreamURL,
 			}, nil
@@ -115,6 +134,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 			)
 			return &resolvedCredential{
 				Provider:    provider.ProviderOpenAI,
+				AuthMode:    AuthModeAPIKey,
 				APIKey:      r.cfg.OpenAIAPIKey,
 				UpstreamURL: r.cfg.OpenAIUpstreamURL,
 			}, nil
@@ -189,6 +209,9 @@ func NewMultiProviderProxy(cfg config.ProxyConfig, resolver CredentialResolver) 
 		}
 	} else {
 		allowedHosts["api.openai.com"] = true
+	}
+	if u, err := url.Parse(chatGPTCodexUpstreamURL); err == nil {
+		allowedHosts[u.Host] = true
 	}
 
 	return &Proxy{
@@ -288,6 +311,7 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 			if rd, ok := req.Context().Value(credentialContextKey).(*resolvedData); ok {
 				req.URL.Scheme = rd.upstreamURL.Scheme
 				req.URL.Host = rd.upstreamURL.Host
+				req.URL.Path = upstreamPath(rd.upstreamURL.Path, req.URL.Path, rd.cred.AuthMode)
 				req.Host = rd.upstreamURL.Host
 
 				// Strip hop-by-hop and kraclaw-internal headers.
@@ -302,8 +326,21 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 				case provider.ProviderOpenAI:
 					req.Header.Del("X-Api-Key")
 					req.Header.Set("Authorization", "Bearer "+rd.cred.APIKey)
+					if rd.cred.AuthMode == AuthModeChatGPT {
+						req.Header.Set("ChatGPT-Account-ID", rd.cred.AccountID)
+						if rd.cred.IsFedRAMP {
+							req.Header.Set("X-OpenAI-Fedramp", "true")
+						} else {
+							req.Header.Del("X-OpenAI-Fedramp")
+						}
+					} else {
+						req.Header.Del("ChatGPT-Account-ID")
+						req.Header.Del("X-OpenAI-Fedramp")
+					}
 				default: // anthropic
 					req.Header.Del("Authorization")
+					req.Header.Del("ChatGPT-Account-ID")
+					req.Header.Del("X-OpenAI-Fedramp")
 					req.Header.Set("X-Api-Key", rd.cred.APIKey)
 				}
 				return
@@ -365,6 +402,23 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 		},
 	}
 	return rp
+}
+
+func upstreamPath(basePath, requestPath string, authMode AuthMode) string {
+	path := requestPath
+	if authMode == AuthModeChatGPT {
+		path = strings.TrimPrefix(path, "/v1")
+		if path == "" {
+			path = "/"
+		}
+	}
+	if basePath == "" || basePath == "/" {
+		return path
+	}
+	if path == "" || path == "/" {
+		return basePath
+	}
+	return strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
 func (p *Proxy) metricsMiddleware(next http.Handler) http.Handler {
@@ -476,4 +530,3 @@ func (rw *responseWriter) Flush() {
 func (rw *responseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
 }
-

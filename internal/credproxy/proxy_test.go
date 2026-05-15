@@ -1,12 +1,10 @@
 package credproxy
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -131,7 +129,6 @@ func TestAPIKeyMode_InjectsKey(t *testing.T) {
 		t.Fatalf("expected real API key, got %q", got)
 	}
 }
-
 
 func TestMetricsMiddleware_RecordsStatus(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -416,7 +413,6 @@ func TestProxy_InjectsAnthropicKeyViaResolver(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
-
 
 func TestProxy_NoGroupHeader_FallsBackToLegacy(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -828,7 +824,7 @@ func TestDefaultResolver_RequestedProviderNotConfigured_ReturnsError(t *testing.
 	}
 }
 
-func TestDefaultResolver_ChatGPTAuthModeNotSupported(t *testing.T) {
+func TestDefaultResolver_ChatGPTAuthModeUsesOpenAIAccessToken(t *testing.T) {
 	t.Parallel()
 
 	db, mock, err := sqlmock.New()
@@ -867,53 +863,107 @@ func TestDefaultResolver_ChatGPTAuthModeNotSupported(t *testing.T) {
 	})
 
 	rc, err := resolver.Resolve(context.Background(), "discord:chatgpt", provider.ProviderOpenAI)
-	if err == nil {
-		t.Errorf("Resolve(chatgpt cred) err = nil, want error; got %+v", rc)
+	if err != nil {
+		t.Fatalf("Resolve(chatgpt cred) err = %v, want nil", err)
 	}
-	if rc != nil {
-		t.Errorf("Resolve(chatgpt cred) rc = %+v, want nil", rc)
+	if rc == nil {
+		t.Fatal("Resolve(chatgpt cred) rc = nil, want resolved credential")
 	}
-	if err != nil && !strings.Contains(err.Error(), "chatgpt auth mode") {
-		t.Errorf("Resolve(chatgpt cred) err = %v, want error mentioning chatgpt auth mode", err)
+	if rc.Provider != provider.ProviderOpenAI {
+		t.Errorf("Resolve(chatgpt cred) provider = %q, want %q", rc.Provider, provider.ProviderOpenAI)
+	}
+	if rc.APIKey != "access" {
+		t.Errorf("Resolve(chatgpt cred) APIKey = %q, want %q", rc.APIKey, "access")
+	}
+	if rc.UpstreamURL != chatGPTCodexUpstreamURL {
+		t.Errorf("Resolve(chatgpt cred) UpstreamURL = %q, want %q", rc.UpstreamURL, chatGPTCodexUpstreamURL)
 	}
 }
 
-func TestDefaultResolver_ChatGPTRejection_LogsError(t *testing.T) {
-	// Not parallel: this test mutates slog.Default() via SetDefault to capture
-	// the resolver's error log into a local buffer. Running it in parallel
-	// races against any other parallel test that emits via slog.Default().
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New(): %v", err)
+func TestProxy_ChatGPTAuthModeForwardsBearerToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		groupJID   string
+		access     string
+		accountID  string
+		fedramp    bool
+		wantAuth   string
+		wantAcct   string
+		wantFed    string
+		wantPath   string
+		wantStatus int
+	}{
+		{
+			name:       "openai chatgpt credential forwards access token as bearer",
+			groupJID:   "tui:oauthtest",
+			access:     "oauth-access-token",
+			accountID:  "acct_123",
+			fedramp:    true,
+			wantAuth:   "Bearer oauth-access-token",
+			wantAcct:   "acct_123",
+			wantFed:    "true",
+			wantPath:   "/backend-api/codex/responses",
+			wantStatus: http.StatusOK,
+		},
 	}
-	defer func() { _ = db.Close() }()
-	expectTimezoneProbe(t, mock)
 
-	enc := newTestEncryptor(t)
-	store, err := NewCredentialStore(db, enc)
-	if err != nil {
-		t.Fatalf("NewCredentialStore: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	accessEnc, _ := enc.Encrypt("a")
-	refreshEnc, _ := enc.Encrypt("r")
-	rows := sqlmock.NewRows([]string{
-		"provider", "auth_mode", "api_key_encrypted",
-		"oauth_access_token_encrypted", "oauth_refresh_token_encrypted",
-		"oauth_id_token_encrypted", "oauth_account_id", "oauth_expires_at", "oauth_is_fedramp",
-	}).AddRow("openai", string(AuthModeChatGPT), nil, accessEnc, refreshEnc, nil, "acct", time.Now().Add(time.Hour).UTC(), false)
-	mock.ExpectQuery("SELECT").WithArgs("grp").WillReturnRows(rows)
+			var gotAuth string
+			var gotAcct string
+			var gotFed string
+			var gotPath string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth = r.Header.Get("Authorization")
+				gotAcct = r.Header.Get("ChatGPT-Account-ID")
+				gotFed = r.Header.Get("X-OpenAI-Fedramp")
+				gotPath = r.URL.Path
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			defer upstream.Close()
 
-	var buf bytes.Buffer
-	origLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
-	defer slog.SetDefault(origLogger)
+			resolver := &staticCredentialResolver{cred: &resolvedCredential{
+				Provider:    provider.ProviderOpenAI,
+				AuthMode:    AuthModeChatGPT,
+				APIKey:      tt.access,
+				AccountID:   tt.accountID,
+				IsFedRAMP:   tt.fedramp,
+				UpstreamURL: upstream.URL + "/backend-api/codex",
+			}}
+			p, err := NewMultiProviderProxy(config.ProxyConfig{
+				AnthropicUpstreamURL: "https://api.anthropic.com",
+				OpenAIUpstreamURL:    upstream.URL,
+			}, resolver)
+			if err != nil {
+				t.Fatalf("NewMultiProviderProxy() err = %v, want nil", err)
+			}
 
-	r := NewDefaultResolver(store, config.ProxyConfig{OpenAIUpstreamURL: "https://api.openai.com"})
-	if _, err := r.Resolve(context.Background(), "grp", ""); err == nil {
-		t.Errorf("Resolve err = nil, want rejection error")
-	}
-	if !strings.Contains(buf.String(), "grp") {
-		t.Errorf("slog output = %q, want error log referencing group %q", buf.String(), "grp")
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+			req.Header.Set("X-Kraclaw-Group", tt.groupJID)
+			req.Header.Set("X-Kraclaw-Provider", provider.ProviderOpenAI)
+			w := httptest.NewRecorder()
+			p.handler().ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("ServeHTTP(group=%q) status = %d, want %d", tt.groupJID, w.Code, tt.wantStatus)
+			}
+			if gotAuth != tt.wantAuth {
+				t.Errorf("ServeHTTP(group=%q) Authorization = %q, want %q", tt.groupJID, gotAuth, tt.wantAuth)
+			}
+			if gotAcct != tt.wantAcct {
+				t.Errorf("ServeHTTP(group=%q) ChatGPT-Account-ID = %q, want %q", tt.groupJID, gotAcct, tt.wantAcct)
+			}
+			if gotFed != tt.wantFed {
+				t.Errorf("ServeHTTP(group=%q) X-OpenAI-Fedramp = %q, want %q", tt.groupJID, gotFed, tt.wantFed)
+			}
+			if gotPath != tt.wantPath {
+				t.Errorf("ServeHTTP(group=%q) path = %q, want %q", tt.groupJID, gotPath, tt.wantPath)
+			}
+		})
 	}
 }
