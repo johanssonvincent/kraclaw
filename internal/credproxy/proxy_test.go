@@ -166,6 +166,29 @@ func TestUpstreamError_Returns502(t *testing.T) {
 	}
 }
 
+func TestUpstreamErrorResponseBodyIsRestored(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"bad contract"}`))
+	}))
+	defer upstream.Close()
+
+	p := newTestProxy(t, upstream.URL, "sk-test")
+	rp := p.newReverseProxy()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	rp.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	if got := w.Body.String(); got != `{"error":"bad contract"}` {
+		t.Fatalf("body = %q, want upstream error body", got)
+	}
+}
+
 func TestHopByHopHeaders_Stripped(t *testing.T) {
 	var receivedHeaders http.Header
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

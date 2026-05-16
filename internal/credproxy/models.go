@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 )
+
+const codexClientVersion = "0.0.0-kraclaw"
 
 // ModelLister fetches provider model metadata using the same credentials and
 // upstream routing as proxied agent requests.
@@ -58,7 +61,7 @@ func (l *ModelLister) listOpenAIModels(ctx context.Context, groupJID string) ([]
 	}
 	modelsPath := "/v1/models"
 	if cred.AuthMode == AuthModeChatGPT {
-		modelsPath = "/models"
+		modelsPath = "/models?client_version=" + url.QueryEscape(codexClientVersion)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream+modelsPath, nil)
 	if err != nil {
@@ -66,6 +69,7 @@ func (l *ModelLister) listOpenAIModels(ctx context.Context, groupJID string) ([]
 	}
 	req.Header.Set("Authorization", "Bearer "+cred.APIKey)
 	if cred.AuthMode == AuthModeChatGPT {
+		req.Header.Set("version", codexClientVersion)
 		req.Header.Set("ChatGPT-Account-ID", cred.AccountID)
 		if cred.IsFedRAMP {
 			req.Header.Set("X-OpenAI-Fedramp", "true")

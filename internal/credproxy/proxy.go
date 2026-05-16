@@ -1,10 +1,12 @@
 package credproxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -29,7 +31,10 @@ type resolvedCredential struct {
 	UpstreamURL string
 }
 
-const chatGPTCodexUpstreamURL = "https://chatgpt.com/backend-api/codex"
+const (
+	chatGPTCodexUpstreamURL   = "https://chatgpt.com/backend-api/codex"
+	maxUpstreamErrorBodyBytes = 4096
+)
 
 // CredentialResolver looks up credentials for a group.
 type CredentialResolver interface {
@@ -384,6 +389,31 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 				"content_type", resp.Header.Get("Content-Type"),
 				"path", resp.Request.URL.Path,
 			)
+			if resp.StatusCode >= 400 {
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return fmt.Errorf("read upstream error body: %w", err)
+				}
+				resp.Body.Close()
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+				resp.ContentLength = int64(len(body))
+				logBody := body
+				if len(logBody) > maxUpstreamErrorBodyBytes {
+					logBody = logBody[:maxUpstreamErrorBodyBytes]
+				}
+
+				p.log.Warn("upstream error response",
+					"status", resp.StatusCode,
+					"content_type", resp.Header.Get("Content-Type"),
+					"upstream_host", resp.Request.URL.Host,
+					"path", resp.Request.URL.Path,
+					"body", strings.TrimSpace(string(logBody)),
+					"x_request_id", resp.Header.Get("x-request-id"),
+					"x_oai_request_id", resp.Header.Get("x-oai-request-id"),
+					"cf_ray", resp.Header.Get("cf-ray"),
+					"x_error_json", resp.Header.Get("x-error-json"),
+				)
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

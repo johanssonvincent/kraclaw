@@ -49,11 +49,16 @@ func TestModelLister_ListOpenAIModels(t *testing.T) {
 func TestModelLister_ListOpenAIModelsChatGPTAuth(t *testing.T) {
 	var gotAuth string
 	var gotAccount string
+	var gotVersion string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotAccount = r.Header.Get("ChatGPT-Account-ID")
+		gotVersion = r.Header.Get("version")
 		if r.URL.Path != "/backend-api/codex/models" {
 			t.Fatalf("path = %q, want /backend-api/codex/models", r.URL.Path)
+		}
+		if r.URL.Query().Get("client_version") != codexClientVersion {
+			t.Fatalf("client_version = %q, want %q", r.URL.Query().Get("client_version"), codexClientVersion)
 		}
 		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-5.5","display_name":"GPT 5.5","supported_in_api":true}]}`))
 	}))
@@ -75,6 +80,9 @@ func TestModelLister_ListOpenAIModelsChatGPTAuth(t *testing.T) {
 	}
 	if gotAccount != "acct_123" {
 		t.Fatalf("ChatGPT-Account-ID = %q, want acct_123", gotAccount)
+	}
+	if gotVersion != codexClientVersion {
+		t.Fatalf("version = %q, want %q", gotVersion, codexClientVersion)
 	}
 	if len(models) != 1 || models[0].ID != "gpt-5.5" {
 		t.Fatalf("models = %#v, want gpt-5.5", models)
