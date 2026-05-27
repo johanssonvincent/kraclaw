@@ -17,6 +17,7 @@ import (
 const (
 	codexClientVersion = "0.0.0-kraclaw"
 	maxErrorBodyBytes  = 4096
+	defaultInstructions = "You are a helpful AI assistant. Respond conversationally and concisely."
 )
 
 type codexClient struct {
@@ -30,6 +31,7 @@ type codexClient struct {
 
 type codexResponsesRequest struct {
 	Model             string            `json:"model"`
+	Instructions      string            `json:"instructions"`
 	Input             []codexInputItem  `json:"input"`
 	Tools             []any             `json:"tools"`
 	ToolChoice        string            `json:"tool_choice"`
@@ -107,6 +109,7 @@ func buildCodexResponsesRequest(model string, history []conversationTurn, text s
 
 	return codexResponsesRequest{
 		Model:             model,
+		Instructions:      defaultInstructions,
 		Input:             input,
 		Tools:             []any{},
 		ToolChoice:        "auto",

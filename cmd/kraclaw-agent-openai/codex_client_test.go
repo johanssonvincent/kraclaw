@@ -40,6 +40,9 @@ func TestBuildCodexResponsesRequest(t *testing.T) {
 	if got["prompt_cache_key"] != "thread-1" {
 		t.Fatalf("prompt_cache_key = %v, want thread-1", got["prompt_cache_key"])
 	}
+	if instr, _ := got["instructions"].(string); instr == "" {
+		t.Fatalf("instructions = %v, want non-empty string", got["instructions"])
+	}
 	if _, ok := got["tools"].([]any); !ok {
 		t.Fatalf("tools = %#v, want array", got["tools"])
 	}
