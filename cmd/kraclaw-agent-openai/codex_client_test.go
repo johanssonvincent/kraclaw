@@ -231,9 +231,12 @@ func TestReasoningForModel(t *testing.T) {
 		wantReason bool
 	}{
 		"empty model":         {model: "", wantReason: false},
-		"gpt-5-codex":         {model: "gpt-5-codex", wantReason: true},
-		"gpt-5.2":             {model: "gpt-5.2", wantReason: true},
-		"GPT-5 uppercase":     {model: "GPT-5", wantReason: true},
+		"gpt-5-codex":          {model: "gpt-5-codex", wantReason: true},
+		"gpt-5.2":              {model: "gpt-5.2", wantReason: true},
+		"gpt-5.5":              {model: "gpt-5.5", wantReason: true},
+		"gpt-5.3-codex-spark":  {model: "gpt-5.3-codex-spark", wantReason: true},
+		"gpt-5.4-mini":         {model: "gpt-5.4-mini", wantReason: true},
+		"GPT-5 uppercase":      {model: "GPT-5", wantReason: true},
 		"o3-mini":             {model: "o3-mini", wantReason: true},
 		"o4-preview":          {model: "o4-preview", wantReason: true},
 		"o1-mini":             {model: "o1-mini", wantReason: true},
