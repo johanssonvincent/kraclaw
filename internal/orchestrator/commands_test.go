@@ -291,7 +291,7 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 		s := newMockStore()
 		s.groups = []store.Group{
 			{JID: "group1@g.us", Folder: "group1", Name: "Test",
-				ContainerConfig: &store.ContainerConfig{Provider: "openai", Model: "gpt-5.4"}},
+				ContainerConfig: &store.ContainerConfig{Provider: "openai", Model: "gpt-5-codex"}},
 		}
 		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
@@ -304,8 +304,8 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 		if !strings.Contains(ch.sent[0].text, "Models (OpenAI):") {
 			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "Models (OpenAI):")
 		}
-		if !strings.Contains(ch.sent[0].text, "gpt-5.4") {
-			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "gpt-5.4")
+		if !strings.Contains(ch.sent[0].text, "gpt-5-codex") {
+			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "gpt-5-codex")
 		}
 	})
 }
@@ -356,19 +356,19 @@ func TestHandleModelCommand_OpenAIDynamicValidation(t *testing.T) {
 		},
 		{
 			name:      "falls back to static validation when dynamic listing fails",
-			requested: "gpt-5.4",
+			requested: "gpt-5-codex",
 			listDynamicModels: func(context.Context, string, string) ([]provider.ModelInfo, error) {
 				return nil, errors.New("dynamic listing failed")
 			},
-			wantText: "Model set to gpt-5.4",
+			wantText: "Model set to gpt-5-codex",
 		},
 		{
 			name:      "falls back to static validation when dynamic listing is empty",
-			requested: "gpt-5.4",
+			requested: "gpt-5-codex",
 			listDynamicModels: func(context.Context, string, string) ([]provider.ModelInfo, error) {
 				return []provider.ModelInfo{}, nil
 			},
-			wantText: "Model set to gpt-5.4",
+			wantText: "Model set to gpt-5-codex",
 		},
 	}
 

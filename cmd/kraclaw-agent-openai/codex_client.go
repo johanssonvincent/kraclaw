@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,8 +18,10 @@ import (
 const (
 	codexClientVersion = "0.0.0-kraclaw"
 	maxErrorBodyBytes  = 4096
-	defaultInstructions = "You are a helpful AI assistant. Respond conversationally and concisely."
 )
+
+//go:embed codex_prompt.md
+var codexBaseInstructions string
 
 type codexClient struct {
 	proxyURL       string
@@ -36,12 +39,22 @@ type codexResponsesRequest struct {
 	Tools             []any             `json:"tools"`
 	ToolChoice        string            `json:"tool_choice"`
 	ParallelToolCalls bool              `json:"parallel_tool_calls"`
-	Reasoning         any               `json:"reasoning"`
+	Reasoning         *codexReasoning   `json:"reasoning,omitempty"`
 	Store             bool              `json:"store"`
 	Stream            bool              `json:"stream"`
 	Include           []string          `json:"include"`
 	PromptCacheKey    string            `json:"prompt_cache_key"`
+	Text              *codexText        `json:"text,omitempty"`
 	ClientMetadata    map[string]string `json:"client_metadata"`
+}
+
+type codexReasoning struct {
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary"`
+}
+
+type codexText struct {
+	Verbosity string `json:"verbosity,omitempty"`
 }
 
 type codexInputItem struct {
@@ -107,21 +120,46 @@ func buildCodexResponsesRequest(model string, history []conversationTurn, text s
 	}
 	input = append(input, codexMessage("user", text))
 
+	reasoning := reasoningForModel(model)
+	include := []string{}
+	if reasoning != nil {
+		include = append(include, "reasoning.encrypted_content")
+	}
+
 	return codexResponsesRequest{
 		Model:             model,
-		Instructions:      defaultInstructions,
+		Instructions:      codexBaseInstructions,
 		Input:             input,
 		Tools:             []any{},
 		ToolChoice:        "auto",
 		ParallelToolCalls: false,
-		Reasoning:         nil,
+		Reasoning:         reasoning,
 		Store:             false,
 		Stream:            true,
-		Include:           []string{},
+		Include:           include,
 		PromptCacheKey:    threadID,
+		Text:              &codexText{Verbosity: "medium"},
 		ClientMetadata: map[string]string{
 			"x-codex-installation-id": installationID,
 		},
+	}
+}
+
+// reasoningForModel returns the reasoning config Codex sends for the given
+// model slug. Codex enables reasoning for the gpt-5 / o-series families.
+func reasoningForModel(model string) *codexReasoning {
+	if model == "" {
+		return nil
+	}
+	lower := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(lower, "gpt-5"),
+		strings.HasPrefix(lower, "o1"),
+		strings.HasPrefix(lower, "o3"),
+		strings.HasPrefix(lower, "o4"):
+		return &codexReasoning{Effort: "medium", Summary: "auto"}
+	default:
+		return nil
 	}
 }
 

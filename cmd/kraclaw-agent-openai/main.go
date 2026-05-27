@@ -25,7 +25,7 @@ func main() {
 func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) error {
 	model := os.Getenv("OPENAI_MODEL")
 	if model == "" {
-		model = "gpt-5.4"
+		model = "gpt-5-codex"
 	}
 	proxyURL := os.Getenv("KRACLAW_PROXY_URL")
 	if proxyURL == "" {

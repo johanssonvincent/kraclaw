@@ -11,63 +11,113 @@ import (
 )
 
 func TestBuildCodexResponsesRequest(t *testing.T) {
-	req := buildCodexResponsesRequest("gpt-5.4", []conversationTurn{
-		{role: "user", text: "hello"},
-		{role: "assistant", text: "hi"},
-	}, "next", "thread-1", "install-1")
+	t.Parallel()
 
-	encoded, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("Marshal() err = %v, want nil", err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(encoded, &got); err != nil {
-		t.Fatalf("Unmarshal() err = %v, want nil", err)
+	tests := map[string]struct {
+		model        string
+		wantReasonOK bool
+	}{
+		"gpt-5-codex includes reasoning":      {model: "gpt-5-codex", wantReasonOK: true},
+		"gpt-5-codex-mini includes reasoning": {model: "gpt-5-codex-mini", wantReasonOK: true},
+		"o3 includes reasoning":               {model: "o3-mini", wantReasonOK: true},
+		"gpt-4 omits reasoning":               {model: "gpt-4-turbo", wantReasonOK: false},
 	}
 
-	if got["model"] != "gpt-5.4" {
-		t.Fatalf("model = %v, want gpt-5.4", got["model"])
-	}
-	if got["stream"] != true {
-		t.Fatalf("stream = %v, want true", got["stream"])
-	}
-	if got["tool_choice"] != "auto" {
-		t.Fatalf("tool_choice = %v, want auto", got["tool_choice"])
-	}
-	if got["parallel_tool_calls"] != false {
-		t.Fatalf("parallel_tool_calls = %v, want false", got["parallel_tool_calls"])
-	}
-	if got["prompt_cache_key"] != "thread-1" {
-		t.Fatalf("prompt_cache_key = %v, want thread-1", got["prompt_cache_key"])
-	}
-	if instr, _ := got["instructions"].(string); instr == "" {
-		t.Fatalf("instructions = %v, want non-empty string", got["instructions"])
-	}
-	if _, ok := got["tools"].([]any); !ok {
-		t.Fatalf("tools = %#v, want array", got["tools"])
-	}
-	input, ok := got["input"].([]any)
-	if !ok {
-		t.Fatalf("input = %#v, want array", got["input"])
-	}
-	if len(input) != 3 {
-		t.Fatalf("len(input) = %d, want 3", len(input))
-	}
-	last := input[2].(map[string]any)
-	if last["type"] != "message" || last["role"] != "user" {
-		t.Fatalf("last input = %#v, want user message", last)
-	}
-	content := last["content"].([]any)[0].(map[string]any)
-	if content["type"] != "input_text" || content["text"] != "next" {
-		t.Fatalf("content = %#v, want input_text next", content)
-	}
-	metadata := got["client_metadata"].(map[string]any)
-	if metadata["x-codex-installation-id"] != "install-1" {
-		t.Fatalf("client_metadata = %#v, want installation id", metadata)
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			req := buildCodexResponsesRequest(tt.model, []conversationTurn{
+				{role: "user", text: "hello"},
+				{role: "assistant", text: "hi"},
+			}, "next", "thread-1", "install-1")
+
+			encoded, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("Marshal() err = %v, want nil", err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(encoded, &got); err != nil {
+				t.Fatalf("Unmarshal() err = %v, want nil", err)
+			}
+
+			if got["model"] != tt.model {
+				t.Errorf("model = %v, want %q", got["model"], tt.model)
+			}
+			if got["stream"] != true {
+				t.Errorf("stream = %v, want true", got["stream"])
+			}
+			if got["tool_choice"] != "auto" {
+				t.Errorf("tool_choice = %v, want auto", got["tool_choice"])
+			}
+			if got["parallel_tool_calls"] != false {
+				t.Errorf("parallel_tool_calls = %v, want false", got["parallel_tool_calls"])
+			}
+			if got["prompt_cache_key"] != "thread-1" {
+				t.Errorf("prompt_cache_key = %v, want thread-1", got["prompt_cache_key"])
+			}
+			if instr, _ := got["instructions"].(string); !strings.Contains(instr, "Codex") {
+				t.Errorf("instructions = %q, want substring %q (embedded Codex prompt)", instr, "Codex")
+			}
+			if _, ok := got["tools"].([]any); !ok {
+				t.Errorf("tools = %#v, want array", got["tools"])
+			}
+			input, ok := got["input"].([]any)
+			if !ok {
+				t.Fatalf("input = %#v, want array", got["input"])
+			}
+			if len(input) != 3 {
+				t.Errorf("len(input) = %d, want 3", len(input))
+			}
+			last := input[2].(map[string]any)
+			if last["type"] != "message" || last["role"] != "user" {
+				t.Errorf("last input = %#v, want user message", last)
+			}
+			content := last["content"].([]any)[0].(map[string]any)
+			if content["type"] != "input_text" || content["text"] != "next" {
+				t.Errorf("content = %#v, want input_text next", content)
+			}
+			metadata := got["client_metadata"].(map[string]any)
+			if metadata["x-codex-installation-id"] != "install-1" {
+				t.Errorf("client_metadata = %#v, want installation id", metadata)
+			}
+			if text, _ := got["text"].(map[string]any); text == nil || text["verbosity"] != "medium" {
+				t.Errorf("text = %#v, want {verbosity: medium}", got["text"])
+			}
+
+			reasoning, hasReason := got["reasoning"]
+			include, _ := got["include"].([]any)
+			if tt.wantReasonOK {
+				if !hasReason || reasoning == nil {
+					t.Errorf("reasoning = %#v, want non-nil for %q", reasoning, tt.model)
+				} else if m, ok := reasoning.(map[string]any); !ok || m["summary"] != "auto" {
+					t.Errorf("reasoning = %#v, want {summary: auto, ...}", reasoning)
+				}
+				found := false
+				for _, v := range include {
+					if v == "reasoning.encrypted_content" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("include = %#v, want to contain %q", include, "reasoning.encrypted_content")
+				}
+			} else {
+				if hasReason && reasoning != nil {
+					t.Errorf("reasoning = %#v, want nil/omitted for %q", reasoning, tt.model)
+				}
+				if len(include) != 0 {
+					t.Errorf("include = %#v, want empty for %q", include, tt.model)
+				}
+			}
+		})
 	}
 }
 
 func TestCodexClientStreamResponseHeaders(t *testing.T) {
+	t.Parallel()
+
 	var gotHeader http.Header
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,15 +133,15 @@ func TestCodexClientStreamResponseHeaders(t *testing.T) {
 	client.threadID = "thread-1"
 	client.installationID = "install-1"
 
-	got, err := client.streamResponse(context.Background(), "gpt-5.4", nil, "hi")
+	got, err := client.streamResponse(context.Background(), "gpt-5-codex", nil, "hi")
 	if err != nil {
 		t.Fatalf("streamResponse() err = %v, want nil", err)
 	}
 	if got != "hello" {
-		t.Fatalf("streamResponse() = %q, want hello", got)
+		t.Errorf("streamResponse() = %q, want hello", got)
 	}
 	if gotPath != "/v1/responses" {
-		t.Fatalf("path = %q, want /v1/responses", gotPath)
+		t.Errorf("path = %q, want /v1/responses", gotPath)
 	}
 	wants := map[string]string{
 		"X-Kraclaw-Group":         "tui:g1",
@@ -107,12 +157,14 @@ func TestCodexClientStreamResponseHeaders(t *testing.T) {
 	}
 	for key, want := range wants {
 		if got := gotHeader.Get(key); got != want {
-			t.Fatalf("%s = %q, want %q", key, got, want)
+			t.Errorf("%s = %q, want %q", key, got, want)
 		}
 	}
 }
 
 func TestParseSSEText(t *testing.T) {
+	t.Parallel()
+
 	stream := strings.NewReader(strings.Join([]string{
 		": comment",
 		"event: ignored",
@@ -133,11 +185,13 @@ func TestParseSSEText(t *testing.T) {
 		t.Fatalf("parseSSEText() err = %v, want nil", err)
 	}
 	if got != "hello" {
-		t.Fatalf("parseSSEText() = %q, want hello", got)
+		t.Errorf("parseSSEText() = %q, want hello", got)
 	}
 }
 
 func TestCodexClientNon2xxIncludesCappedBody(t *testing.T) {
+	t.Parallel()
+
 	body := strings.Repeat("x", maxErrorBodyBytes+100)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -146,15 +200,52 @@ func TestCodexClientNon2xxIncludesCappedBody(t *testing.T) {
 	defer server.Close()
 
 	client := newCodexClient(server.URL, "tui:g1")
-	_, err := client.streamResponse(context.Background(), "gpt-5.4", nil, "hi")
+	_, err := client.streamResponse(context.Background(), "gpt-5-codex", nil, "hi")
 	if err == nil {
 		t.Fatal("streamResponse() err = nil, want error")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "400 Bad Request") {
-		t.Fatalf("error = %q, want status", msg)
+		t.Errorf("error = %q, want status", msg)
 	}
 	if strings.Contains(msg, strings.Repeat("x", maxErrorBodyBytes+1)) {
-		t.Fatalf("error body was not capped")
+		t.Errorf("error body was not capped")
+	}
+}
+
+func TestReasoningForModel(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		model      string
+		wantReason bool
+	}{
+		"empty model":         {model: "", wantReason: false},
+		"gpt-5-codex":         {model: "gpt-5-codex", wantReason: true},
+		"gpt-5.2":             {model: "gpt-5.2", wantReason: true},
+		"GPT-5 uppercase":     {model: "GPT-5", wantReason: true},
+		"o3-mini":             {model: "o3-mini", wantReason: true},
+		"o4-preview":          {model: "o4-preview", wantReason: true},
+		"o1-mini":             {model: "o1-mini", wantReason: true},
+		"gpt-4-turbo":         {model: "gpt-4-turbo", wantReason: false},
+		"claude-sonnet-4-6":   {model: "claude-sonnet-4-6", wantReason: false},
+		"text-embedding":      {model: "text-embedding-3-large", wantReason: false},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got := reasoningForModel(tt.model)
+			if tt.wantReason && got == nil {
+				t.Errorf("reasoningForModel(%q) = nil, want non-nil", tt.model)
+			}
+			if !tt.wantReason && got != nil {
+				t.Errorf("reasoningForModel(%q) = %#v, want nil", tt.model, got)
+			}
+			if got != nil && got.Summary != "auto" {
+				t.Errorf("reasoningForModel(%q).Summary = %q, want auto", tt.model, got.Summary)
+			}
+		})
 	}
 }

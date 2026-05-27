@@ -71,15 +71,15 @@ func NewRegistry() *Registry {
 	r.providers[ProviderOpenAI] = ProviderInfo{
 		ID:           ProviderOpenAI,
 		DisplayName:  "OpenAI",
-		DefaultModel: "gpt-5.4",
+		DefaultModel: "gpt-5-codex",
 		AuthMode:     AuthModeChatGPT,
 		Models: []ModelInfo{
-			{ID: "gpt-5.4", DisplayName: "GPT-5.4"},
-			{ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini"},
-			{ID: "gpt-5.4-nano", DisplayName: "GPT-5.4 Nano"},
-			{ID: "gpt-5.4-pro", DisplayName: "GPT-5.4 Pro"},
-			{ID: "gpt-5.3-codex", DisplayName: "GPT-5.3 Codex"},
-			{ID: "o3-mini", DisplayName: "o3-mini"},
+			{ID: "gpt-5-codex", DisplayName: "GPT-5 Codex"},
+			{ID: "gpt-5-codex-mini", DisplayName: "GPT-5 Codex Mini"},
+			{ID: "gpt-5.1-codex-max", DisplayName: "GPT-5.1 Codex Max"},
+			{ID: "gpt-5.2-codex", DisplayName: "GPT-5.2 Codex"},
+			{ID: "gpt-5.1", DisplayName: "GPT-5.1"},
+			{ID: "gpt-5.2", DisplayName: "GPT-5.2"},
 		},
 	}
 
