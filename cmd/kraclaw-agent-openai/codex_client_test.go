@@ -77,6 +77,16 @@ func TestBuildCodexResponsesRequest(t *testing.T) {
 			if content["type"] != "input_text" || content["text"] != "next" {
 				t.Errorf("content = %#v, want input_text next", content)
 			}
+			userMsg := input[0].(map[string]any)
+			userContent := userMsg["content"].([]any)[0].(map[string]any)
+			if userContent["type"] != "input_text" {
+				t.Errorf("user history content type = %v, want input_text", userContent["type"])
+			}
+			assistantMsg := input[1].(map[string]any)
+			assistantContent := assistantMsg["content"].([]any)[0].(map[string]any)
+			if assistantContent["type"] != "output_text" {
+				t.Errorf("assistant history content type = %v, want output_text", assistantContent["type"])
+			}
 			metadata := got["client_metadata"].(map[string]any)
 			if metadata["x-codex-installation-id"] != "install-1" {
 				t.Errorf("client_metadata = %#v, want installation id", metadata)

@@ -164,11 +164,15 @@ func reasoningForModel(model string) *codexReasoning {
 }
 
 func codexMessage(role string, text string) codexInputItem {
+	contentType := "input_text"
+	if role == "assistant" {
+		contentType = "output_text"
+	}
 	return codexInputItem{
 		Type: "message",
 		Role: role,
 		Content: []codexContentItem{{
-			Type: "input_text",
+			Type: contentType,
 			Text: text,
 		}},
 	}
