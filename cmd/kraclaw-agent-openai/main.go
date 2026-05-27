@@ -6,12 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
-
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/responses"
-	"github.com/openai/openai-go/shared"
 
 	"github.com/johanssonvincent/kraclaw/pkg/agent"
 )
@@ -42,14 +36,7 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 		return fmt.Errorf("KRACLAW_GROUP is required")
 	}
 
-	// Create OpenAI client pointing at the credential proxy.
-	opts := []option.RequestOption{
-		option.WithAPIKey("placeholder"), // Proxy injects real key.
-	}
-	opts = append(opts, option.WithBaseURL(proxyURL+"/v1"))
-	opts = append(opts, option.WithHeader("X-Kraclaw-Group", groupJID))
-
-	client := openai.NewClient(opts...)
+	client := newCodexClient(proxyURL, groupJID)
 
 	log.Info("openai agent ready", "model", model, "proxy", proxyURL)
 
@@ -79,21 +66,8 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 					continue
 				}
 
-				input := responseInput(history, text)
-				stream := client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
-					Model: shared.ResponsesModel(model),
-					Input: responses.ResponseNewParamsInputUnion{OfString: openai.String(input)},
-				})
-
-				var buf strings.Builder
-				for stream.Next() {
-					event := stream.Current()
-					if delta, ok := event.AsAny().(responses.ResponseTextDeltaEvent); ok {
-						buf.WriteString(delta.Delta)
-					}
-				}
-				fullResponse := buf.String()
-				if err := stream.Err(); err != nil {
+				fullResponse, err := client.streamResponse(ctx, model, history, text)
+				if err != nil {
 					log.Error("openai stream error", "error", err)
 					if sendErr := ipc.SendOutput(ctx, &agent.OutboundMessage{
 						Type: "message",
@@ -142,20 +116,6 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 			}
 		}
 	}
-}
-
-func responseInput(history []conversationTurn, text string) string {
-	var b strings.Builder
-	for _, msg := range history {
-		b.WriteString(strings.ToUpper(msg.role[:1]))
-		b.WriteString(msg.role[1:])
-		b.WriteString(": ")
-		b.WriteString(msg.text)
-		b.WriteString("\n\n")
-	}
-	b.WriteString("User: ")
-	b.WriteString(text)
-	return b.String()
 }
 
 func extractMessageText(payload json.RawMessage) (string, error) {
