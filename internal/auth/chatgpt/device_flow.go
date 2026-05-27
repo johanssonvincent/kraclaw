@@ -221,7 +221,7 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 	}
 	if code, parseErr := pollPendingCode(resp.StatusCode, respBody); code != "" {
 		switch code {
-		case "authorization_pending", "deviceauth_authorization_unknown", "authorization_unknown":
+		case "authorization_pending", "deviceauth_authorization_pending", "deviceauth_authorization_unknown", "authorization_unknown":
 			return nil, ErrAuthorizationPending
 		case "slow_down":
 			return nil, ErrSlowDown
@@ -276,7 +276,7 @@ func pollPendingCode(status int, body []byte) (string, error) {
 	}
 	code, parseErr := pollErrorCode(body)
 	switch code {
-	case "authorization_pending", "slow_down", "deviceauth_authorization_unknown", "authorization_unknown":
+	case "authorization_pending", "deviceauth_authorization_pending", "slow_down", "deviceauth_authorization_unknown", "authorization_unknown":
 		return code, nil
 	}
 	return "", parseErr

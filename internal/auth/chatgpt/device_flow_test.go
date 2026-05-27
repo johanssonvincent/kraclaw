@@ -267,6 +267,10 @@ func TestPollOnce_Pending(t *testing.T) {
 			status: http.StatusForbidden,
 			body:   `{"error":{"message":"Device authorization is unknown. Please try again.","type":"invalid_request_error","param":null,"code":"deviceauth_authorization_unknown"}}`,
 		},
+		"400 nested deviceauth_authorization_pending": {
+			status: http.StatusBadRequest,
+			body:   `{"error":{"message":"Device authorization is pending. Please try again.","type":"invalid_request_error","param":null,"code":"deviceauth_authorization_pending"}}`,
+		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -992,6 +996,12 @@ func TestPollPendingCode(t *testing.T) {
 			status:          http.StatusForbidden,
 			body:            []byte(`{"error":{"message":"Device authorization is unknown. Please try again.","type":"invalid_request_error","param":null,"code":"deviceauth_authorization_unknown"}}`),
 			wantCode:        "deviceauth_authorization_unknown",
+			wantParseErrSet: false,
+		},
+		"nested deviceauth_authorization_pending": {
+			status:          http.StatusBadRequest,
+			body:            []byte(`{"error":{"message":"Device authorization is pending. Please try again.","type":"invalid_request_error","param":null,"code":"deviceauth_authorization_pending"}}`),
+			wantCode:        "deviceauth_authorization_pending",
 			wantParseErrSet: false,
 		},
 		"in-range terminal code is not pending": {
