@@ -62,6 +62,10 @@ spec:
               value: {{ .Values.sandbox.proxyUrl | quote }}
             - name: HOME
               value: "/home/node"
+            {{- if not .Values.sandbox.fastStart.enabled }}
+            - name: KRACLAW_AGENT_DEFENSIVE_STREAM
+              value: "1"
+            {{- end }}
           volumeMounts:
             - name: sessions
               mountPath: /home/node/.claude

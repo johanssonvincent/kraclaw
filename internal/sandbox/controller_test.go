@@ -1018,3 +1018,37 @@ func TestBuildSandbox_AgentImagePullPolicy(t *testing.T) {
 		t.Errorf("agent ImagePullPolicy = %q, want %q", got, corev1.PullIfNotPresent)
 	}
 }
+
+func TestBuildSandbox_DefensiveStreamEnvGating(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		fastStart bool
+		wantEnv   bool
+	}{
+		"fast_start_enabled_no_env":      {fastStart: true, wantEnv: false},
+		"fast_start_disabled_env_set":    {fastStart: false, wantEnv: true},
+	}
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c := newTestControllerWithFastStart(t, tt.fastStart)
+			sb, err := c.buildSandbox("test-name", validSandboxConfig())
+			if err != nil {
+				t.Fatalf("buildSandbox: %v", err)
+			}
+			var found bool
+			for _, e := range sb.Spec.PodTemplate.Spec.Containers[0].Env {
+				if e.Name == "KRACLAW_AGENT_DEFENSIVE_STREAM" {
+					if e.Value != "1" {
+						t.Errorf("KRACLAW_AGENT_DEFENSIVE_STREAM value = %q, want %q", e.Value, "1")
+					}
+					found = true
+					break
+				}
+			}
+			if found != tt.wantEnv {
+				t.Errorf("KRACLAW_AGENT_DEFENSIVE_STREAM env present = %v, want %v", found, tt.wantEnv)
+			}
+		})
+	}
+}

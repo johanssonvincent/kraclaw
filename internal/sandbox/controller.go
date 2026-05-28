@@ -349,6 +349,12 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		return nil, fmt.Errorf("sandbox: unsupported provider %q", providerID)
 	}
 
+	// When fast-start is disabled, the orchestrator skips EnsureStreamForAgent
+	// so the agent must restore its self-create defensive path.
+	if !c.fastStartEnabled {
+		envVars = append(envVars, corev1.EnvVar{Name: "KRACLAW_AGENT_DEFENSIVE_STREAM", Value: "1"})
+	}
+
 	nonRoot := true
 	allowPrivEsc := false
 	runAs := runAsUser
