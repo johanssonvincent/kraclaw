@@ -17,6 +17,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/config"
 	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/metrics"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/queue"
 	"github.com/johanssonvincent/kraclaw/internal/router"
@@ -912,6 +913,23 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		return false, fmt.Errorf("create sandbox: sandbox controller is nil (Kubernetes not connected)")
 	}
 
+	// Pre-create the IPC stream + consumer so the agent skips CreateOrUpdate
+	// round-trips on boot. Idempotent; safe to call on every spawn. Gated on
+	// FastStartEnabled so the rollout path (false) preserves legacy semantics.
+	if o.cfg.K8s.FastStartEnabled {
+		ensureStart := time.Now()
+		if err := o.ensureStreamForAgentWithRetry(ctx, group.Folder, ipc.DefaultAgentID); err != nil {
+			o.mu.Lock()
+			o.lastAgentTimestamp[chatJID] = previousCursor
+			o.mu.Unlock()
+			if saveErr := o.saveState(ctx); saveErr != nil {
+				o.log.Error("failed to save state", "error", saveErr)
+			}
+			return false, fmt.Errorf("ensure stream for agent: %w", err)
+		}
+		metrics.SandboxSpawnDuration.WithLabelValues("ensure_stream").Observe(time.Since(ensureStart).Seconds())
+	}
+
 	status, err := o.sandbox.CreateSandbox(ctx, sbCfg)
 	if err != nil {
 		// Roll back cursor on error.
@@ -920,6 +938,13 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		o.mu.Unlock()
 		if err := o.saveState(ctx); err != nil {
 			o.log.Error("failed to save state", "error", err)
+		}
+		if o.cfg.K8s.FastStartEnabled {
+			if has, hasErr := o.sandbox.HasActiveSandbox(ctx, group.Folder); hasErr == nil && !has {
+				if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
+					o.log.Error("failed to delete IPC streams after CreateSandbox failure", "group", group.Name, "error", delErr)
+				}
+			}
 		}
 		return false, fmt.Errorf("create sandbox: %w", err)
 	}
@@ -1762,4 +1787,29 @@ func (o *Orchestrator) recoverPendingMessages(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// ensureStreamForAgentWithRetry retries EnsureStreamForAgent up to 3 times with
+// exponential backoff. JetStream stream/consumer provisioning can fail
+// transiently during broker reconnects; permanent errors (auth, malformed
+// config) still surface after the bounded retry window.
+func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group, agentID string) error {
+	var lastErr error
+	backoff := 100 * time.Millisecond
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			backoff *= 2
+		}
+		if err := o.ipc.EnsureStreamForAgent(ctx, group, agentID); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("ensure stream for agent failed after retries: %w", lastErr)
 }

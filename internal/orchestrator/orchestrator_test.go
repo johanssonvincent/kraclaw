@@ -271,6 +271,12 @@ type mockIPCBroker struct {
 	deleteStreamsGroup  string
 	sendInputFn         func(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error
 	subscribeOutputFn   func(ctx context.Context, group string) (<-chan *ipc.IPCMessage, <-chan error, error)
+
+	ensureStreamForAgentCalls []struct{ group, agentID string }
+	ensureStreamForAgentErrs  []error // queue of errors; consumed in order. nil entry = success.
+	ensureStreamForAgentErr   error   // fallback if errs queue empty
+	ensureStreamForAgentMu    sync.Mutex
+	callOrder                 []string // appended on EnsureStreamForAgent + DeleteStreams
 }
 
 func (m *mockIPCBroker) PublishOutput(_ context.Context, _ string, _ string, msg *ipc.IPCMessage) error {
@@ -305,13 +311,25 @@ func (m *mockIPCBroker) ReadInput(_ context.Context, _ string, _ string) (<-chan
 	ch := make(chan *ipc.IPCMessage)
 	return ch, nil
 }
-func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, _ string, _ string) error {
-	return nil
+func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, group, agentID string) error {
+	m.ensureStreamForAgentMu.Lock()
+	defer m.ensureStreamForAgentMu.Unlock()
+	m.ensureStreamForAgentCalls = append(m.ensureStreamForAgentCalls, struct{ group, agentID string }{group, agentID})
+	m.callOrder = append(m.callOrder, "EnsureStreamForAgent")
+	if len(m.ensureStreamForAgentErrs) > 0 {
+		err := m.ensureStreamForAgentErrs[0]
+		m.ensureStreamForAgentErrs = m.ensureStreamForAgentErrs[1:]
+		return err
+	}
+	return m.ensureStreamForAgentErr
 }
 func (m *mockIPCBroker) Close() error { return nil }
 func (m *mockIPCBroker) DeleteStreams(_ context.Context, group string) error {
+	m.ensureStreamForAgentMu.Lock()
 	m.deleteStreamsCalled++
 	m.deleteStreamsGroup = group
+	m.callOrder = append(m.callOrder, "DeleteStreams")
+	m.ensureStreamForAgentMu.Unlock()
 	return nil
 }
 
@@ -669,10 +687,15 @@ type mockSandboxControllerWithTracking struct {
 	createCalled atomic.Bool
 	createErr    error
 	stopCalled   atomic.Bool
+	onCreate     func() // called inside CreateSandbox before the early-return
+	hasActive    bool   // returned by HasActiveSandbox; defaults to false
 }
 
 func (m *mockSandboxControllerWithTracking) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
 	m.createCalled.Store(true)
+	if m.onCreate != nil {
+		m.onCreate()
+	}
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
@@ -683,7 +706,7 @@ func (m *mockSandboxControllerWithTracking) StopSandbox(_ context.Context, _ str
 	return nil
 }
 func (m *mockSandboxControllerWithTracking) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
-	return false, nil
+	return m.hasActive, nil
 }
 func (m *mockSandboxControllerWithTracking) CleanupOrphans(_ context.Context) error { return nil }
 func (m *mockSandboxControllerWithTracking) WatchSandboxes(_ context.Context) (<-chan sandbox.SandboxEvent, error) {
@@ -4137,5 +4160,178 @@ func TestConfirmedCursorFlusher_FinalFlushSavesUnderCanceledCtx(t *testing.T) {
 	}
 	if len(s.setStateCalls) == 0 {
 		t.Error("saveState should succeed using context.Background() even when passed ctx is cancelled")
+	}
+}
+
+// --- EnsureStreamForAgent pre-call tests ---
+
+func TestSpawnAgent_CallsEnsureStreamBeforeCreateSandbox(t *testing.T) {
+	t.Parallel()
+	s := newMockStore()
+	mq := &mockQueue{active: make(map[string]bool)}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{
+		onCreate: func() {
+			b.ensureStreamForAgentMu.Lock()
+			b.callOrder = append(b.callOrder, "CreateSandbox")
+			b.ensureStreamForAgentMu.Unlock()
+		},
+	}
+
+	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+	o.cfg.K8s.FastStartEnabled = true
+	o.cfg.Queue.MaxConcurrent = 10
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("claim slot")
+	}
+	defer release()
+
+	if _, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {}); err != nil {
+		t.Fatalf("processGroupMessages: %v", err)
+	}
+	if got := len(b.ensureStreamForAgentCalls); got != 1 {
+		t.Errorf("EnsureStreamForAgent calls = %d, want 1", got)
+	}
+	if got := b.ensureStreamForAgentCalls[0]; got.group != "test-group" || got.agentID != ipc.DefaultAgentID {
+		t.Errorf("EnsureStreamForAgent args = %+v, want {group: test-group, agentID: main}", got)
+	}
+	if !sb.createCalled.Load() {
+		t.Error("CreateSandbox not called")
+	}
+	// Ordering check.
+	b.ensureStreamForAgentMu.Lock()
+	order := append([]string(nil), b.callOrder...)
+	b.ensureStreamForAgentMu.Unlock()
+	foundEnsure, foundCreate := -1, -1
+	for i, op := range order {
+		if op == "EnsureStreamForAgent" && foundEnsure == -1 {
+			foundEnsure = i
+		}
+		if op == "CreateSandbox" && foundCreate == -1 {
+			foundCreate = i
+		}
+	}
+	if foundEnsure == -1 || foundCreate == -1 || foundEnsure >= foundCreate {
+		t.Errorf("EnsureStreamForAgent must precede CreateSandbox; got order = %v", order)
+	}
+}
+
+func TestSpawnAgent_EnsureStreamFailure_NoSandboxCreated(t *testing.T) {
+	t.Parallel()
+	s := newMockStore()
+	mq := &mockQueue{active: make(map[string]bool)}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{ensureStreamForAgentErr: errors.New("boom")}
+	sb := &mockSandboxControllerWithTracking{}
+
+	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+	o.cfg.K8s.FastStartEnabled = true
+	o.cfg.Queue.MaxConcurrent = 10
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("claim slot")
+	}
+	defer release()
+
+	_, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {})
+	if err == nil || !strings.Contains(err.Error(), "ensure stream for agent") {
+		t.Fatalf("err = %v, want substring \"ensure stream for agent\"", err)
+	}
+	if sb.createCalled.Load() {
+		t.Error("CreateSandbox was called despite EnsureStreamForAgent failure")
+	}
+}
+
+func TestSpawnAgent_CreateSandboxFailure_AfterEnsureStream_DeletesStreams(t *testing.T) {
+	t.Parallel()
+	s := newMockStore()
+	mq := &mockQueue{active: make(map[string]bool)}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{
+		createErr: errors.New("api timeout"),
+		hasActive: false,
+	}
+
+	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+	o.cfg.K8s.FastStartEnabled = true
+	o.cfg.Queue.MaxConcurrent = 10
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("claim slot")
+	}
+	defer release()
+
+	if _, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {}); err == nil {
+		t.Fatal("want error")
+	}
+	if got := b.deleteStreamsCalled; got != 1 {
+		t.Errorf("DeleteStreams calls = %d, want 1", got)
+	}
+}
+
+func TestSpawnAgent_EnsureStreamTransientFailure_RetriesThenCreatesSandbox(t *testing.T) {
+	t.Parallel()
+	s := newMockStore()
+	mq := &mockQueue{active: make(map[string]bool)}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{ensureStreamForAgentErrs: []error{errors.New("temporary"), nil}}
+	sb := &mockSandboxControllerWithTracking{}
+
+	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+	o.cfg.K8s.FastStartEnabled = true
+	o.cfg.Queue.MaxConcurrent = 10
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("claim slot")
+	}
+	defer release()
+
+	if _, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {}); err != nil {
+		t.Fatalf("processGroupMessages: %v", err)
+	}
+	if got := len(b.ensureStreamForAgentCalls); got != 2 {
+		t.Errorf("EnsureStreamForAgent calls = %d, want 2", got)
+	}
+	if !sb.createCalled.Load() {
+		t.Error("CreateSandbox not called after retry succeeded")
 	}
 }
