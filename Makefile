@@ -1,4 +1,4 @@
-.PHONY: help build build-tui build-agent-openai build-agent-anthropic run test clean docker-build docker-push proto lint fmt tidy deps
+.PHONY: help build build-tui build-agent-openai build-agent-anthropic run test clean docker-build docker-push proto lint fmt tidy deps check-image-digests
 
 # Variables
 APP_NAME := kraclaw
@@ -77,3 +77,6 @@ tidy: ## Tidy Go modules
 deps: ## Download dependencies
 	@echo "Downloading dependencies..."
 	@go mod download
+
+check-image-digests: ## Verify production agent images are digest-pinned
+	@./scripts/check-image-digests.sh helm/values-prod.yaml

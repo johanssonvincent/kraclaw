@@ -54,8 +54,12 @@ nats:
 #
 # Kubernetes / sandbox configuration — AGENT_IMAGE_ANTHROPIC and AGENT_IMAGE_OPENAI are required before helm install
 k8s:
-  agentImageAnthropic: ""              # AGENT_IMAGE_ANTHROPIC — Go-based Anthropic agent (REQUIRED)
-  agentImageOpenAI: ""                 # AGENT_IMAGE_OPENAI — Go-based OpenAI agent
+  # AGENT_IMAGE_ANTHROPIC — Go Anthropic agent. MUST be digest-pinned in production
+  # (e.g. ghcr.io/johanssonvincent/kraclaw-agent-anthropic@sha256:<digest>). The
+  # check-image-digests.sh prepush guard rejects values-prod.yaml without @sha256: refs.
+  agentImageAnthropic: ""              # (REQUIRED)
+  # AGENT_IMAGE_OPENAI — same rule as Anthropic; digest pin required in production.
+  agentImageOpenAI: ""
   inCluster: true                       # K8S_IN_CLUSTER
   sessionsPvc: ""                        # K8S_SESSIONS_PVC — auto-computed from fullname if empty
   groupsPvc: ""                          # K8S_GROUPS_PVC — auto-computed from fullname if empty
