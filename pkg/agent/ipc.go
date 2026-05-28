@@ -48,8 +48,8 @@ type IPCClient struct {
 	streamCreated bool
 
 	// consumerFetchBackoff is the initial sleep between bounded Consumer-fetch
-	// retries. Zero value means use 100ms. Exported for tests that need to
-	// shrink the wall-clock cost; not part of the public contract.
+	// retries. Zero value means use 100ms. Accessible to same-package tests that
+	// need to shrink the wall-clock cost; not part of the public contract.
 	consumerFetchBackoff time.Duration
 }
 
@@ -211,6 +211,9 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 		if !errors.Is(err, jetstream.ErrConsumerNotFound) &&
 			!errors.Is(err, jetstream.ErrStreamNotFound) {
 			return fmt.Errorf("fetch input consumer %s: %w", consName, err)
+		}
+		if attempt == 5 {
+			break // avoid wasted sleep after the last attempt
 		}
 		select {
 		case <-time.After(backoff):
