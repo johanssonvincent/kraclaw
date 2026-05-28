@@ -305,6 +305,9 @@ func (m *mockIPCBroker) ReadInput(_ context.Context, _ string, _ string) (<-chan
 	ch := make(chan *ipc.IPCMessage)
 	return ch, nil
 }
+func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, _ string, _ string) error {
+	return nil
+}
 func (m *mockIPCBroker) Close() error { return nil }
 func (m *mockIPCBroker) DeleteStreams(_ context.Context, group string) error {
 	m.deleteStreamsCalled++

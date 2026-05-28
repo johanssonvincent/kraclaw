@@ -400,6 +400,9 @@ func (m *mockIPCBroker) ReadInput(ctx context.Context, group, agentID string) (<
 	return ch, nil
 }
 
+func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, _ string, _ string) error {
+	return nil
+}
 func (m *mockIPCBroker) DeleteStreams(ctx context.Context, group string) error { return nil }
 func (m *mockIPCBroker) Close() error                                          { return nil }
 
