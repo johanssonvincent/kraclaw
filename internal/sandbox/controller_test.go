@@ -31,7 +31,7 @@ func newTestController() *Controller {
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", true)
 	if err != nil {
 		panic("newTestController: " + err.Error())
 	}
@@ -137,7 +137,7 @@ func newTestControllerWithCreateInterceptor(funcs interceptor.Funcs) *Controller
 		Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", true)
 	if err != nil {
 		panic("newTestControllerWithCreateInterceptor: " + err.Error())
 	}
@@ -533,7 +533,7 @@ func TestCleanupOrphans_IsNotFoundSkipped(t *testing.T) {
 		failName:  "kraclaw-agent-gone-aaa111",
 	}
 
-	ctrl, err := New(fake.NewClientset(), wrappedClient, nil, "test-ns", nil, "nats://localhost:4222", "http://localhost:3001")
+	ctrl, err := New(fake.NewClientset(), wrappedClient, nil, "test-ns", nil, "nats://localhost:4222", "http://localhost:3001", true)
 	if err != nil {
 		t.Fatal(err)
 	}

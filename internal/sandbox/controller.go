@@ -38,14 +38,15 @@ const (
 
 // Controller manages agent sandboxes via Sandbox resources.
 type Controller struct {
-	clientset   kubernetes.Interface
-	ctrlClient  client.WithWatch
-	config      *rest.Config
-	namespace   string
-	agentImages map[string]string // provider -> image
-	natsURL     string
-	proxyURL    string
-	log         *slog.Logger
+	clientset        kubernetes.Interface
+	ctrlClient       client.WithWatch
+	config           *rest.Config
+	namespace        string
+	agentImages      map[string]string // provider -> image
+	natsURL          string
+	proxyURL         string
+	fastStartEnabled bool
+	log              *slog.Logger
 }
 
 // SandboxConfig holds the parameters for creating a new sandbox.
@@ -95,7 +96,15 @@ type SandboxStatus struct {
 }
 
 // New creates a new sandbox controller.
-func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *rest.Config, namespace string, agentImages map[string]string, natsURL, proxyURL string) (*Controller, error) {
+func New(
+	clientset kubernetes.Interface,
+	ctrlClient client.WithWatch,
+	config *rest.Config,
+	namespace string,
+	agentImages map[string]string,
+	natsURL, proxyURL string,
+	fastStartEnabled bool,
+) (*Controller, error) {
 	if clientset == nil {
 		return nil, fmt.Errorf("sandbox: kubernetes clientset is required")
 	}
@@ -103,14 +112,15 @@ func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *re
 		agentImages = map[string]string{}
 	}
 	return &Controller{
-		clientset:   clientset,
-		ctrlClient:  ctrlClient,
-		config:      config,
-		namespace:   namespace,
-		agentImages: agentImages,
-		natsURL:     natsURL,
-		proxyURL:    proxyURL,
-		log:         slog.Default().With("component", "sandbox"),
+		clientset:        clientset,
+		ctrlClient:       ctrlClient,
+		config:           config,
+		namespace:        namespace,
+		agentImages:      agentImages,
+		natsURL:          natsURL,
+		proxyURL:         proxyURL,
+		fastStartEnabled: fastStartEnabled,
+		log:              slog.Default().With("component", "sandbox"),
 	}, nil
 }
 
