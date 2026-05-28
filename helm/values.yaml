@@ -139,6 +139,12 @@ secrets:
 sandbox:
   enabled: true
 
+  # Fast-start optimisation flag — gates legacy init-dirs container and defensive
+  # agent-side IPC paths. Default true; set to false to roll back to legacy behaviour.
+  # (Task 12 also wires this through to the server and agent envs.)
+  fastStart:
+    enabled: true
+
   # Default agent container image for SandboxTemplate pod spec (REQUIRED when sandbox.enabled=true)
   agentImage: ""            # set to the agent image to run, e.g. via --set sandbox.agentImage=...
 

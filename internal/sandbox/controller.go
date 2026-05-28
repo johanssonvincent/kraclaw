@@ -354,6 +354,38 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 	runAs := runAsUser
 	replicas := int32(1)
 
+	// Gate the legacy init-dirs container behind the fast-start flag.
+	// When fast-start is enabled the agent binary creates its own directories
+	// (ensureGroupDirs), so the init container is redundant and wastes ~3-5s.
+	var initContainers []corev1.Container
+	if !c.fastStartEnabled {
+		initContainers = []corev1.Container{
+			{
+				Name:  "init-dirs",
+				Image: "busybox",
+				Command: []string{
+					"sh", "-c",
+					"mkdir -p /sessions/$(GROUP_FOLDER)/.claude && mkdir -p /groups/$(GROUP_FOLDER)/archives",
+				},
+				Env: []corev1.EnvVar{groupFolderEnv},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "sessions", MountPath: "/sessions"},
+					{Name: "groups", MountPath: "/groups"},
+				},
+				SecurityContext: &corev1.SecurityContext{
+					RunAsUser:                &runAs,
+					AllowPrivilegeEscalation: &allowPrivEsc,
+				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("10m"),
+						corev1.ResourceMemory: resource.MustParse("32Mi"),
+					},
+				},
+			},
+		}
+	}
+
 	// Build the agent container.
 	container := corev1.Container{
 		Name:       "agent",
@@ -398,31 +430,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 						RunAsNonRoot: &nonRoot,
 						RunAsUser:    &runAs,
 					},
-					InitContainers: []corev1.Container{
-						{
-							Name:  "init-dirs",
-							Image: "busybox",
-							Command: []string{
-								"sh", "-c",
-								"mkdir -p /sessions/$(GROUP_FOLDER)/.claude && mkdir -p /groups/$(GROUP_FOLDER)/archives",
-							},
-							Env: []corev1.EnvVar{groupFolderEnv},
-							VolumeMounts: []corev1.VolumeMount{
-								{Name: "sessions", MountPath: "/sessions"},
-								{Name: "groups", MountPath: "/groups"},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								RunAsUser:                &runAs,
-								AllowPrivilegeEscalation: &allowPrivEsc,
-							},
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("10m"),
-									corev1.ResourceMemory: resource.MustParse("32Mi"),
-								},
-							},
-						},
-					},
+					InitContainers: initContainers,
 					Containers: []corev1.Container{container},
 					Volumes: []corev1.Volume{
 						{

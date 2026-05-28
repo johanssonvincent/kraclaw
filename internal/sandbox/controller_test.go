@@ -94,21 +94,9 @@ func TestCreateSandbox(t *testing.T) {
 		t.Fatalf("GROUP_FOLDER env var not set on agent container")
 	}
 
-	// GROUP_FOLDER env var must also be injected into the init container.
-	initContainers := sandbox.Spec.PodTemplate.Spec.InitContainers
-	if len(initContainers) == 0 {
-		t.Fatal("no init containers in pod spec")
-	}
-	var foundInitGroupFolder bool
-	for _, env := range initContainers[0].Env {
-		if env.Name == "GROUP_FOLDER" && env.Value == "test-group" {
-			foundInitGroupFolder = true
-			break
-		}
-	}
-	if !foundInitGroupFolder {
-		t.Fatalf("GROUP_FOLDER env var not set on init container")
-	}
+	// With fast-start enabled (the default in newTestController), init containers
+	// are omitted. GROUP_FOLDER injection into the init container is covered by
+	// TestBuildSandbox_FastStartInitContainerGating (fast_start_disabled case).
 }
 
 // failNTimesCreateInterceptor returns an interceptor.Funcs that fails Create
@@ -958,5 +946,62 @@ func TestAgentImageForProvider_AnthropicFallbackReturnsError(t *testing.T) {
 	_, err := c.agentImageForProvider("anthropic")
 	if err == nil {
 		t.Fatal("expected error when falling back to legacy anthropic image")
+	}
+}
+
+// newTestControllerWithFastStart returns a Controller wired exactly like
+// newTestController but with the given fastStartEnabled value.
+func newTestControllerWithFastStart(t *testing.T, fastStart bool) *Controller {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = agentsandboxv1alpha1.AddToScheme(scheme)
+	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
+	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", fastStart)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return ctrl
+}
+
+// validSandboxConfig returns a minimal SandboxConfig suitable for buildSandbox calls.
+func validSandboxConfig() SandboxConfig {
+	return SandboxConfig{
+		GroupFolder:   "test-group",
+		GroupJID:      "123@g.us",
+		IsMain:        true,
+		Timeout:       5 * time.Minute,
+		AssistantName: "Kraclaw",
+	}
+}
+
+func TestBuildSandbox_FastStartInitContainerGating(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		fastStart    bool
+		wantInitLen  int
+		wantInitName string // empty when wantInitLen == 0
+	}{
+		"fast_start_enabled":  {fastStart: true, wantInitLen: 0},
+		"fast_start_disabled": {fastStart: false, wantInitLen: 1, wantInitName: "init-dirs"},
+	}
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c := newTestControllerWithFastStart(t, tt.fastStart)
+			sb, err := c.buildSandbox("test-name", validSandboxConfig())
+			if err != nil {
+				t.Fatalf("buildSandbox: %v", err)
+			}
+			got := sb.Spec.PodTemplate.Spec.InitContainers
+			if len(got) != tt.wantInitLen {
+				t.Errorf("InitContainers len = %d, want %d", len(got), tt.wantInitLen)
+				return
+			}
+			if tt.wantInitLen > 0 && got[0].Name != tt.wantInitName {
+				t.Errorf("InitContainers[0].Name = %q, want %q", got[0].Name, tt.wantInitName)
+			}
+		})
 	}
 }

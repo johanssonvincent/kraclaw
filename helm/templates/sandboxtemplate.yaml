@@ -22,6 +22,7 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: {{ .Values.sandbox.runAsUser }}
+      {{- if not .Values.sandbox.fastStart.enabled }}
       initContainers:
         - name: init-dirs
           image: {{ .Values.sandbox.initImage }}
@@ -42,6 +43,7 @@ spec:
             allowPrivilegeEscalation: false
           resources:
             {{- toYaml .Values.sandbox.initResources | nindent 12 }}
+      {{- end }}
       containers:
         - name: agent
           image: {{ .Values.sandbox.agentImage }}
