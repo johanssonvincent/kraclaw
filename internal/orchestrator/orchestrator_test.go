@@ -4377,3 +4377,65 @@ func TestSpawnAgent_EnsureStreamTransientFailure_RetriesThenCreatesSandbox(t *te
 		t.Error("CreateSandbox not called after retry succeeded")
 	}
 }
+
+func TestRecordFirstOutputPhase(t *testing.T) {
+	s := newMockStore()
+	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
+
+	// No seed: must be a no-op.
+	o.recordFirstOutputPhase("absent@g.us")
+
+	// Seed and observe.
+	o.spawnStartMu.Lock()
+	o.spawnStart["seeded@g.us"] = time.Now().Add(-100 * time.Millisecond)
+	o.spawnStartMu.Unlock()
+
+	o.recordFirstOutputPhase("seeded@g.us")
+
+	o.spawnStartMu.Lock()
+	_, stillPresent := o.spawnStart["seeded@g.us"]
+	o.spawnStartMu.Unlock()
+	if stillPresent {
+		t.Errorf("spawnStart entry should be deleted after observation")
+	}
+
+	// Idempotent: second call is a no-op (entry already deleted).
+	o.recordFirstOutputPhase("seeded@g.us")
+}
+
+func TestSpawnAgent_SeedsSpawnStartBeforeCreateSandbox(t *testing.T) {
+	s := newMockStore()
+	mq := &mockQueue{active: make(map[string]bool)}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{}
+
+	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+	o.cfg.K8s.FastStartEnabled = true
+	o.cfg.Queue.MaxConcurrent = 10
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("claim slot")
+	}
+	defer release()
+
+	if _, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {}); err != nil {
+		t.Fatalf("processGroupMessages: %v", err)
+	}
+
+	o.spawnStartMu.Lock()
+	_, present := o.spawnStart["group1@g.us"]
+	o.spawnStartMu.Unlock()
+	if !present {
+		t.Errorf("spawnStart entry not seeded for chatJID after CreateSandbox")
+	}
+}

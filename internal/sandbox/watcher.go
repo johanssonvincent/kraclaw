@@ -8,6 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	agentsandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/johanssonvincent/kraclaw/internal/metrics"
 )
 
 // SandboxEvent represents a lifecycle event for a sandbox.
@@ -51,6 +53,10 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 		defer w.Stop()
 		defer close(ch)
 
+		// seen tracks per-sandbox-name which phases we have already recorded
+		// so duplicate Modified events don't double-observe the histogram.
+		seen := map[string]map[string]bool{}
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -74,8 +80,13 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 					evType = "updated"
 				case watch.Deleted:
 					evType = "deleted"
+					delete(seen, sandbox.Name)
 				default:
 					continue
+				}
+
+				if event.Type != watch.Deleted {
+					recordPhaseTransitions(sandbox, seen)
 				}
 
 				select {
@@ -89,4 +100,35 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 	}()
 
 	return ch, nil
+}
+
+// recordPhaseTransitions observes cold-start phase histograms for the
+// PodScheduled and Ready conditions on a Sandbox. seen is keyed by sandbox
+// name → phase name so duplicate Modified events do not double-record.
+// Durations are measured from the Sandbox's CreationTimestamp to the
+// condition's LastTransitionTime.
+func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]map[string]bool) {
+	if seen[sb.Name] == nil {
+		seen[sb.Name] = map[string]bool{}
+	}
+	created := sb.CreationTimestamp.Time
+	for _, cond := range sb.Status.Conditions {
+		if cond.Status != metav1.ConditionTrue {
+			continue
+		}
+		var phase string
+		switch cond.Type {
+		case "PodScheduled":
+			phase = "pod_scheduled"
+		case string(agentsandboxv1alpha1.SandboxConditionReady):
+			phase = "pod_ready"
+		default:
+			continue
+		}
+		if seen[sb.Name][phase] {
+			continue
+		}
+		seen[sb.Name][phase] = true
+		metrics.SandboxSpawnDuration.WithLabelValues(phase).Observe(cond.LastTransitionTime.Time.Sub(created).Seconds())
+	}
 }

@@ -70,6 +70,13 @@ type Orchestrator struct {
 	registeredGroups map[string]store.Group // JID -> Group
 	activeSandboxes  map[string]string      // chatJID -> current sandbox name
 
+	// spawnStart tracks the CreateSandbox start time per chatJID so the first
+	// IPC output message can observe the full first_output cold-start phase on
+	// metrics.SandboxSpawnDuration. Entry is added pre-CreateSandbox and removed
+	// when first_output is observed.
+	spawnStart   map[string]time.Time
+	spawnStartMu sync.Mutex
+
 	// inflightSandboxes tracks in-flight spawn claims (set semantics). The value
 	// is always struct{}{}; only key presence matters — never inspect the value.
 	// Guards against the double-sandbox TOCTOU: a second poll or deactivate-
@@ -163,6 +170,7 @@ func New(
 		sessions:               make(map[string]string),
 		registeredGroups:       make(map[string]store.Group),
 		activeSandboxes:        make(map[string]string),
+		spawnStart:             make(map[string]time.Time),
 		rateLimiters:           make(map[string]*TokenBucket),
 		notify:                 make(chan struct{}, 1),
 		log:                    log.With("component", "orchestrator"),
@@ -930,7 +938,13 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		metrics.SandboxSpawnDuration.WithLabelValues("ensure_stream").Observe(time.Since(ensureStart).Seconds())
 	}
 
+	o.spawnStartMu.Lock()
+	o.spawnStart[chatJID] = time.Now()
+	o.spawnStartMu.Unlock()
+
+	crdStart := time.Now()
 	status, err := o.sandbox.CreateSandbox(ctx, sbCfg)
+	metrics.SandboxSpawnDuration.WithLabelValues("crd_create").Observe(time.Since(crdStart).Seconds())
 	if err != nil {
 		// Roll back cursor on error.
 		o.mu.Lock()
@@ -1529,6 +1543,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				continue
 			}
 			agentConnected = true
+			o.recordFirstOutputPhase(chatJID)
 			if o.handleIPCMessage(ctx, chatJID, group, msg) {
 				deactivate()
 				return
@@ -1817,4 +1832,21 @@ func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group,
 		return nil
 	}
 	return fmt.Errorf("ensure stream for agent failed after retries: %w", lastErr)
+}
+
+// recordFirstOutputPhase observes the first_output cold-start phase for a
+// spawn the first time any IPC output is seen for the chatJID. The matching
+// spawnStart entry is seeded immediately before CreateSandbox; the
+// delete-on-observe makes this a one-shot per spawn cycle.
+func (o *Orchestrator) recordFirstOutputPhase(chatJID string) {
+	o.spawnStartMu.Lock()
+	start, ok := o.spawnStart[chatJID]
+	if ok {
+		delete(o.spawnStart, chatJID)
+	}
+	o.spawnStartMu.Unlock()
+	if !ok {
+		return
+	}
+	metrics.SandboxSpawnDuration.WithLabelValues("first_output").Observe(time.Since(start).Seconds())
 }
