@@ -1099,7 +1099,6 @@ func TestNATSBroker_EnsureStreamForAgent(t *testing.T) {
 		},
 	}
 	for name, tt := range cases {
-		tt := tt
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			broker, _ := setupNATS(t)
@@ -1109,7 +1108,7 @@ func TestNATSBroker_EnsureStreamForAgent(t *testing.T) {
 			tt.seed(t, broker, ctx, group)
 			err := broker.EnsureStreamForAgent(ctx, group, tt.agentID)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("EnsureStreamForAgent(%q,%q) err=%v wantErr=%v", group, tt.agentID, err, tt.wantErr)
+				t.Errorf("EnsureStreamForAgent(%q,%q) err=%v wantErr=%v", group, tt.agentID, err, tt.wantErr)
 			}
 			sanitized := SanitizeGroupID(group)
 			consName := "agent-" + SanitizeAgentID(tt.agentID)
