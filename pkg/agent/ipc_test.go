@@ -115,11 +115,12 @@ func TestIPCClient_ReadInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Create the stream and publish an input message (as the server normally would).
+	// Create the stream and consumer (as the server normally would via Task 3).
 	js, _ := jetstream.New(nc)
 	sanitized := sanitizeGroupID(group)
+	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
 	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Name:      streamName,
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
 		Retention: jetstream.LimitsPolicy,
 		MaxAge:    time.Hour,
@@ -127,10 +128,18 @@ func TestIPCClient_ReadInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
+	if _, err := js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+		Durable:       "agent-main",
+		FilterSubject: "kraclaw.ipc." + sanitized + ".main.input",
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatalf("create consumer: %v", err)
+	}
 
 	inputSubject := "kraclaw.ipc." + sanitized + ".main.input"
 
-	// Create the consumer (ReadInput), then publish.
+	// Fetch the pre-created consumer (ReadInput), then publish.
 	ch, errCh, err := client.ReadInput(ctx)
 	if err != nil {
 		t.Fatalf("ReadInput: %v", err)
@@ -169,6 +178,27 @@ func TestIPCClient_ReadInput_ContextCancel(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// Pre-create stream and consumer as the server normally would (Task 3).
+	js, _ := jetstream.New(nc)
+	sanitized := sanitizeGroupID(group)
+	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:      streamName,
+		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    time.Hour,
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	if _, err := js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+		Durable:       "agent-main",
+		FilterSubject: "kraclaw.ipc." + sanitized + ".main.input",
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatalf("create consumer: %v", err)
+	}
 
 	ch, errCh, err := client.ReadInput(ctx)
 	if err != nil {
@@ -222,6 +252,9 @@ func TestIPCClient_SendOutput_EnsureStreamError_Wrapped(t *testing.T) {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
 
+	// Enable defensive stream creation so ensureStream is invoked.
+	t.Setenv("KRACLAW_AGENT_DEFENSIVE_STREAM", "1")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -249,16 +282,25 @@ func TestIPCClientSyncOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Pre-create the stream.
+	// Pre-create stream and consumer as the server normally would (Task 3).
 	js, _ := jetstream.New(nc)
 	sanitized := sanitizeGroupID(group)
+	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Name:      streamName,
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
 		Retention: jetstream.LimitsPolicy,
 		MaxAge:    time.Hour,
 	}); err != nil {
 		t.Fatalf("create stream: %v", err)
+	}
+	if _, err := js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+		Durable:       "agent-main",
+		FilterSubject: "kraclaw.ipc." + sanitized + ".main.input",
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatalf("create consumer: %v", err)
 	}
 
 	type result struct {
@@ -342,16 +384,25 @@ func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Pre-create the stream.
+	// Pre-create stream and consumer as the server normally would (Task 3).
 	js, _ := jetstream.New(nc)
 	sanitized := sanitizeGroupID(group)
+	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Name:      streamName,
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
 		Retention: jetstream.LimitsPolicy,
 		MaxAge:    time.Hour,
 	}); err != nil {
 		t.Fatalf("create stream: %v", err)
+	}
+	if _, err := js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+		Durable:       "agent-main",
+		FilterSubject: "kraclaw.ipc." + sanitized + ".main.input",
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatalf("create consumer: %v", err)
 	}
 
 	msgCh, errCh, err := client.ReadInput(ctx)
@@ -420,17 +471,26 @@ func TestIPCClient_ReadInput_MultiGroupIsolation(t *testing.T) {
 	ctxB, cancelB := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelB()
 
-	// Pre-create both streams (as the server normally would).
+	// Pre-create both streams and consumers as the server normally would (Task 3).
 	js, _ := jetstream.New(nc)
 	for _, g := range []string{groupA, groupB} {
 		sanitized := sanitizeGroupID(g)
+		streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
 		if _, err := js.CreateOrUpdateStream(ctxA, jetstream.StreamConfig{
-			Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+			Name:      streamName,
 			Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
 			Retention: jetstream.LimitsPolicy,
 			MaxAge:    time.Hour,
 		}); err != nil {
 			t.Fatalf("create stream %s: %v", g, err)
+		}
+		if _, err := js.CreateOrUpdateConsumer(ctxA, streamName, jetstream.ConsumerConfig{
+			Durable:       "agent-main",
+			FilterSubject: "kraclaw.ipc." + sanitized + ".main.input",
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+		}); err != nil {
+			t.Fatalf("create consumer %s: %v", g, err)
 		}
 	}
 
@@ -506,19 +566,28 @@ func TestIPCClient_ReadInput_MalformedMessage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Pre-create the stream.
+	// Pre-create stream and consumer as the server normally would (Task 3).
 	js, _ := jetstream.New(nc)
 	sanitized := sanitizeGroupID(group)
+	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:      "KRACLAW_IPC_" + strings.ToUpper(sanitized),
+		Name:      streamName,
 		Subjects:  []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
 		Retention: jetstream.LimitsPolicy,
 		MaxAge:    time.Hour,
 	}); err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
+	if _, err := js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+		Durable:       "agent-main",
+		FilterSubject: "kraclaw.ipc." + sanitized + ".main.input",
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatalf("create consumer: %v", err)
+	}
 
-	// Subscribe first so the consumer exists before the malformed publish.
+	// Fetch the pre-created consumer, then publish.
 	ch, errCh, err := client.ReadInput(ctx)
 	if err != nil {
 		t.Fatalf("ReadInput: %v", err)
@@ -604,18 +673,14 @@ func (c *mockAckFailConsumer) Messages(...jetstream.PullMessagesOpt) (jetstream.
 	return c.iter, nil
 }
 
-// mockAckFailJS embeds jetstream.JetStream and overrides only the methods used
-// by ReadInput (CreateOrUpdateStream and CreateOrUpdateConsumer).
+// mockAckFailJS embeds jetstream.JetStream and overrides only Consumer, which
+// is the method used by startReadInput to fetch the pre-created consumer.
 type mockAckFailJS struct {
 	jetstream.JetStream
 	consumer *mockAckFailConsumer
 }
 
-func (js *mockAckFailJS) CreateOrUpdateStream(_ context.Context, _ jetstream.StreamConfig) (jetstream.Stream, error) {
-	return nil, nil
-}
-
-func (js *mockAckFailJS) CreateOrUpdateConsumer(_ context.Context, _ string, _ jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func (js *mockAckFailJS) Consumer(_ context.Context, _ string, _ string) (jetstream.Consumer, error) {
 	return js.consumer, nil
 }
 
@@ -665,5 +730,120 @@ func TestIPCClient_ReadInput_AckFailurePropagatesError(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out: Ack failure was not propagated to errCh")
+	}
+}
+
+func TestStartReadInput_ConsumerExists_FetchesInOneCall(t *testing.T) {
+	nc := startTestNATS(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	sanitized := ipc.SanitizeGroupID("g")
+	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
+	if _, err := js.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
+		Name:     streamName,
+		Subjects: []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+		Storage:  jetstream.FileStorage,
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	if _, err := js.CreateOrUpdateConsumer(context.Background(), streamName, jetstream.ConsumerConfig{
+		Durable:       "agent-main",
+		FilterSubject: "kraclaw.ipc." + sanitized + ".main.input",
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatalf("create consumer: %v", err)
+	}
+	c, err := NewIPCClient(nc, "g", "main", slog.Default())
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	msgCh, errCh, err := c.ReadInput(ctx)
+	if err != nil {
+		t.Fatalf("ReadInput err = %v, want nil", err)
+	}
+	if msgCh == nil || errCh == nil {
+		t.Errorf("channels = %v, %v; want non-nil", msgCh, errCh)
+	}
+}
+
+func TestStartReadInput_ConsumerNeverExists_ReturnsTerminalError(t *testing.T) {
+	nc := startTestNATS(t)
+	// No stream / no consumer created — fetch should retry 5x with bounded backoff and fail.
+	c, err := NewIPCClient(nc, "g", "main", slog.Default())
+	if err != nil {
+		t.Fatalf("NewIPCClient: %v", err)
+	}
+	c.consumerFetchBackoff = 1 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _, err = c.ReadInput(ctx)
+	if err == nil || !strings.Contains(err.Error(), "fetch input consumer") {
+		t.Fatalf("err = %v, want substring \"fetch input consumer\"", err)
+	}
+}
+
+func TestSendOutput_DefensiveStreamOnlyWhenEnvSet(t *testing.T) {
+	cases := map[string]struct {
+		envValue       string
+		seedStream     bool
+		wantSendOutErr bool // true if we expect SendOutput to fail when stream doesn't exist and the env gate skips ensureStream
+	}{
+		"env_unset_no_seed": {
+			envValue:       "",
+			seedStream:     false,
+			wantSendOutErr: true, // stream doesn't exist and we no longer create it
+		},
+		"env_set_no_seed": {
+			envValue:       "1",
+			seedStream:     false,
+			wantSendOutErr: false, // ensureStream runs and creates the stream
+		},
+		"env_set_seeded": {
+			envValue:       "1",
+			seedStream:     true,
+			wantSendOutErr: false,
+		},
+		"env_unset_seeded": {
+			envValue:       "",
+			seedStream:     true,
+			wantSendOutErr: false, // stream already there
+		},
+	}
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			nc := startTestNATS(t)
+			t.Setenv("KRACLAW_AGENT_DEFENSIVE_STREAM", tt.envValue)
+			if tt.seedStream {
+				js, _ := jetstream.New(nc)
+				sanitized := ipc.SanitizeGroupID("g-" + name)
+				streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
+				if _, err := js.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
+					Name:     streamName,
+					Subjects: []string{"kraclaw.ipc." + sanitized + ".*.input", "kraclaw.ipc." + sanitized + ".*.output"},
+					Storage:  jetstream.FileStorage,
+				}); err != nil {
+					t.Fatalf("seed stream: %v", err)
+				}
+			}
+			c, err := NewIPCClient(nc, "g-"+name, "main", slog.Default())
+			if err != nil {
+				t.Fatalf("NewIPCClient: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			err = c.SendOutput(ctx, &OutboundMessage{Type: "test"})
+			if tt.wantSendOutErr {
+				if err == nil {
+					t.Errorf("SendOutput err = nil, want error (stream missing + env gate skips ensureStream)")
+				}
+			} else if err != nil {
+				t.Errorf("SendOutput err = %v, want nil", err)
+			}
+		})
 	}
 }
