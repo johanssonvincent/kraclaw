@@ -264,8 +264,8 @@ func TestLoad(t *testing.T) {
 				"GRPC_INSECURE":         "true",
 			},
 			check: func(t *testing.T, cfg *Config) {
-				if cfg.K8s.FastStartEnabled != true {
-					t.Fatalf("expected default FastStartEnabled true, got %v", cfg.K8s.FastStartEnabled)
+				if !cfg.K8s.FastStartEnabled {
+					t.Errorf("expected default FastStartEnabled true, got %v", cfg.K8s.FastStartEnabled)
 				}
 			},
 		},
@@ -279,8 +279,8 @@ func TestLoad(t *testing.T) {
 				"K8S_FAST_START_ENABLED":   "false",
 			},
 			check: func(t *testing.T, cfg *Config) {
-				if cfg.K8s.FastStartEnabled != false {
-					t.Fatalf("expected FastStartEnabled false, got %v", cfg.K8s.FastStartEnabled)
+				if cfg.K8s.FastStartEnabled {
+					t.Errorf("expected FastStartEnabled false, got %v", cfg.K8s.FastStartEnabled)
 				}
 			},
 		},
