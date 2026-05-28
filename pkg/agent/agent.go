@@ -83,9 +83,28 @@ func ensureGroupDirs() error {
 	return nil
 }
 
+// waitForPrepullSignal blocks until SIGTERM/SIGINT. Exposed as a package-level
+// variable so tests can substitute a controllable wait without sending real
+// signals to the test process.
+var waitForPrepullSignal = func() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	<-ctx.Done()
+}
+
 // Run is the main agent lifecycle: connect, process, shutdown.
 func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) error) error {
 	log := slog.Default()
+
+	// --prepull: warm-keeper mode used by the DaemonSet. The image must exist
+	// on every node to satisfy ImagePullPolicy=IfNotPresent for fast cold-start;
+	// we hold the image warm by running this binary with --prepull so kubelet
+	// keeps the layers around as long as the DaemonSet pod is alive.
+	if len(os.Args) > 1 && os.Args[1] == "--prepull" {
+		log.Info("prepull noop")
+		waitForPrepullSignal()
+		return nil
+	}
 
 	cfg, err := LoadConfig()
 	if err != nil {

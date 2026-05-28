@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig_RequiresGroup(t *testing.T) {
@@ -135,5 +139,38 @@ func TestEnsureGroupDirs(t *testing.T) {
 				t.Errorf("ensureGroupDirs() err = %v, want substring %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRun_PrepullArg_ReturnsOnSignal(t *testing.T) {
+	// Drive Run() with --prepull and a test-controlled signal context. The
+	// function must return nil without calling LoadConfig (no required env vars set).
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	os.Args = []string{"agent", "--prepull"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	oldWait := waitForPrepullSignal
+	waitForPrepullSignal = func() {
+		<-ctx.Done()
+	}
+	t.Cleanup(func() { waitForPrepullSignal = oldWait })
+
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(func(ctx context.Context, ipc *IPCClient, log *slog.Logger) error {
+			return fmt.Errorf("handler must not run in prepull mode")
+		})
+	}()
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run() err = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not return after prepull wait was released")
 	}
 }
