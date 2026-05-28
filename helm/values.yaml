@@ -177,10 +177,12 @@ sandbox:
       cpu: "10m"
       memory: "32Mi"
 
-  # Agent container resources — tune for your workload
+  # Agent container resources — tune for your workload. Request right-sized to
+  # 200m (was 500m): scheduler admits faster on warm nodes; limit unchanged so
+  # bursty CPU during cold-start still lands within the 2000m ceiling.
   agentResources:
     requests:
-      cpu: "500m"
+      cpu: "200m"
       memory: "512Mi"
     limits:
       cpu: "2000m"
