@@ -62,4 +62,10 @@ var (
 		Name: "kraclaw_ipc_messages_processed_total",
 		Help: "Total IPC messages processed from agents",
 	})
+
+	SandboxSpawnDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "kraclaw_sandbox_spawn_duration_seconds",
+		Help:    "Time spent in each cold-start phase from CreateSandbox to first agent IPC output.",
+		Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 3, 5, 8, 13, 21},
+	}, []string{"phase"})
 )
