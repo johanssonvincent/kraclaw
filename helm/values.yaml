@@ -185,3 +185,9 @@ sandbox:
     limits:
       cpu: "2000m"
       memory: "2Gi"
+
+# Pre-pull DaemonSet — holds agent images warm on every node so cold-start with
+# ImagePullPolicy=IfNotPresent never pays a registry round-trip. Effective only
+# when sandbox.fastStart.enabled=true; set false to opt out independently.
+prepull:
+  enabled: true
