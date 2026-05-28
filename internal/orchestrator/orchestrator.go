@@ -940,9 +940,14 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 			o.log.Error("failed to save state", "error", err)
 		}
 		if o.cfg.K8s.FastStartEnabled {
-			if has, hasErr := o.sandbox.HasActiveSandbox(ctx, group.Folder); hasErr == nil && !has {
+			has, hasErr := o.sandbox.HasActiveSandbox(ctx, group.Folder)
+			if hasErr != nil {
+				o.log.Error("failed to check active sandbox during IPC stream rollback; leaking stream",
+					"group", group.Name, "error", hasErr)
+			} else if !has {
 				if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
-					o.log.Error("failed to delete IPC streams after CreateSandbox failure", "group", group.Name, "error", delErr)
+					o.log.Error("failed to delete IPC streams after CreateSandbox failure",
+						"group", group.Name, "error", delErr)
 				}
 			}
 		}

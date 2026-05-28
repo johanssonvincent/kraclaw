@@ -689,6 +689,7 @@ type mockSandboxControllerWithTracking struct {
 	stopCalled   atomic.Bool
 	onCreate     func() // called inside CreateSandbox before the early-return
 	hasActive    bool   // returned by HasActiveSandbox; defaults to false
+	hasActiveErr error  // returned by HasActiveSandbox; defaults to nil
 }
 
 func (m *mockSandboxControllerWithTracking) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
@@ -706,7 +707,7 @@ func (m *mockSandboxControllerWithTracking) StopSandbox(_ context.Context, _ str
 	return nil
 }
 func (m *mockSandboxControllerWithTracking) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
-	return m.hasActive, nil
+	return m.hasActive, m.hasActiveErr
 }
 func (m *mockSandboxControllerWithTracking) CleanupOrphans(_ context.Context) error { return nil }
 func (m *mockSandboxControllerWithTracking) WatchSandboxes(_ context.Context) (<-chan sandbox.SandboxEvent, error) {
@@ -4296,6 +4297,47 @@ func TestSpawnAgent_CreateSandboxFailure_AfterEnsureStream_DeletesStreams(t *tes
 	}
 	if got := b.deleteStreamsCalled; got != 1 {
 		t.Errorf("DeleteStreams calls = %d, want 1", got)
+	}
+}
+
+func TestSpawnAgent_CreateSandboxFailure_HasActiveSandboxError_SkipsDelete(t *testing.T) {
+	t.Parallel()
+	s := newMockStore()
+	mq := &mockQueue{active: make(map[string]bool)}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{
+		createErr:    errors.New("api timeout"),
+		hasActiveErr: errors.New("kube api down"),
+	}
+
+	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+	o.cfg.K8s.FastStartEnabled = true
+	o.cfg.Queue.MaxConcurrent = 10
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("claim slot")
+	}
+	defer release()
+
+	if _, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {}); err == nil {
+		t.Fatal("want error")
+	}
+	// When HasActiveSandbox returns an error, the conservative behavior is to
+	// skip DeleteStreams (the stream is intentionally left for the
+	// operator/sandboxWatcher to clean up). The error must be logged so the
+	// orphan is detectable; this test asserts the conservative skip.
+	if got := b.deleteStreamsCalled; got != 0 {
+		t.Errorf("DeleteStreams calls = %d, want 0 when HasActiveSandbox errors", got)
 	}
 }
 
