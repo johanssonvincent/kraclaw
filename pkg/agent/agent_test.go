@@ -1,6 +1,11 @@
 package agent
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestLoadConfig_RequiresGroup(t *testing.T) {
 	t.Setenv("KRACLAW_GROUP", "")
@@ -74,5 +79,61 @@ func TestLoadConfig_AllFields(t *testing.T) {
 	}
 	if cfg.Provider != "openai" {
 		t.Fatalf("expected openai, got %q", cfg.Provider)
+	}
+}
+
+func TestEnsureGroupDirs(t *testing.T) {
+	cases := map[string]struct {
+		homeEnv string // "" = set to t.TempDir(); "__UNSET__" = unset
+		setup   func(t *testing.T, home string)
+		wantErr string // substring; empty = no error
+	}{
+		"happy_path": {
+			homeEnv: "",
+			setup:   func(t *testing.T, home string) {},
+		},
+		"home_unset": {
+			homeEnv: "__UNSET__",
+			setup:   func(t *testing.T, home string) {},
+			wantErr: "HOME unset",
+		},
+		"idempotent_existing": {
+			homeEnv: "",
+			setup: func(t *testing.T, home string) {
+				if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+			},
+		},
+	}
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			archives := t.TempDir() // stand-in for /workspace/archives
+			if tt.homeEnv == "__UNSET__" {
+				t.Setenv("HOME", "")
+			} else {
+				t.Setenv("HOME", home)
+			}
+			t.Setenv("KRACLAW_AGENT_ARCHIVES_DIR", archives)
+			tt.setup(t, home)
+			err := ensureGroupDirs()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("ensureGroupDirs() err = %v, want nil", err)
+					return
+				}
+				if _, statErr := os.Stat(filepath.Join(home, ".claude")); statErr != nil {
+					t.Errorf(".claude not created: %v", statErr)
+				}
+				if _, statErr := os.Stat(archives); statErr != nil {
+					t.Errorf("archives dir not created: %v", statErr)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("ensureGroupDirs() err = %v, want substring %q", err, tt.wantErr)
+			}
+		})
 	}
 }

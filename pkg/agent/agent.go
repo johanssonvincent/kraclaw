@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -58,6 +59,30 @@ func ConnectNATS(url string) (*nats.Conn, error) {
 	return nc, nil
 }
 
+// ensureGroupDirs creates the per-pod directories that the legacy init-dirs
+// busybox container used to create. Called from Run before NATS connect so the
+// agent process can start without depending on a separate init container.
+func ensureGroupDirs() error {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return fmt.Errorf("HOME unset")
+	}
+	archives := os.Getenv("KRACLAW_AGENT_ARCHIVES_DIR")
+	if archives == "" {
+		archives = "/workspace/archives"
+	}
+	dirs := []string{
+		filepath.Join(home, ".claude"),
+		archives,
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", d, err)
+		}
+	}
+	return nil
+}
+
 // Run is the main agent lifecycle: connect, process, shutdown.
 func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) error) error {
 	log := slog.Default()
@@ -68,6 +93,10 @@ func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) err
 	}
 
 	log.Info("agent starting", "group", cfg.Group, "agent_id", cfg.AgentID, "provider", cfg.Provider)
+
+	if err := ensureGroupDirs(); err != nil {
+		return fmt.Errorf("ensure group dirs: %w", err)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
