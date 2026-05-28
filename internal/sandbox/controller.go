@@ -388,10 +388,11 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 
 	// Build the agent container.
 	container := corev1.Container{
-		Name:       "agent",
-		Image:      image,
-		WorkingDir: "/workspace",
-		Env:        envVars,
+		Name:            "agent",
+		Image:           image,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		WorkingDir:      "/workspace",
+		Env:             envVars,
 		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:        "sessions",

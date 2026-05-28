@@ -1005,3 +1005,16 @@ func TestBuildSandbox_FastStartInitContainerGating(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildSandbox_AgentImagePullPolicy(t *testing.T) {
+	t.Parallel()
+	c := newTestControllerWithFastStart(t, true)
+	sb, err := c.buildSandbox("test-name", validSandboxConfig())
+	if err != nil {
+		t.Fatalf("buildSandbox: %v", err)
+	}
+	got := sb.Spec.PodTemplate.Spec.Containers[0].ImagePullPolicy
+	if got != corev1.PullIfNotPresent {
+		t.Errorf("agent ImagePullPolicy = %q, want %q", got, corev1.PullIfNotPresent)
+	}
+}
