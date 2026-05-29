@@ -141,7 +141,7 @@ func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]ma
 				"sandbox", sb.Name, "phase", key)
 			continue
 		}
-		d := cond.LastTransitionTime.Time.Sub(created)
+		d := cond.LastTransitionTime.Sub(created)
 		if d < 0 {
 			log.Warn("skipping cold-start phase sample with negative duration",
 				"sandbox", sb.Name, "phase", key, "duration", d)
