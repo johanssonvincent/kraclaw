@@ -1097,6 +1097,12 @@ func TestNATSBroker_EnsureStreamForAgent(t *testing.T) {
 			},
 			agentID: "main",
 		},
+		"agent_id_with_unsafe_chars": {
+			// Exercises the SanitizeAgentID transform end-to-end: the durable
+			// consumer name must be derived from the sanitized agent ID.
+			seed:    func(*testing.T, *NATSBroker, context.Context, string) {},
+			agentID: "weird/agent:id@x",
+		},
 	}
 	for name, tt := range cases {
 		t.Run(name, func(t *testing.T) {

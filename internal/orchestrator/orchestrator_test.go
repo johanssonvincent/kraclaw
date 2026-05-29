@@ -4243,9 +4243,13 @@ func TestSpawnAgent_EnsureStreamFailure_NoSandboxCreated(t *testing.T) {
 	o.router = rtr
 	o.auth = auth.New(s)
 
+	// Preset the cursor so we can assert it is rolled back to its pre-spawn
+	// value on failure (a dropped rollback = silent message loss).
+	preSpawnCursor := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	o.lastAgentTimestamp["group1@g.us"] = preSpawnCursor
 	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
 	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: preSpawnCursor.Add(time.Hour), Sender: "alice"},
 	}
 
 	release, ok := o.claimSandboxSlot("group1@g.us")
@@ -4260,6 +4264,12 @@ func TestSpawnAgent_EnsureStreamFailure_NoSandboxCreated(t *testing.T) {
 	}
 	if sb.createCalled.Load() {
 		t.Error("CreateSandbox was called despite EnsureStreamForAgent failure")
+	}
+	o.mu.Lock()
+	gotCursor := o.lastAgentTimestamp["group1@g.us"]
+	o.mu.Unlock()
+	if !gotCursor.Equal(preSpawnCursor) {
+		t.Errorf("cursor after EnsureStream failure = %v, want rolled back to %v", gotCursor, preSpawnCursor)
 	}
 }
 
@@ -4338,6 +4348,72 @@ func TestSpawnAgent_CreateSandboxFailure_HasActiveSandboxError_SkipsDelete(t *te
 	// orphan is detectable; this test asserts the conservative skip.
 	if got := b.deleteStreamsCalled; got != 0 {
 		t.Errorf("DeleteStreams calls = %d, want 0 when HasActiveSandbox errors", got)
+	}
+}
+
+// TestSpawnAgent_FastStartDisabled_LegacyPath covers the FastStartEnabled=false
+// rollout path at the orchestrator level: the stream is NOT pre-created, so the
+// happy path never calls EnsureStreamForAgent and the CreateSandbox failure path
+// never attempts the pre-created-stream DeleteStreams rollback.
+func TestSpawnAgent_FastStartDisabled_LegacyPath(t *testing.T) {
+	tests := map[string]struct {
+		createErr             error
+		wantErr               bool
+		wantEnsureStreamCalls int
+		wantDeleteStreams     int
+		wantCreateCalled      bool
+	}{
+		"happy path skips EnsureStreamForAgent": {
+			wantCreateCalled: true,
+		},
+		"CreateSandbox failure skips pre-created-stream rollback": {
+			createErr:         errors.New("api timeout"),
+			wantErr:           true,
+			wantDeleteStreams: 0,
+			wantCreateCalled:  true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := newMockStore()
+			mq := &mockQueue{active: make(map[string]bool)}
+			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+			b := &mockIPCBroker{}
+			sb := &mockSandboxControllerWithTracking{createErr: tt.createErr}
+
+			o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+			o.cfg.K8s.FastStartEnabled = false
+			o.cfg.Queue.MaxConcurrent = 10
+			rtr, _ := router.New([]channel.Channel{ch}, s)
+			o.router = rtr
+			o.auth = auth.New(s)
+
+			o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+			s.messages["group1@g.us"] = []store.Message{
+				{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+			}
+
+			release, ok := o.claimSandboxSlot("group1@g.us")
+			if !ok {
+				t.Fatal("claim slot")
+			}
+			defer release()
+
+			_, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {})
+			if (err != nil) != tt.wantErr {
+				t.Errorf("processGroupMessages err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got := len(b.ensureStreamForAgentCalls); got != tt.wantEnsureStreamCalls {
+				t.Errorf("EnsureStreamForAgent calls = %d, want %d (legacy path must not pre-create)", got, tt.wantEnsureStreamCalls)
+			}
+			if got := b.deleteStreamsCalled; got != tt.wantDeleteStreams {
+				t.Errorf("DeleteStreams calls = %d, want %d", got, tt.wantDeleteStreams)
+			}
+			if got := sb.createCalled.Load(); got != tt.wantCreateCalled {
+				t.Errorf("CreateSandbox called = %v, want %v", got, tt.wantCreateCalled)
+			}
+		})
 	}
 }
 
