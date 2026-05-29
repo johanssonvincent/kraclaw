@@ -950,6 +950,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		o.mu.Lock()
 		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
+		o.clearSpawnStart(chatJID)
 		if err := o.saveState(ctx); err != nil {
 			o.log.Error("failed to save state", "error", err)
 		}
@@ -982,6 +983,22 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		delete(o.activeSandboxes, chatJID)
 		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
+		o.clearSpawnStart(chatJID)
+		// The IPC stream pre-created above (FastStart) is now orphaned unless
+		// another active sandbox still owns the group. Mirror the CreateSandbox
+		// rollback: gate on HasActiveSandbox, conservatively skip on check-error.
+		if o.cfg.K8s.FastStartEnabled {
+			has, hasErr := o.sandbox.HasActiveSandbox(ctx, group.Folder)
+			if hasErr != nil {
+				o.log.Error("failed to check active sandbox during IPC stream rollback; leaking stream",
+					"group", group.Name, "error", hasErr)
+			} else if !has {
+				if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
+					o.log.Error("failed to delete IPC streams after MarkActive failure",
+						"group", group.Name, "error", delErr)
+				}
+			}
+		}
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state", "error", saveErr)
 		}
@@ -1028,6 +1045,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		delete(o.activeSandboxes, chatJID)
 		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
+		o.clearSpawnStart(chatJID)
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state after SubscribeOutput failure", "group", group.Name, "error", saveErr)
 		}
@@ -1067,6 +1085,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		delete(o.activeSandboxes, chatJID)
 		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
+		o.clearSpawnStart(chatJID)
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state after SendInput failure", "group", group.Name, "error", saveErr)
 		}
@@ -1832,6 +1851,15 @@ func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group,
 		return nil
 	}
 	return fmt.Errorf("ensure stream for agent failed after retries: %w", lastErr)
+}
+
+// clearSpawnStart removes a spawnStart entry under spawnStartMu. Called on every
+// spawn failure path after the timer is seeded so a failed spawn never leaves a
+// stale entry behind (the entry is otherwise only removed on first output).
+func (o *Orchestrator) clearSpawnStart(chatJID string) {
+	o.spawnStartMu.Lock()
+	delete(o.spawnStart, chatJID)
+	o.spawnStartMu.Unlock()
 }
 
 // recordFirstOutputPhase observes the first_output cold-start phase for a

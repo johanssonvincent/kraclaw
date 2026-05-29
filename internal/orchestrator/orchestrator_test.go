@@ -4439,3 +4439,121 @@ func TestSpawnAgent_SeedsSpawnStartBeforeCreateSandbox(t *testing.T) {
 		t.Errorf("spawnStart entry not seeded for chatJID after CreateSandbox")
 	}
 }
+
+// TestSpawnAgent_FailurePaths_ClearSpawnStart verifies that every spawn-failure
+// path after the spawnStart timer is seeded removes the spawnStart entry, and
+// that the MarkActive failure path performs the same HasActiveSandbox-gated
+// IPC stream cleanup as the CreateSandbox failure path (closing the leak the
+// fast-start pre-creation introduced). The happy path leaves spawnStart seeded
+// (it is removed on first output, not here).
+func TestSpawnAgent_FailurePaths_ClearSpawnStart(t *testing.T) {
+	failingSubscribe := func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, <-chan error, error) {
+		return nil, nil, errors.New("subscribe boom")
+	}
+	failingSend := func(_ context.Context, _, _ string, _ *ipc.IPCMessage) error {
+		return errors.New("send boom")
+	}
+
+	tests := map[string]struct {
+		fastStart             bool
+		createErr             error
+		markActiveErr         error
+		hasActive             bool
+		hasActiveErr          error
+		subscribeOutputFn     func(context.Context, string) (<-chan *ipc.IPCMessage, <-chan error, error)
+		sendInputFn           func(context.Context, string, string, *ipc.IPCMessage) error
+		wantErrSubstr         string
+		wantDeleteStreams     int
+		wantSpawnStartPresent bool
+	}{
+		"CreateSandbox failure clears spawnStart": {
+			fastStart:             true,
+			createErr:             errors.New("api timeout"),
+			hasActive:             false,
+			wantErrSubstr:         "create sandbox",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+		"MarkActive failure with no active sandbox deletes stream and clears spawnStart": {
+			fastStart:             true,
+			markActiveErr:         errors.New("nats down"),
+			hasActive:             false,
+			wantErrSubstr:         "mark active",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+		"MarkActive failure with HasActiveSandbox error skips delete but clears spawnStart": {
+			fastStart:             true,
+			markActiveErr:         errors.New("nats down"),
+			hasActiveErr:          errors.New("kube api down"),
+			wantErrSubstr:         "mark active",
+			wantDeleteStreams:     0,
+			wantSpawnStartPresent: false,
+		},
+		"MarkActive failure with fast-start disabled does not delete stream": {
+			fastStart:             false,
+			markActiveErr:         errors.New("nats down"),
+			wantErrSubstr:         "mark active",
+			wantDeleteStreams:     0,
+			wantSpawnStartPresent: false,
+		},
+		"SubscribeOutput failure clears spawnStart": {
+			fastStart:             true,
+			subscribeOutputFn:     failingSubscribe,
+			wantErrSubstr:         "subscribe output",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+		"SendInput failure clears spawnStart": {
+			fastStart:             true,
+			sendInputFn:           failingSend,
+			wantErrSubstr:         "send initial input",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := newMockStore()
+			mq := &mockQueue{active: make(map[string]bool), markActiveErr: tt.markActiveErr}
+			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+			b := &mockIPCBroker{subscribeOutputFn: tt.subscribeOutputFn, sendInputFn: tt.sendInputFn}
+			sb := &mockSandboxControllerWithTracking{createErr: tt.createErr, hasActive: tt.hasActive, hasActiveErr: tt.hasActiveErr}
+
+			o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+			o.cfg.K8s.FastStartEnabled = tt.fastStart
+			o.cfg.Queue.MaxConcurrent = 10
+			rtr, _ := router.New([]channel.Channel{ch}, s)
+			o.router = rtr
+			o.auth = auth.New(s)
+
+			o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+			s.messages["group1@g.us"] = []store.Message{
+				{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+			}
+
+			release, ok := o.claimSandboxSlot("group1@g.us")
+			if !ok {
+				t.Fatal("claim slot")
+			}
+			defer release()
+
+			_, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErrSubstr) {
+				t.Errorf("processGroupMessages err = %v, want substring %q", err, tt.wantErrSubstr)
+			}
+
+			if got := b.deleteStreamsCalled; got != tt.wantDeleteStreams {
+				t.Errorf("DeleteStreams calls = %d, want %d", got, tt.wantDeleteStreams)
+			}
+
+			o.spawnStartMu.Lock()
+			_, present := o.spawnStart["group1@g.us"]
+			o.spawnStartMu.Unlock()
+			if present != tt.wantSpawnStartPresent {
+				t.Errorf("spawnStart present = %v, want %v", present, tt.wantSpawnStartPresent)
+			}
+		})
+	}
+}
