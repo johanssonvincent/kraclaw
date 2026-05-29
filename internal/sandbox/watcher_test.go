@@ -371,10 +371,11 @@ func TestRecordPhaseTransitions(t *testing.T) {
 
 	tests := map[string]struct {
 		conditions []metav1.Condition
-		calls      int // recordPhaseTransitions invocations (default 1)
-		wantSeen   map[string]bool
-		wantDelta  map[string]uint64 // per-phase histogram sample-count increase
-		wantWarn   bool
+		calls       int // recordPhaseTransitions invocations (default 1)
+		zeroCreated bool
+		wantSeen    map[string]bool
+		wantDelta   map[string]uint64 // per-phase histogram sample-count increase
+		wantWarn    bool
 	}{
 		"both phases recorded once": {
 			conditions: []metav1.Condition{
@@ -423,6 +424,18 @@ func TestRecordPhaseTransitions(t *testing.T) {
 			wantDelta: map[string]uint64{"pod_scheduled": 0},
 			wantWarn:  true,
 		},
+		"zero CreationTimestamp skips whole object and warns": {
+			// A valid LastTransitionTime against a zero created instant would
+			// otherwise pass the d<0 guard as a huge positive sample.
+			zeroCreated: true,
+			conditions: []metav1.Condition{
+				cond("PodScheduled", metav1.ConditionTrue, created.Add(time.Second)),
+				cond(string(agentsandboxv1alpha1.SandboxConditionReady), metav1.ConditionTrue, created.Add(2*time.Second)),
+			},
+			wantSeen:  map[string]bool{"pod_scheduled": false, "pod_ready": false},
+			wantDelta: map[string]uint64{"pod_scheduled": 0, "pod_ready": 0},
+			wantWarn:  true,
+		},
 	}
 
 	caseNum := 0
@@ -430,12 +443,13 @@ func TestRecordPhaseTransitions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			caseNum++
 			sbName := fmt.Sprintf("phase-test-%d", caseNum)
+			meta := metav1.ObjectMeta{Name: sbName, CreationTimestamp: metav1.NewTime(created)}
+			if tt.zeroCreated {
+				meta.CreationTimestamp = metav1.Time{}
+			}
 			sb := &agentsandboxv1alpha1.Sandbox{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:              sbName,
-					CreationTimestamp: metav1.NewTime(created),
-				},
-				Status: agentsandboxv1alpha1.SandboxStatus{Conditions: tt.conditions},
+				ObjectMeta: meta,
+				Status:     agentsandboxv1alpha1.SandboxStatus{Conditions: tt.conditions},
 			}
 
 			before := map[string]uint64{}

@@ -930,6 +930,10 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 			o.mu.Lock()
 			o.lastAgentTimestamp[chatJID] = previousCursor
 			o.mu.Unlock()
+			// EnsureStreamForAgent creates the stream before the consumer, so a
+			// consumer-step failure can leave the stream behind. Tear it down if
+			// no active sandbox owns the group (spawnStart is not yet seeded here).
+			o.releaseOrphanedStreams(ctx, group, "EnsureStream")
 			if saveErr := o.saveState(ctx); saveErr != nil {
 				o.log.Error("failed to save state", "error", saveErr)
 			}

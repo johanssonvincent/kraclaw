@@ -55,6 +55,19 @@ func TestCheckImageDigests(t *testing.T) {
 				"  agentImageOpenAI: \"ghcr.io/x/o:v1.2.3\"\n",
 			wantPass: false,
 		},
+		"missing required anthropic key is rejected": {
+			values: "k8s:\n" +
+				"  agentImageOpenAI: \"ghcr.io/x/o" + goodDigest + "\"\n",
+			wantPass: false,
+		},
+		"duplicate key with one unpinned occurrence is rejected": {
+			values: "k8s:\n" +
+				"  agentImageAnthropic: \"ghcr.io/x/a" + goodDigest + "\"\n" +
+				"  agentImageOpenAI: \"ghcr.io/x/o" + goodDigest + "\"\n" +
+				"override:\n" +
+				"  agentImageAnthropic: \"ghcr.io/x/a:latest\"\n",
+			wantPass: false,
+		},
 	}
 
 	script := scriptPath(t)

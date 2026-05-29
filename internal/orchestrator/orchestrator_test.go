@@ -4265,6 +4265,11 @@ func TestSpawnAgent_EnsureStreamFailure_NoSandboxCreated(t *testing.T) {
 	if sb.createCalled.Load() {
 		t.Error("CreateSandbox was called despite EnsureStreamForAgent failure")
 	}
+	// The stream EnsureStreamForAgent may have partially created must be torn
+	// down (no active sandbox owns the group) so it is not orphaned.
+	if got := b.deleteStreamsCalled; got != 1 {
+		t.Errorf("DeleteStreams calls = %d, want 1 after EnsureStream failure", got)
+	}
 	o.mu.Lock()
 	gotCursor := o.lastAgentTimestamp["group1@g.us"]
 	o.mu.Unlock()

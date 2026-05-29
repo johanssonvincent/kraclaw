@@ -119,6 +119,14 @@ func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]ma
 		seen[sb.Name] = map[string]bool{}
 	}
 	created := sb.CreationTimestamp.Time
+	if sb.CreationTimestamp.IsZero() {
+		// Without a creation time every phase duration is measured from the zero
+		// instant, producing a phantom multi-decade sample that passes the d<0
+		// guard. Skip the whole object rather than pollute the distribution.
+		log.Warn("skipping cold-start phase samples: sandbox has zero CreationTimestamp",
+			"sandbox", sb.Name)
+		return
+	}
 	for _, cond := range sb.Status.Conditions {
 		if cond.Status != metav1.ConditionTrue {
 			continue
