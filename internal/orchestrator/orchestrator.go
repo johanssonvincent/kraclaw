@@ -953,18 +953,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		if err := o.saveState(ctx); err != nil {
 			o.log.Error("failed to save state", "error", err)
 		}
-		if o.cfg.K8s.FastStartEnabled {
-			has, hasErr := o.sandbox.HasActiveSandbox(ctx, group.Folder)
-			if hasErr != nil {
-				o.log.Error("failed to check active sandbox during IPC stream rollback; leaking stream",
-					"group", group.Name, "error", hasErr)
-			} else if !has {
-				if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
-					o.log.Error("failed to delete IPC streams after CreateSandbox failure",
-						"group", group.Name, "error", delErr)
-				}
-			}
-		}
+		o.releaseOrphanedStreams(ctx, group, "CreateSandbox")
 		return false, fmt.Errorf("create sandbox: %w", err)
 	}
 	// Observe only successful creates so a fast-fail rejection cannot corrupt the
@@ -987,20 +976,8 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		o.mu.Unlock()
 		o.clearSpawnStart(chatJID)
 		// The IPC stream pre-created above (FastStart) is now orphaned unless
-		// another active sandbox still owns the group. Mirror the CreateSandbox
-		// rollback: gate on HasActiveSandbox, conservatively skip on check-error.
-		if o.cfg.K8s.FastStartEnabled {
-			has, hasErr := o.sandbox.HasActiveSandbox(ctx, group.Folder)
-			if hasErr != nil {
-				o.log.Error("failed to check active sandbox during IPC stream rollback; leaking stream",
-					"group", group.Name, "error", hasErr)
-			} else if !has {
-				if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
-					o.log.Error("failed to delete IPC streams after MarkActive failure",
-						"group", group.Name, "error", delErr)
-				}
-			}
-		}
+		// another active sandbox still owns the group.
+		o.releaseOrphanedStreams(ctx, group, "MarkActive")
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state", "error", saveErr)
 		}
@@ -1862,6 +1839,31 @@ func (o *Orchestrator) clearSpawnStart(chatJID string) {
 	o.spawnStartMu.Lock()
 	delete(o.spawnStart, chatJID)
 	o.spawnStartMu.Unlock()
+}
+
+// releaseOrphanedStreams tears down the IPC stream pre-created for a fast-start
+// spawn when a spawn failure leaves no active sandbox still owning the group.
+// No-op when fast-start is disabled (no stream was pre-created). If the
+// active-sandbox check itself errors, deletion is conservatively skipped and
+// logged, so a stream a live sandbox still owns is never deleted. reason names
+// the failing spawn step for log correlation.
+func (o *Orchestrator) releaseOrphanedStreams(ctx context.Context, group store.Group, reason string) {
+	if !o.cfg.K8s.FastStartEnabled {
+		return
+	}
+	has, hasErr := o.sandbox.HasActiveSandbox(ctx, group.Folder)
+	if hasErr != nil {
+		o.log.Error("failed to check active sandbox during IPC stream rollback; leaking stream",
+			"group", group.Name, "reason", reason, "error", hasErr)
+		return
+	}
+	if has {
+		return
+	}
+	if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
+		o.log.Error("failed to delete IPC streams after spawn failure",
+			"group", group.Name, "reason", reason, "error", delErr)
+	}
 }
 
 // recordFirstOutputPhase observes the first_output cold-start phase for a
