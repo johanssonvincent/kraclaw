@@ -935,7 +935,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 			}
 			return false, fmt.Errorf("ensure stream for agent: %w", err)
 		}
-		metrics.SandboxSpawnDuration.WithLabelValues("ensure_stream").Observe(time.Since(ensureStart).Seconds())
+		metrics.ObserveSpawnPhase(metrics.PhaseEnsureStream, time.Since(ensureStart))
 	}
 
 	o.spawnStartMu.Lock()
@@ -969,7 +969,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 	}
 	// Observe only successful creates so a fast-fail rejection cannot corrupt the
 	// cold-start latency series (mirrors the ensure_stream placement above).
-	metrics.SandboxSpawnDuration.WithLabelValues("crd_create").Observe(time.Since(crdStart).Seconds())
+	metrics.ObserveSpawnPhase(metrics.PhaseCRDCreate, time.Since(crdStart))
 
 	o.mu.Lock()
 	o.activeSandboxes[chatJID] = status.Name
@@ -1878,5 +1878,5 @@ func (o *Orchestrator) recordFirstOutputPhase(chatJID string) {
 	if !ok {
 		return
 	}
-	metrics.SandboxSpawnDuration.WithLabelValues("first_output").Observe(time.Since(start).Seconds())
+	metrics.ObserveSpawnPhase(metrics.PhaseFirstOutput, time.Since(start))
 }

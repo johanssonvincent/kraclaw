@@ -1,9 +1,37 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// SpawnPhase is a cold-start phase label for the SandboxSpawnDuration histogram.
+// The constants below are the single source of truth for the five phase label
+// values; their wire strings are load-bearing (dashboards/alerts depend on
+// them) and must not change. Go permits untyped string literals for a
+// string-backed type, so this type does not by itself reject a typoed label —
+// the no-bare-literals grep (see metrics_test.go) is the enforcement.
+type SpawnPhase string
+
+const (
+	// PhaseEnsureStream: IPC stream/consumer pre-creation, measured before CreateSandbox.
+	PhaseEnsureStream SpawnPhase = "ensure_stream"
+	// PhaseCRDCreate: a successful CreateSandbox call.
+	PhaseCRDCreate SpawnPhase = "crd_create"
+	// PhasePodScheduled: from the Sandbox CreationTimestamp to the PodScheduled condition.
+	PhasePodScheduled SpawnPhase = "pod_scheduled"
+	// PhasePodReady: from the Sandbox CreationTimestamp to the Ready condition.
+	PhasePodReady SpawnPhase = "pod_ready"
+	// PhaseFirstOutput: from CreateSandbox start to the first agent IPC output.
+	PhaseFirstOutput SpawnPhase = "first_output"
+)
+
+// ObserveSpawnPhase records a cold-start phase duration on SandboxSpawnDuration.
+func ObserveSpawnPhase(p SpawnPhase, d time.Duration) {
+	SandboxSpawnDuration.WithLabelValues(string(p)).Observe(d.Seconds())
+}
 
 var (
 	SandboxesCreated = promauto.NewCounter(prometheus.CounterOpts{

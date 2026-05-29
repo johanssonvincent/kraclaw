@@ -123,30 +123,31 @@ func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]ma
 		if cond.Status != metav1.ConditionTrue {
 			continue
 		}
-		var phase string
+		var phase metrics.SpawnPhase
 		switch cond.Type {
 		case "PodScheduled":
-			phase = "pod_scheduled"
+			phase = metrics.PhasePodScheduled
 		case string(agentsandboxv1alpha1.SandboxConditionReady):
-			phase = "pod_ready"
+			phase = metrics.PhasePodReady
 		default:
 			continue
 		}
-		if seen[sb.Name][phase] {
+		key := string(phase)
+		if seen[sb.Name][key] {
 			continue
 		}
 		if cond.LastTransitionTime.IsZero() {
 			log.Warn("skipping cold-start phase sample with zero LastTransitionTime",
-				"sandbox", sb.Name, "phase", phase)
+				"sandbox", sb.Name, "phase", key)
 			continue
 		}
 		d := cond.LastTransitionTime.Time.Sub(created)
 		if d < 0 {
 			log.Warn("skipping cold-start phase sample with negative duration",
-				"sandbox", sb.Name, "phase", phase, "duration", d)
+				"sandbox", sb.Name, "phase", key, "duration", d)
 			continue
 		}
-		seen[sb.Name][phase] = true
-		metrics.SandboxSpawnDuration.WithLabelValues(phase).Observe(d.Seconds())
+		seen[sb.Name][key] = true
+		metrics.ObserveSpawnPhase(phase, d)
 	}
 }
