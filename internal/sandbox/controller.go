@@ -38,14 +38,15 @@ const (
 
 // Controller manages agent sandboxes via Sandbox resources.
 type Controller struct {
-	clientset   kubernetes.Interface
-	ctrlClient  client.WithWatch
-	config      *rest.Config
-	namespace   string
-	agentImages map[string]string // provider -> image
-	natsURL     string
-	proxyURL    string
-	log         *slog.Logger
+	clientset        kubernetes.Interface
+	ctrlClient       client.WithWatch
+	config           *rest.Config
+	namespace        string
+	agentImages      map[string]string // provider -> image
+	natsURL          string
+	proxyURL         string
+	fastStartEnabled bool
+	log              *slog.Logger
 }
 
 // SandboxConfig holds the parameters for creating a new sandbox.
@@ -95,7 +96,15 @@ type SandboxStatus struct {
 }
 
 // New creates a new sandbox controller.
-func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *rest.Config, namespace string, agentImages map[string]string, natsURL, proxyURL string) (*Controller, error) {
+func New(
+	clientset kubernetes.Interface,
+	ctrlClient client.WithWatch,
+	config *rest.Config,
+	namespace string,
+	agentImages map[string]string,
+	natsURL, proxyURL string,
+	fastStartEnabled bool,
+) (*Controller, error) {
 	if clientset == nil {
 		return nil, fmt.Errorf("sandbox: kubernetes clientset is required")
 	}
@@ -103,14 +112,15 @@ func New(clientset kubernetes.Interface, ctrlClient client.WithWatch, config *re
 		agentImages = map[string]string{}
 	}
 	return &Controller{
-		clientset:   clientset,
-		ctrlClient:  ctrlClient,
-		config:      config,
-		namespace:   namespace,
-		agentImages: agentImages,
-		natsURL:     natsURL,
-		proxyURL:    proxyURL,
-		log:         slog.Default().With("component", "sandbox"),
+		clientset:        clientset,
+		ctrlClient:       ctrlClient,
+		config:           config,
+		namespace:        namespace,
+		agentImages:      agentImages,
+		natsURL:          natsURL,
+		proxyURL:         proxyURL,
+		fastStartEnabled: fastStartEnabled,
+		log:              slog.Default().With("component", "sandbox"),
 	}, nil
 }
 
@@ -339,17 +349,56 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		return nil, fmt.Errorf("sandbox: unsupported provider %q", providerID)
 	}
 
+	// When fast-start is disabled, the orchestrator skips EnsureStreamForAgent
+	// so the agent must restore its self-create defensive path.
+	if !c.fastStartEnabled {
+		envVars = append(envVars, corev1.EnvVar{Name: "KRACLAW_AGENT_DEFENSIVE_STREAM", Value: "1"})
+	}
+
 	nonRoot := true
 	allowPrivEsc := false
 	runAs := runAsUser
 	replicas := int32(1)
 
+	// Gate the legacy init-dirs container behind the fast-start flag.
+	// When fast-start is enabled the agent binary creates its own directories
+	// (ensureGroupDirs), so the init container is redundant and wastes ~3-5s.
+	var initContainers []corev1.Container
+	if !c.fastStartEnabled {
+		initContainers = []corev1.Container{
+			{
+				Name:  "init-dirs",
+				Image: "busybox",
+				Command: []string{
+					"sh", "-c",
+					"mkdir -p /sessions/$(GROUP_FOLDER)/.claude && mkdir -p /groups/$(GROUP_FOLDER)/archives",
+				},
+				Env: []corev1.EnvVar{groupFolderEnv},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "sessions", MountPath: "/sessions"},
+					{Name: "groups", MountPath: "/groups"},
+				},
+				SecurityContext: &corev1.SecurityContext{
+					RunAsUser:                &runAs,
+					AllowPrivilegeEscalation: &allowPrivEsc,
+				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("10m"),
+						corev1.ResourceMemory: resource.MustParse("32Mi"),
+					},
+				},
+			},
+		}
+	}
+
 	// Build the agent container.
 	container := corev1.Container{
-		Name:       "agent",
-		Image:      image,
-		WorkingDir: "/workspace",
-		Env:        envVars,
+		Name:            "agent",
+		Image:           image,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		WorkingDir:      "/workspace",
+		Env:             envVars,
 		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:        "sessions",
@@ -388,32 +437,8 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 						RunAsNonRoot: &nonRoot,
 						RunAsUser:    &runAs,
 					},
-					InitContainers: []corev1.Container{
-						{
-							Name:  "init-dirs",
-							Image: "busybox",
-							Command: []string{
-								"sh", "-c",
-								"mkdir -p /sessions/$(GROUP_FOLDER)/.claude && mkdir -p /groups/$(GROUP_FOLDER)/archives",
-							},
-							Env: []corev1.EnvVar{groupFolderEnv},
-							VolumeMounts: []corev1.VolumeMount{
-								{Name: "sessions", MountPath: "/sessions"},
-								{Name: "groups", MountPath: "/groups"},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								RunAsUser:                &runAs,
-								AllowPrivilegeEscalation: &allowPrivEsc,
-							},
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("10m"),
-									corev1.ResourceMemory: resource.MustParse("32Mi"),
-								},
-							},
-						},
-					},
-					Containers: []corev1.Container{container},
+					InitContainers: initContainers,
+					Containers:     []corev1.Container{container},
 					Volumes: []corev1.Volume{
 						{
 							Name: "sessions",

@@ -54,8 +54,12 @@ nats:
 #
 # Kubernetes / sandbox configuration — AGENT_IMAGE_ANTHROPIC and AGENT_IMAGE_OPENAI are required before helm install
 k8s:
-  agentImageAnthropic: ""              # AGENT_IMAGE_ANTHROPIC — Go-based Anthropic agent (REQUIRED)
-  agentImageOpenAI: ""                 # AGENT_IMAGE_OPENAI — Go-based OpenAI agent
+  # AGENT_IMAGE_ANTHROPIC — Go Anthropic agent. MUST be digest-pinned in production
+  # (e.g. ghcr.io/johanssonvincent/kraclaw-agent-anthropic@sha256:<digest>). The
+  # check-image-digests.sh prepush guard rejects values-prod.yaml without @sha256: refs.
+  agentImageAnthropic: ""              # (REQUIRED)
+  # AGENT_IMAGE_OPENAI — same rule as Anthropic; digest pin required in production.
+  agentImageOpenAI: ""
   inCluster: true                       # K8S_IN_CLUSTER
   sessionsPvc: ""                        # K8S_SESSIONS_PVC — auto-computed from fullname if empty
   groupsPvc: ""                          # K8S_GROUPS_PVC — auto-computed from fullname if empty
@@ -139,6 +143,12 @@ secrets:
 sandbox:
   enabled: true
 
+  # Fast-start optimisation flag — gates legacy init-dirs container and defensive
+  # agent-side IPC paths. Default true; set to false to roll back to legacy behaviour.
+  # Wired through to the server and agent envs.
+  fastStart:
+    enabled: true
+
   # Default agent container image for SandboxTemplate pod spec (REQUIRED when sandbox.enabled=true)
   agentImage: ""            # set to the agent image to run, e.g. via --set sandbox.agentImage=...
 
@@ -167,11 +177,19 @@ sandbox:
       cpu: "10m"
       memory: "32Mi"
 
-  # Agent container resources — tune for your workload
+  # Agent container resources — tune for your workload. Request right-sized to
+  # 200m (was 500m): scheduler admits faster on warm nodes; limit unchanged so
+  # bursty CPU during cold-start still lands within the 2000m ceiling.
   agentResources:
     requests:
-      cpu: "500m"
+      cpu: "200m"
       memory: "512Mi"
     limits:
       cpu: "2000m"
       memory: "2Gi"
+
+# Pre-pull DaemonSet — holds agent images warm on every node so cold-start with
+# ImagePullPolicy=IfNotPresent never pays a registry round-trip. Effective only
+# when sandbox.fastStart.enabled=true; set false to opt out independently.
+prepull:
+  enabled: true

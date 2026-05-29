@@ -1068,6 +1068,63 @@ func TestNATSBrokerDeleteStreamsWithActiveConsumer(t *testing.T) {
 	}
 }
 
+// TestNATSBroker_EnsureStreamForAgent verifies that EnsureStreamForAgent
+// idempotently provisions the per-group stream and the per-agent input consumer.
+func TestNATSBroker_EnsureStreamForAgent(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		seed    func(t *testing.T, b *NATSBroker, ctx context.Context, group string)
+		agentID string
+		wantErr bool
+	}{
+		"fresh_group": {
+			seed:    func(*testing.T, *NATSBroker, context.Context, string) {},
+			agentID: "main",
+		},
+		"existing_stream": {
+			seed: func(t *testing.T, b *NATSBroker, ctx context.Context, group string) {
+				if _, err := b.ensureStream(ctx, group); err != nil {
+					t.Fatalf("seed ensureStream: %v", err)
+				}
+			},
+			agentID: "main",
+		},
+		"existing_consumer": {
+			seed: func(t *testing.T, b *NATSBroker, ctx context.Context, group string) {
+				if err := b.EnsureStreamForAgent(ctx, group, "main"); err != nil {
+					t.Fatalf("seed EnsureStreamForAgent: %v", err)
+				}
+			},
+			agentID: "main",
+		},
+		"agent_id_with_unsafe_chars": {
+			// Exercises the SanitizeAgentID transform end-to-end: the durable
+			// consumer name must be derived from the sanitized agent ID.
+			seed:    func(*testing.T, *NATSBroker, context.Context, string) {},
+			agentID: "weird/agent:id@x",
+		},
+	}
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			broker, _ := setupNATS(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			group := "ensure-" + name
+			tt.seed(t, broker, ctx, group)
+			err := broker.EnsureStreamForAgent(ctx, group, tt.agentID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("EnsureStreamForAgent(%q,%q) err=%v wantErr=%v", group, tt.agentID, err, tt.wantErr)
+			}
+			sanitized := SanitizeGroupID(group)
+			consName := "agent-" + SanitizeAgentID(tt.agentID)
+			if _, err := broker.js.Consumer(ctx, ipcStreamName(sanitized), consName); err != nil {
+				t.Errorf("consumer %q not present: %v", consName, err)
+			}
+		})
+	}
+}
+
 // TestNATSBrokerSubscribeOutputErrCh verifies that when the underlying NATS
 // iterator fails with a non-context error, the errCh returned by SubscribeOutput
 // receives the terminal error and the message channel closes.

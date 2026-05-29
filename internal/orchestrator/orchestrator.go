@@ -17,6 +17,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/config"
 	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/metrics"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/queue"
 	"github.com/johanssonvincent/kraclaw/internal/router"
@@ -68,6 +69,13 @@ type Orchestrator struct {
 	sessions         map[string]string      // groupFolder -> sessionID
 	registeredGroups map[string]store.Group // JID -> Group
 	activeSandboxes  map[string]string      // chatJID -> current sandbox name
+
+	// spawnStart tracks the CreateSandbox start time per chatJID so the first
+	// IPC output message can observe the full first_output cold-start phase on
+	// metrics.SandboxSpawnDuration. Entry is added pre-CreateSandbox and removed
+	// when first_output is observed.
+	spawnStart   map[string]time.Time
+	spawnStartMu sync.Mutex
 
 	// inflightSandboxes tracks in-flight spawn claims (set semantics). The value
 	// is always struct{}{}; only key presence matters — never inspect the value.
@@ -162,6 +170,7 @@ func New(
 		sessions:               make(map[string]string),
 		registeredGroups:       make(map[string]store.Group),
 		activeSandboxes:        make(map[string]string),
+		spawnStart:             make(map[string]time.Time),
 		rateLimiters:           make(map[string]*TokenBucket),
 		notify:                 make(chan struct{}, 1),
 		log:                    log.With("component", "orchestrator"),
@@ -912,17 +921,48 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		return false, fmt.Errorf("create sandbox: sandbox controller is nil (Kubernetes not connected)")
 	}
 
+	// Pre-create the IPC stream + consumer so the agent skips CreateOrUpdate
+	// round-trips on boot. Idempotent; safe to call on every spawn. Gated on
+	// FastStartEnabled so the rollout path (false) preserves legacy semantics.
+	if o.cfg.K8s.FastStartEnabled {
+		ensureStart := time.Now()
+		if err := o.ensureStreamForAgentWithRetry(ctx, group.Folder, ipc.DefaultAgentID); err != nil {
+			o.mu.Lock()
+			o.lastAgentTimestamp[chatJID] = previousCursor
+			o.mu.Unlock()
+			// EnsureStreamForAgent creates the stream before the consumer, so a
+			// consumer-step failure can leave the stream behind. Tear it down if
+			// no active sandbox owns the group (spawnStart is not yet seeded here).
+			o.releaseOrphanedStreams(ctx, group, "EnsureStream")
+			if saveErr := o.saveState(ctx); saveErr != nil {
+				o.log.Error("failed to save state", "error", saveErr)
+			}
+			return false, fmt.Errorf("ensure stream for agent: %w", err)
+		}
+		metrics.ObserveSpawnPhase(metrics.PhaseEnsureStream, time.Since(ensureStart))
+	}
+
+	o.spawnStartMu.Lock()
+	o.spawnStart[chatJID] = time.Now()
+	o.spawnStartMu.Unlock()
+
+	crdStart := time.Now()
 	status, err := o.sandbox.CreateSandbox(ctx, sbCfg)
 	if err != nil {
 		// Roll back cursor on error.
 		o.mu.Lock()
 		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
+		o.clearSpawnStart(chatJID)
 		if err := o.saveState(ctx); err != nil {
 			o.log.Error("failed to save state", "error", err)
 		}
+		o.releaseOrphanedStreams(ctx, group, "CreateSandbox")
 		return false, fmt.Errorf("create sandbox: %w", err)
 	}
+	// Observe only successful creates so a fast-fail rejection cannot corrupt the
+	// cold-start latency series (mirrors the ensure_stream placement above).
+	metrics.ObserveSpawnPhase(metrics.PhaseCRDCreate, time.Since(crdStart))
 
 	o.mu.Lock()
 	o.activeSandboxes[chatJID] = status.Name
@@ -938,6 +978,10 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		delete(o.activeSandboxes, chatJID)
 		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
+		o.clearSpawnStart(chatJID)
+		// The IPC stream pre-created above (FastStart) is now orphaned unless
+		// another active sandbox still owns the group.
+		o.releaseOrphanedStreams(ctx, group, "MarkActive")
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state", "error", saveErr)
 		}
@@ -984,6 +1028,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		delete(o.activeSandboxes, chatJID)
 		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
+		o.clearSpawnStart(chatJID)
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state after SubscribeOutput failure", "group", group.Name, "error", saveErr)
 		}
@@ -1023,6 +1068,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		delete(o.activeSandboxes, chatJID)
 		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
+		o.clearSpawnStart(chatJID)
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state after SendInput failure", "group", group.Name, "error", saveErr)
 		}
@@ -1499,6 +1545,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				continue
 			}
 			agentConnected = true
+			o.recordFirstOutputPhase(chatJID)
 			if o.handleIPCMessage(ctx, chatJID, group, msg) {
 				deactivate()
 				return
@@ -1762,4 +1809,80 @@ func (o *Orchestrator) recoverPendingMessages(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// ensureStreamForAgentWithRetry retries EnsureStreamForAgent up to 3 times with
+// exponential backoff. JetStream stream/consumer provisioning can fail
+// transiently during broker reconnects; permanent errors (auth, malformed
+// config) still surface after the bounded retry window.
+func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group, agentID string) error {
+	var lastErr error
+	backoff := 100 * time.Millisecond
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return fmt.Errorf("ensure stream for agent: %w", ctx.Err())
+			}
+			backoff *= 2
+		}
+		if err := o.ipc.EnsureStreamForAgent(ctx, group, agentID); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("ensure stream for agent failed after retries: %w", lastErr)
+}
+
+// clearSpawnStart removes a spawnStart entry under spawnStartMu. Called on every
+// spawn failure path after the timer is seeded so a failed spawn never leaves a
+// stale entry behind (the entry is otherwise only removed on first output).
+func (o *Orchestrator) clearSpawnStart(chatJID string) {
+	o.spawnStartMu.Lock()
+	delete(o.spawnStart, chatJID)
+	o.spawnStartMu.Unlock()
+}
+
+// releaseOrphanedStreams tears down the IPC stream pre-created for a fast-start
+// spawn when a spawn failure leaves no active sandbox still owning the group.
+// No-op when fast-start is disabled (no stream was pre-created). If the
+// active-sandbox check itself errors, deletion is conservatively skipped and
+// logged, so a stream a live sandbox still owns is never deleted. reason names
+// the failing spawn step for log correlation.
+func (o *Orchestrator) releaseOrphanedStreams(ctx context.Context, group store.Group, reason string) {
+	if !o.cfg.K8s.FastStartEnabled {
+		return
+	}
+	has, hasErr := o.sandbox.HasActiveSandbox(ctx, group.Folder)
+	if hasErr != nil {
+		o.log.Error("failed to check active sandbox during IPC stream rollback; leaking stream",
+			"group", group.Name, "reason", reason, "error", hasErr)
+		return
+	}
+	if has {
+		return
+	}
+	if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
+		o.log.Error("failed to delete IPC streams after spawn failure",
+			"group", group.Name, "reason", reason, "error", delErr)
+	}
+}
+
+// recordFirstOutputPhase observes the first_output cold-start phase for a
+// spawn the first time any IPC output is seen for the chatJID. The matching
+// spawnStart entry is seeded immediately before CreateSandbox; the
+// delete-on-observe makes this a one-shot per spawn cycle.
+func (o *Orchestrator) recordFirstOutputPhase(chatJID string) {
+	o.spawnStartMu.Lock()
+	start, ok := o.spawnStart[chatJID]
+	if ok {
+		delete(o.spawnStart, chatJID)
+	}
+	o.spawnStartMu.Unlock()
+	if !ok {
+		return
+	}
+	metrics.ObserveSpawnPhase(metrics.PhaseFirstOutput, time.Since(start))
 }

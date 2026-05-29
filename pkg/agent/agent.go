@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -58,9 +59,52 @@ func ConnectNATS(url string) (*nats.Conn, error) {
 	return nc, nil
 }
 
+// ensureGroupDirs creates the per-pod directories that the legacy init-dirs
+// busybox container used to create. Called from Run before NATS connect so the
+// agent process can start without depending on a separate init container.
+func ensureGroupDirs() error {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return fmt.Errorf("HOME unset")
+	}
+	archives := os.Getenv("KRACLAW_AGENT_ARCHIVES_DIR")
+	if archives == "" {
+		archives = "/workspace/archives"
+	}
+	dirs := []string{
+		filepath.Join(home, ".claude"),
+		archives,
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", d, err)
+		}
+	}
+	return nil
+}
+
+// waitForPrepullSignal blocks until SIGTERM/SIGINT. Exposed as a package-level
+// variable so tests can substitute a controllable wait without sending real
+// signals to the test process.
+var waitForPrepullSignal = func() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	<-ctx.Done()
+}
+
 // Run is the main agent lifecycle: connect, process, shutdown.
 func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) error) error {
 	log := slog.Default()
+
+	// --prepull: warm-keeper mode used by the DaemonSet. The image must exist
+	// on every node to satisfy ImagePullPolicy=IfNotPresent for fast cold-start;
+	// we hold the image warm by running this binary with --prepull so kubelet
+	// keeps the layers around as long as the DaemonSet pod is alive.
+	if len(os.Args) > 1 && os.Args[1] == "--prepull" {
+		log.Info("prepull noop")
+		waitForPrepullSignal()
+		return nil
+	}
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -68,6 +112,10 @@ func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) err
 	}
 
 	log.Info("agent starting", "group", cfg.Group, "agent_id", cfg.AgentID, "provider", cfg.Provider)
+
+	if err := ensureGroupDirs(); err != nil {
+		return fmt.Errorf("ensure group dirs: %w", err)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()

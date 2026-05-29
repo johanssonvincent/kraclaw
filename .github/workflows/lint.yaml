@@ -24,3 +24,6 @@ jobs:
         with:
           version: v2.11.3
           args: --timeout=5m
+
+      - name: Verify production agent images are digest-pinned
+        run: make check-image-digests
