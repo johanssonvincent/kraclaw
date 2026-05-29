@@ -65,7 +65,7 @@ var (
 
 	SandboxSpawnDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "kraclaw_sandbox_spawn_duration_seconds",
-		Help:    "Time spent in each cold-start phase from CreateSandbox to first agent IPC output.",
+		Help:    "Cold-start latency per phase (phase label). ensure_stream: IPC stream/consumer pre-creation, measured before CreateSandbox. crd_create: successful CreateSandbox call only. pod_scheduled/pod_ready: measured from the Sandbox CreationTimestamp to the respective condition. first_output: from CreateSandbox start to the first agent IPC output.",
 		Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 3, 5, 8, 13, 21},
 	}, []string{"phase"})
 )

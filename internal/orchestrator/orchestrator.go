@@ -944,7 +944,6 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 
 	crdStart := time.Now()
 	status, err := o.sandbox.CreateSandbox(ctx, sbCfg)
-	metrics.SandboxSpawnDuration.WithLabelValues("crd_create").Observe(time.Since(crdStart).Seconds())
 	if err != nil {
 		// Roll back cursor on error.
 		o.mu.Lock()
@@ -968,6 +967,9 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		}
 		return false, fmt.Errorf("create sandbox: %w", err)
 	}
+	// Observe only successful creates so a fast-fail rejection cannot corrupt the
+	// cold-start latency series (mirrors the ensure_stream placement above).
+	metrics.SandboxSpawnDuration.WithLabelValues("crd_create").Observe(time.Since(crdStart).Seconds())
 
 	o.mu.Lock()
 	o.activeSandboxes[chatJID] = status.Name
@@ -1840,7 +1842,7 @@ func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group,
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
-				return ctx.Err()
+				return fmt.Errorf("ensure stream for agent: %w", ctx.Err())
 			}
 			backoff *= 2
 		}

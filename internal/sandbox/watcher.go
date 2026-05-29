@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -86,7 +87,7 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 				}
 
 				if event.Type != watch.Deleted {
-					recordPhaseTransitions(sandbox, seen)
+					recordPhaseTransitions(sandbox, seen, c.log)
 				}
 
 				select {
@@ -107,7 +108,13 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 // name → phase name so duplicate Modified events do not double-record.
 // Durations are measured from the Sandbox's CreationTimestamp to the
 // condition's LastTransitionTime.
-func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]map[string]bool) {
+//
+// Samples with a zero LastTransitionTime or a negative duration (a data-quality
+// defect, not a real measurement) are skipped and logged rather than recorded,
+// so a phantom fast sample never pollutes the distribution. seen is marked only
+// when the sample is actually observed, so a transient bad timestamp can still
+// be recorded correctly on a later Modified event.
+func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]map[string]bool, log *slog.Logger) {
 	if seen[sb.Name] == nil {
 		seen[sb.Name] = map[string]bool{}
 	}
@@ -128,7 +135,18 @@ func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]ma
 		if seen[sb.Name][phase] {
 			continue
 		}
+		if cond.LastTransitionTime.IsZero() {
+			log.Warn("skipping cold-start phase sample with zero LastTransitionTime",
+				"sandbox", sb.Name, "phase", phase)
+			continue
+		}
+		d := cond.LastTransitionTime.Time.Sub(created)
+		if d < 0 {
+			log.Warn("skipping cold-start phase sample with negative duration",
+				"sandbox", sb.Name, "phase", phase, "duration", d)
+			continue
+		}
 		seen[sb.Name][phase] = true
-		metrics.SandboxSpawnDuration.WithLabelValues(phase).Observe(cond.LastTransitionTime.Time.Sub(created).Seconds())
+		metrics.SandboxSpawnDuration.WithLabelValues(phase).Observe(d.Seconds())
 	}
 }

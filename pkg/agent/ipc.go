@@ -218,7 +218,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("fetch input consumer %s: %w", consName, ctx.Err())
 		}
 		backoff *= 2
 	}
