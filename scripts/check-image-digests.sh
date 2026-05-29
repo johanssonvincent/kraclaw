@@ -11,11 +11,12 @@ if [[ ! -f "$FILE" ]]; then
     exit 1
 fi
 
-anth=$(grep -E '^[[:space:]]+agentImageAnthropic:' "$FILE" || true)
-oai=$(grep -E '^[[:space:]]+agentImageOpenAI:' "$FILE" || true)
+# Keys that must carry a digest-pinned image reference in production.
+keys=(agentImageAnthropic agentImageOpenAI agentImage)
 
 fail=0
-for line in "$anth" "$oai"; do
+for key in "${keys[@]}"; do
+    line=$(grep -E "^[[:space:]]+${key}:" "$FILE" || true)
     if [[ -z "$line" ]]; then
         continue
     fi
