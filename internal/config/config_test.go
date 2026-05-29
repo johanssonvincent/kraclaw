@@ -272,11 +272,11 @@ func TestLoad(t *testing.T) {
 		{
 			name: "fast start disabled via env",
 			env: map[string]string{
-				"MYSQL_DSN":                "user:pass@tcp(localhost:3306)/kraclaw",
-				"AGENT_IMAGE_ANTHROPIC":    "registry.local/anthropic:latest",
-				"ANTHROPIC_API_KEY":        "sk-test",
-				"GRPC_INSECURE":            "true",
-				"K8S_FAST_START_ENABLED":   "false",
+				"MYSQL_DSN":              "user:pass@tcp(localhost:3306)/kraclaw",
+				"AGENT_IMAGE_ANTHROPIC":  "registry.local/anthropic:latest",
+				"ANTHROPIC_API_KEY":      "sk-test",
+				"GRPC_INSECURE":          "true",
+				"K8S_FAST_START_ENABLED": "false",
 			},
 			check: func(t *testing.T, cfg *Config) {
 				if cfg.K8s.FastStartEnabled {

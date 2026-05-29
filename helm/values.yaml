@@ -145,7 +145,7 @@ sandbox:
 
   # Fast-start optimisation flag — gates legacy init-dirs container and defensive
   # agent-side IPC paths. Default true; set to false to roll back to legacy behaviour.
-  # (Task 12 also wires this through to the server and agent envs.)
+  # Wired through to the server and agent envs.
   fastStart:
     enabled: true
 

@@ -38,7 +38,6 @@ resources:
 # nodes can use ImagePullPolicy=IfNotPresent without silently drifting. Update
 # these digests when promoting a new main build. The check-image-digests.sh
 # prepush guard rejects tagged (non-@sha256) references here.
-# Current pins track main (anthropic main-4780734, openai main-f1d0987).
 k8s:
   agentImageAnthropic: "ghcr.io/johanssonvincent/kraclaw-agent-anthropic@sha256:93c2978f705f1a26633fb6576cc23a46b79d16b75763a4b9781e9296bea8fe96"
   agentImageOpenAI: "ghcr.io/johanssonvincent/kraclaw-agent-openai@sha256:5aa63ad75970b7c623cad25fed163d309573d0dcb67a8980accc0fb2158cc6b2"

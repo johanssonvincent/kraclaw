@@ -1025,8 +1025,8 @@ func TestBuildSandbox_DefensiveStreamEnvGating(t *testing.T) {
 		fastStart bool
 		wantEnv   bool
 	}{
-		"fast_start_enabled_no_env":      {fastStart: true, wantEnv: false},
-		"fast_start_disabled_env_set":    {fastStart: false, wantEnv: true},
+		"fast_start_enabled_no_env":   {fastStart: true, wantEnv: false},
+		"fast_start_disabled_env_set": {fastStart: false, wantEnv: true},
 	}
 	for name, tt := range cases {
 		t.Run(name, func(t *testing.T) {

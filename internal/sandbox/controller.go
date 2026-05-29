@@ -438,7 +438,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 						RunAsUser:    &runAs,
 					},
 					InitContainers: initContainers,
-					Containers: []corev1.Container{container},
+					Containers:     []corev1.Container{container},
 					Volumes: []corev1.Volume{
 						{
 							Name: "sessions",

@@ -115,7 +115,7 @@ func TestIPCClient_ReadInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Create the stream and consumer (as the server normally would via Task 3).
+	// Create the stream and consumer as the server's EnsureStreamForAgent does.
 	js, _ := jetstream.New(nc)
 	sanitized := sanitizeGroupID(group)
 	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
@@ -179,7 +179,7 @@ func TestIPCClient_ReadInput_ContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Pre-create stream and consumer as the server normally would (Task 3).
+	// Pre-create stream and consumer as the server's EnsureStreamForAgent does.
 	js, _ := jetstream.New(nc)
 	sanitized := sanitizeGroupID(group)
 	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
@@ -282,7 +282,7 @@ func TestIPCClientSyncOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Pre-create stream and consumer as the server normally would (Task 3).
+	// Pre-create stream and consumer as the server's EnsureStreamForAgent does.
 	js, _ := jetstream.New(nc)
 	sanitized := sanitizeGroupID(group)
 	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
@@ -384,7 +384,7 @@ func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Pre-create stream and consumer as the server normally would (Task 3).
+	// Pre-create stream and consumer as the server's EnsureStreamForAgent does.
 	js, _ := jetstream.New(nc)
 	sanitized := sanitizeGroupID(group)
 	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)
@@ -471,7 +471,7 @@ func TestIPCClient_ReadInput_MultiGroupIsolation(t *testing.T) {
 	ctxB, cancelB := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelB()
 
-	// Pre-create both streams and consumers as the server normally would (Task 3).
+	// Pre-create both streams and consumers as the server's EnsureStreamForAgent does.
 	js, _ := jetstream.New(nc)
 	for _, g := range []string{groupA, groupB} {
 		sanitized := sanitizeGroupID(g)
@@ -566,7 +566,7 @@ func TestIPCClient_ReadInput_MalformedMessage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Pre-create stream and consumer as the server normally would (Task 3).
+	// Pre-create stream and consumer as the server's EnsureStreamForAgent does.
 	js, _ := jetstream.New(nc)
 	sanitized := sanitizeGroupID(group)
 	streamName := "KRACLAW_IPC_" + strings.ToUpper(sanitized)

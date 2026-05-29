@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	nats "github.com/nats-io/nats.go"
 	natserver "github.com/nats-io/nats-server/v2/server"
+	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
@@ -181,13 +181,10 @@ func TestColdStart_AgentFetchExhaustion_NoServerPreCreate(t *testing.T) {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
 
-	// Force fast exhaustion: 5 attempts × 1ms backoff each.
-	// Test-only access via the same-package convention used in the unit
-	// tests (the field is unexported but accessible from integration_test
-	// because we import the agent package proper, not internal). Falls
-	// back to default backoff if the field isn't accessible from outside
-	// the package — but the test still completes within the timeout because
-	// the default 100ms × 5 doublings is bounded ≤ 3.1s, well within ctx.
+	// consumerFetchBackoff is unexported and unreachable from this external
+	// integration_test package, so the retry loop uses its default backoff.
+	// That is fine: the default 100ms × 5 doublings is bounded ≤ 3.1s, well
+	// within the 5s context below, so the fetch still exhausts and returns.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
