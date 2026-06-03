@@ -18,10 +18,14 @@ spec:
         app.kubernetes.io/name: {{ include "kraclaw.name" . }}
         app.kubernetes.io/component: prepull
     spec:
+      automountServiceAccountToken: false
       {{- if .Values.sandbox.imagePullSecret }}
       imagePullSecrets:
         - name: {{ .Values.sandbox.imagePullSecret }}
       {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.sandbox.runAsUser }}
       tolerations:
         - operator: Exists
       containers:
@@ -30,26 +34,48 @@ spec:
           image: {{ .Values.k8s.agentImageAnthropic | quote }}
           imagePullPolicy: IfNotPresent
           args: ["--prepull"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            exec:
+              command: ["true"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
           resources:
             requests:
               cpu: "1m"
               memory: "8Mi"
             limits:
               cpu: "10m"
-              memory: "16Mi"
+              memory: "64Mi"
         {{- end }}
         {{- if .Values.k8s.agentImageOpenAI }}
         - name: hold-openai
           image: {{ .Values.k8s.agentImageOpenAI | quote }}
           imagePullPolicy: IfNotPresent
           args: ["--prepull"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            exec:
+              command: ["true"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
           resources:
             requests:
               cpu: "1m"
               memory: "8Mi"
             limits:
               cpu: "10m"
-              memory: "16Mi"
+              memory: "64Mi"
         {{- end }}
       terminationGracePeriodSeconds: 1
 {{- end }}

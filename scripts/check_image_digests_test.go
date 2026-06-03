@@ -57,6 +57,14 @@ func TestCheckImageDigests(t *testing.T) {
 		},
 		"missing required anthropic key is rejected": {
 			values: "k8s:\n" +
+				"  agentImageOpenAI: \"ghcr.io/x/o" + goodDigest + "\"\n" +
+				"sandbox:\n" +
+				"  agentImage: \"ghcr.io/x/a" + goodDigest + "\"\n",
+			wantPass: false,
+		},
+		"missing required sandbox.agentImage is rejected": {
+			values: "k8s:\n" +
+				"  agentImageAnthropic: \"ghcr.io/x/a" + goodDigest + "\"\n" +
 				"  agentImageOpenAI: \"ghcr.io/x/o" + goodDigest + "\"\n",
 			wantPass: false,
 		},

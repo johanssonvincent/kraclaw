@@ -247,13 +247,15 @@ func TestIPCClient_EnsureStreamError_Wrapped(t *testing.T) {
 
 func TestIPCClient_SendOutput_EnsureStreamError_Wrapped(t *testing.T) {
 	nc := startTestNATS(t)
+
+	// Enable defensive stream creation so ensureStream is invoked. The client
+	// reads this env once at construction, so it must be set before NewIPCClient.
+	t.Setenv("KRACLAW_AGENT_DEFENSIVE_STREAM", "1")
+
 	client, err := NewIPCClient(nc, "send-ensure-wrap", "main", nil)
 	if err != nil {
 		t.Fatalf("NewIPCClient: %v", err)
 	}
-
-	// Enable defensive stream creation so ensureStream is invoked.
-	t.Setenv("KRACLAW_AGENT_DEFENSIVE_STREAM", "1")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

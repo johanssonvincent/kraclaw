@@ -16,11 +16,37 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/config"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/metrics"
 	"github.com/johanssonvincent/kraclaw/internal/queue"
 	"github.com/johanssonvincent/kraclaw/internal/router"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 	"github.com/johanssonvincent/kraclaw/internal/store"
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+// phaseSampleCount returns the current histogram sample count for the given
+// spawn phase label. Mirrors the helper in internal/metrics; kept local to avoid
+// a cross-package test-helper export.
+func phaseSampleCount(t *testing.T, phase string) uint64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "kraclaw_sandbox_spawn_duration_seconds" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "phase" && lp.GetValue() == phase {
+					return m.GetHistogram().GetSampleCount()
+				}
+			}
+		}
+	}
+	return 0
+}
 
 // --- Mock Store ---
 
@@ -275,7 +301,7 @@ type mockIPCBroker struct {
 	ensureStreamForAgentCalls []struct{ group, agentID string }
 	ensureStreamForAgentErrs  []error // queue of errors; consumed in order. nil entry = success.
 	ensureStreamForAgentErr   error   // fallback if errs queue empty
-	ensureStreamForAgentMu    sync.Mutex
+	callOrderMu               sync.Mutex
 	callOrder                 []string // appended on EnsureStreamForAgent + DeleteStreams
 }
 
@@ -312,8 +338,8 @@ func (m *mockIPCBroker) ReadInput(_ context.Context, _ string, _ string) (<-chan
 	return ch, nil
 }
 func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, group, agentID string) error {
-	m.ensureStreamForAgentMu.Lock()
-	defer m.ensureStreamForAgentMu.Unlock()
+	m.callOrderMu.Lock()
+	defer m.callOrderMu.Unlock()
 	m.ensureStreamForAgentCalls = append(m.ensureStreamForAgentCalls, struct{ group, agentID string }{group, agentID})
 	m.callOrder = append(m.callOrder, "EnsureStreamForAgent")
 	if len(m.ensureStreamForAgentErrs) > 0 {
@@ -325,11 +351,11 @@ func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, group, agentID s
 }
 func (m *mockIPCBroker) Close() error { return nil }
 func (m *mockIPCBroker) DeleteStreams(_ context.Context, group string) error {
-	m.ensureStreamForAgentMu.Lock()
+	m.callOrderMu.Lock()
 	m.deleteStreamsCalled++
 	m.deleteStreamsGroup = group
 	m.callOrder = append(m.callOrder, "DeleteStreams")
-	m.ensureStreamForAgentMu.Unlock()
+	m.callOrderMu.Unlock()
 	return nil
 }
 
@@ -4174,9 +4200,9 @@ func TestSpawnAgent_CallsEnsureStreamBeforeCreateSandbox(t *testing.T) {
 	b := &mockIPCBroker{}
 	sb := &mockSandboxControllerWithTracking{
 		onCreate: func() {
-			b.ensureStreamForAgentMu.Lock()
+			b.callOrderMu.Lock()
 			b.callOrder = append(b.callOrder, "CreateSandbox")
-			b.ensureStreamForAgentMu.Unlock()
+			b.callOrderMu.Unlock()
 		},
 	}
 
@@ -4211,9 +4237,9 @@ func TestSpawnAgent_CallsEnsureStreamBeforeCreateSandbox(t *testing.T) {
 		t.Error("CreateSandbox not called")
 	}
 	// Ordering check.
-	b.ensureStreamForAgentMu.Lock()
+	b.callOrderMu.Lock()
 	order := append([]string(nil), b.callOrder...)
-	b.ensureStreamForAgentMu.Unlock()
+	b.callOrderMu.Unlock()
 	foundEnsure, foundCreate := -1, -1
 	for i, op := range order {
 		if op == "EnsureStreamForAgent" && foundEnsure == -1 {
@@ -4361,6 +4387,7 @@ func TestSpawnAgent_CreateSandboxFailure_HasActiveSandboxError_SkipsDelete(t *te
 // happy path never calls EnsureStreamForAgent and the CreateSandbox failure path
 // never attempts the pre-created-stream DeleteStreams rollback.
 func TestSpawnAgent_FastStartDisabled_LegacyPath(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct {
 		createErr             error
 		wantErr               bool
@@ -4381,6 +4408,7 @@ func TestSpawnAgent_FastStartDisabled_LegacyPath(t *testing.T) {
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			s := newMockStore()
 			mq := &mockQueue{active: make(map[string]bool)}
 			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
@@ -4471,7 +4499,13 @@ func TestRecordFirstOutputPhase(t *testing.T) {
 	o.spawnStart["seeded@g.us"] = time.Now().Add(-100 * time.Millisecond)
 	o.spawnStartMu.Unlock()
 
+	before := phaseSampleCount(t, string(metrics.PhaseFirstOutput))
 	o.recordFirstOutputPhase("seeded@g.us")
+
+	// A seeded observation must record exactly one first_output histogram sample.
+	if got := phaseSampleCount(t, string(metrics.PhaseFirstOutput)) - before; got != 1 {
+		t.Errorf("recordFirstOutputPhase(seeded) sample-count delta = %d, want 1", got)
+	}
 
 	o.spawnStartMu.Lock()
 	_, stillPresent := o.spawnStart["seeded@g.us"]
@@ -4485,6 +4519,7 @@ func TestRecordFirstOutputPhase(t *testing.T) {
 }
 
 func TestSpawnAgent_SeedsSpawnStartBeforeCreateSandbox(t *testing.T) {
+	t.Parallel()
 	s := newMockStore()
 	mq := &mockQueue{active: make(map[string]bool)}
 	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
@@ -4528,6 +4563,7 @@ func TestSpawnAgent_SeedsSpawnStartBeforeCreateSandbox(t *testing.T) {
 // fast-start pre-creation introduced). The happy path leaves spawnStart seeded
 // (it is removed on first output, not here).
 func TestSpawnAgent_FailurePaths_ClearSpawnStart(t *testing.T) {
+	t.Parallel()
 	failingSubscribe := func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, <-chan error, error) {
 		return nil, nil, errors.New("subscribe boom")
 	}
@@ -4563,19 +4599,26 @@ func TestSpawnAgent_FailurePaths_ClearSpawnStart(t *testing.T) {
 			wantDeleteStreams:     1,
 			wantSpawnStartPresent: false,
 		},
-		"MarkActive failure with HasActiveSandbox error skips delete but clears spawnStart": {
+		// The MarkActive path deletes the stream UNCONDITIONALLY (it does not use
+		// the HasActiveSandbox-gated releaseOrphanedStreams helper). StopSandbox
+		// deletes the CR asynchronously, so HasActiveSandbox would still observe
+		// this very sandbox as active and incorrectly skip the delete (TOCTOU).
+		// hasActive=true here represents that stale observation; the stream must
+		// still be deleted.
+		"MarkActive failure deletes stream even when HasActiveSandbox reports active (TOCTOU)": {
+			fastStart:             true,
+			markActiveErr:         errors.New("nats down"),
+			hasActive:             true,
+			wantErrSubstr:         "mark active",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+		"MarkActive failure deletes stream even when HasActiveSandbox errors": {
 			fastStart:             true,
 			markActiveErr:         errors.New("nats down"),
 			hasActiveErr:          errors.New("kube api down"),
 			wantErrSubstr:         "mark active",
-			wantDeleteStreams:     0,
-			wantSpawnStartPresent: false,
-		},
-		"MarkActive failure with fast-start disabled does not delete stream": {
-			fastStart:             false,
-			markActiveErr:         errors.New("nats down"),
-			wantErrSubstr:         "mark active",
-			wantDeleteStreams:     0,
+			wantDeleteStreams:     1,
 			wantSpawnStartPresent: false,
 		},
 		"SubscribeOutput failure clears spawnStart": {
@@ -4596,6 +4639,7 @@ func TestSpawnAgent_FailurePaths_ClearSpawnStart(t *testing.T) {
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			s := newMockStore()
 			mq := &mockQueue{active: make(map[string]bool), markActiveErr: tt.markActiveErr}
 			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
@@ -4634,6 +4678,63 @@ func TestSpawnAgent_FailurePaths_ClearSpawnStart(t *testing.T) {
 			o.spawnStartMu.Unlock()
 			if present != tt.wantSpawnStartPresent {
 				t.Errorf("spawnStart present = %v, want %v", present, tt.wantSpawnStartPresent)
+			}
+		})
+	}
+}
+
+// TestReleaseOrphanedStreams exercises the HasActiveSandbox-gated helper used by
+// the CreateSandbox/EnsureStream failure paths. Unlike the MarkActive path (which
+// deletes unconditionally to dodge an async-delete TOCTOU), this helper must skip
+// the delete when a genuinely-separate active sandbox still owns the group, and
+// must skip (leak rather than risk a live stream) when the active-sandbox check
+// itself errors.
+func TestReleaseOrphanedStreams(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		fastStart         bool
+		hasActive         bool
+		hasActiveErr      error
+		wantDeleteStreams int
+	}{
+		"no active sandbox deletes orphaned stream": {
+			fastStart:         true,
+			hasActive:         false,
+			wantDeleteStreams: 1,
+		},
+		"separate active sandbox owns group skips delete": {
+			fastStart:         true,
+			hasActive:         true,
+			wantDeleteStreams: 0,
+		},
+		"active-sandbox check error skips delete (conservative leak)": {
+			fastStart:         true,
+			hasActiveErr:      errors.New("kube api down"),
+			wantDeleteStreams: 0,
+		},
+		"fast-start disabled is a no-op": {
+			fastStart:         false,
+			hasActive:         false,
+			wantDeleteStreams: 0,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s := newMockStore()
+			b := &mockIPCBroker{}
+			sb := &mockSandboxControllerWithTracking{hasActive: tt.hasActive, hasActiveErr: tt.hasActiveErr}
+			o := newTestOrchestratorWithSandbox(s, newMockQueue(), b, sb, 30*time.Second)
+			o.cfg.K8s.FastStartEnabled = tt.fastStart
+
+			grp := store.Group{JID: "group1@g.us", Folder: "test-group", Name: "test"}
+			o.releaseOrphanedStreams(context.Background(), grp, "unit-test")
+
+			if got := b.deleteStreamsCalled; got != tt.wantDeleteStreams {
+				t.Errorf("releaseOrphanedStreams(hasActive=%v, err=%v) DeleteStreams calls = %d, want %d",
+					tt.hasActive, tt.hasActiveErr, got, tt.wantDeleteStreams)
 			}
 		})
 	}

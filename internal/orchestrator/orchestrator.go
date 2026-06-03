@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -979,9 +980,16 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
 		o.clearSpawnStart(chatJID)
-		// The IPC stream pre-created above (FastStart) is now orphaned unless
-		// another active sandbox still owns the group.
-		o.releaseOrphanedStreams(ctx, group, "MarkActive")
+		// The IPC stream pre-created above (FastStart) is now orphaned. We cannot
+		// use the HasActiveSandbox-gated releaseOrphanedStreams helper here:
+		// StopSandbox deletes the CR asynchronously, so HasActiveSandbox would
+		// still observe this very sandbox as Pending/Running (it does not filter
+		// DeletionTimestamp) and skip the delete — a TOCTOU leak. Since the stream
+		// was pre-created for THIS spawn and the sandbox is being torn down,
+		// delete unconditionally, matching the SubscribeOutput/SendInput paths.
+		if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
+			o.log.Error("failed to delete IPC streams after MarkActive failure", "group", group.Name, "error", delErr)
+		}
 		if saveErr := o.saveState(ctx); saveErr != nil {
 			o.log.Error("failed to save state", "error", saveErr)
 		}
@@ -1820,8 +1828,12 @@ func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group,
 	backoff := 100 * time.Millisecond
 	for attempt := 1; attempt <= 3; attempt++ {
 		if attempt > 1 {
+			// Add jitter (up to backoff/2) to de-correlate retries across agents
+			// reconnecting to the same broker. Worst-case added latency per wait is
+			// backoff/2 (e.g. ~100ms on the final 200ms backoff).
+			jitter := time.Duration(rand.Int64N(int64(backoff / 2)))
 			select {
-			case <-time.After(backoff):
+			case <-time.After(backoff + jitter):
 			case <-ctx.Done():
 				return fmt.Errorf("ensure stream for agent: %w", ctx.Err())
 			}
@@ -1855,7 +1867,11 @@ func (o *Orchestrator) releaseOrphanedStreams(ctx context.Context, group store.G
 	if !o.cfg.K8s.FastStartEnabled {
 		return
 	}
-	has, hasErr := o.sandbox.HasActiveSandbox(ctx, group.Folder)
+	// Detach from the (cancellable) spawn ctx so a cancelled/timed-out spawn still
+	// completes cleanup; otherwise a cancelled ctx would abort both the active-sandbox
+	// check and DeleteStreams, leaking the pre-created stream.
+	cleanupCtx := context.WithoutCancel(ctx)
+	has, hasErr := o.sandbox.HasActiveSandbox(cleanupCtx, group.Folder)
 	if hasErr != nil {
 		o.log.Error("failed to check active sandbox during IPC stream rollback; leaking stream",
 			"group", group.Name, "reason", reason, "error", hasErr)
@@ -1864,7 +1880,7 @@ func (o *Orchestrator) releaseOrphanedStreams(ctx context.Context, group store.G
 	if has {
 		return
 	}
-	if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
+	if delErr := o.ipc.DeleteStreams(cleanupCtx, group.Folder); delErr != nil {
 		o.log.Error("failed to delete IPC streams after spawn failure",
 			"group", group.Name, "reason", reason, "error", delErr)
 	}

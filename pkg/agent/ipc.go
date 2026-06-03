@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"strings"
 	"sync"
@@ -47,6 +48,12 @@ type IPCClient struct {
 	mu            sync.Mutex
 	streamCreated bool
 
+	// defensiveStream mirrors KRACLAW_AGENT_DEFENSIVE_STREAM=="1", read once at
+	// construction. When set, the agent defensively (re)creates the IPC stream
+	// before sending output / reading input instead of relying solely on the
+	// server having created it.
+	defensiveStream bool
+
 	// consumerFetchBackoff is the initial sleep between bounded Consumer-fetch
 	// retries. Zero value means use 100ms. Accessible to same-package tests that
 	// need to shrink the wall-clock cost; not part of the public contract.
@@ -74,11 +81,12 @@ func NewIPCClient(nc *nats.Conn, group, agentID string, logger *slog.Logger) (*I
 		return nil, fmt.Errorf("ipc client: jetstream: %w", err)
 	}
 	return &IPCClient{
-		nc:      nc,
-		js:      js,
-		group:   group,
-		agentID: agentID,
-		logger:  logger,
+		nc:              nc,
+		js:              js,
+		group:           group,
+		agentID:         agentID,
+		logger:          logger,
+		defensiveStream: os.Getenv("KRACLAW_AGENT_DEFENSIVE_STREAM") == "1",
 	}, nil
 }
 
@@ -128,7 +136,7 @@ func (c *IPCClient) ensureStream(ctx context.Context) error {
 
 // SendOutput publishes a message from this agent to the server.
 func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error {
-	if os.Getenv("KRACLAW_AGENT_DEFENSIVE_STREAM") == "1" {
+	if c.defensiveStream {
 		if err := c.ensureStream(ctx); err != nil {
 			return fmt.Errorf("send output: %w", err)
 		}
@@ -185,7 +193,7 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 
 // startReadInput initializes the message reader goroutine.
 func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage, errCh chan error) error {
-	if os.Getenv("KRACLAW_AGENT_DEFENSIVE_STREAM") == "1" {
+	if c.defensiveStream {
 		if err := c.ensureStream(ctx); err != nil {
 			return fmt.Errorf("read input: %w", err)
 		}
@@ -215,8 +223,15 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 		if attempt == 5 {
 			break // avoid wasted sleep after the last attempt
 		}
+		// Add jitter (up to backoff/2) to de-correlate retries across agents
+		// racing the server's stream/consumer provisioning. Worst-case added
+		// latency per wait is backoff/2 (e.g. ~400ms on the final 800ms backoff).
+		var jitter time.Duration
+		if half := backoff / 2; half > 0 {
+			jitter = time.Duration(rand.Int64N(int64(half)))
+		}
 		select {
-		case <-time.After(backoff):
+		case <-time.After(backoff + jitter):
 		case <-ctx.Done():
 			return fmt.Errorf("fetch input consumer %s: %w", consName, ctx.Err())
 		}

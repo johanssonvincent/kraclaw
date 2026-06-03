@@ -88,6 +88,13 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 
 				if event.Type != watch.Deleted {
 					recordPhaseTransitions(sandbox, seen, c.log)
+					// Guard against unbounded growth within a single watch session
+					// if Deleted events are missed (e.g. dropped by the channel).
+					// Each sandbox records at most a handful of phases, so 1000
+					// entries is far above any realistic concurrent-sandbox count.
+					if len(seen) > 1000 {
+						seen = map[string]map[string]bool{}
+					}
 				}
 
 				select {

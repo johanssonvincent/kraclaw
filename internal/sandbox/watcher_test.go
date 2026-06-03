@@ -3,7 +3,6 @@ package sandbox
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -370,7 +369,7 @@ func TestRecordPhaseTransitions(t *testing.T) {
 	created := time.Date(2026, 5, 28, 0, 0, 0, 0, time.UTC)
 
 	tests := map[string]struct {
-		conditions []metav1.Condition
+		conditions  []metav1.Condition
 		calls       int // recordPhaseTransitions invocations (default 1)
 		zeroCreated bool
 		wantSeen    map[string]bool
@@ -438,11 +437,9 @@ func TestRecordPhaseTransitions(t *testing.T) {
 		},
 	}
 
-	caseNum := 0
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			caseNum++
-			sbName := fmt.Sprintf("phase-test-%d", caseNum)
+			sbName := "phase-test-" + name
 			meta := metav1.ObjectMeta{Name: sbName, CreationTimestamp: metav1.NewTime(created)}
 			if tt.zeroCreated {
 				meta.CreationTimestamp = metav1.Time{}

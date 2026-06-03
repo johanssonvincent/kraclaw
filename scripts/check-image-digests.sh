@@ -14,9 +14,7 @@ fi
 # Keys that MUST be present and digest-pinned in production. A missing required
 # key is a failure: a renamed/dropped key would otherwise leave prod unpinned
 # while the guard stays green.
-required_keys=(agentImageAnthropic agentImageOpenAI)
-# Keys validated only if present (e.g. the sandbox default image).
-optional_keys=(agentImage)
+required_keys=(agentImageAnthropic agentImageOpenAI agentImage)
 
 fail=0
 
@@ -54,10 +52,6 @@ for key in "${required_keys[@]}"; do
         echo "required image key missing: $key (in $FILE)" >&2
         fail=1
     fi
-done
-
-for key in "${optional_keys[@]}"; do
-    validate_key "$key"
 done
 
 exit "$fail"

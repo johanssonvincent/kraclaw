@@ -86,9 +86,9 @@ func TestColdStart_FastStartEnabled_PreCreatesConsumer(t *testing.T) {
 
 	// Agent attaches using the pre-created consumer; this must NOT trigger a
 	// stream/consumer create round-trip (KRACLAW_AGENT_DEFENSIVE_STREAM unset).
-	if err := os.Unsetenv("KRACLAW_AGENT_DEFENSIVE_STREAM"); err != nil {
-		t.Fatalf("unset env: %v", err)
-	}
+	// Set before NewIPCClient: the client now reads the env once at construction.
+	// t.Setenv auto-restores the prior value at test end.
+	t.Setenv("KRACLAW_AGENT_DEFENSIVE_STREAM", "")
 
 	client, err := agent.NewIPCClient(nc, group, agentID, slog.Default())
 	if err != nil {

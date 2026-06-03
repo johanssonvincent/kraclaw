@@ -161,6 +161,11 @@ sandbox:
   # UID for all pod containers (must match agent's expected user)
   runAsUser: 1000
 
+  # Directory the agent writes group archives to, injected as KRACLAW_AGENT_ARCHIVES_DIR.
+  # Empty string uses the agent's built-in default ("/workspace/archives", see
+  # pkg/agent/agent.go). Override only if the archives volume mount differs.
+  archivesDir: ""
+
   # In-cluster service URLs — use FQDN to work across namespaces
   natsUrl: "nats://nats.nats.svc.cluster.local:4222"
   proxyUrl: "http://kraclaw-credproxy:3001"
