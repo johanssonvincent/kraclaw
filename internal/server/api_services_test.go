@@ -50,7 +50,7 @@ func createTestSandboxController() *sandbox.Controller {
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
-	ctrl, _ := sandbox.New(fake.NewClientset(), ctrlClient, nil, "default", agentImages, "nats://localhost:4222", "http://localhost:3001")
+	ctrl, _ := sandbox.New(fake.NewClientset(), ctrlClient, nil, "default", agentImages, "nats://localhost:4222", "http://localhost:3001", true)
 	return ctrl
 }
 
@@ -400,6 +400,9 @@ func (m *mockIPCBroker) ReadInput(ctx context.Context, group, agentID string) (<
 	return ch, nil
 }
 
+func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, _ string, _ string) error {
+	return nil
+}
 func (m *mockIPCBroker) DeleteStreams(ctx context.Context, group string) error { return nil }
 func (m *mockIPCBroker) Close() error                                          { return nil }
 

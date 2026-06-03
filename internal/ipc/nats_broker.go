@@ -108,6 +108,27 @@ func (b *NATSBroker) ensureStream(ctx context.Context, group string) (string, er
 	return sanitized, nil
 }
 
+// EnsureStreamForAgent provisions both the per-group IPC stream and the
+// per-agent input consumer. The orchestrator calls this before sandbox
+// creation so the agent can attach immediately on boot without paying
+// CreateOrUpdate round-trips itself.
+func (b *NATSBroker) EnsureStreamForAgent(ctx context.Context, group, agentID string) error {
+	sanitized, err := b.ensureStream(ctx, group)
+	if err != nil {
+		return fmt.Errorf("ensure stream for agent: %w", err)
+	}
+	streamName := ipcStreamName(sanitized)
+	if _, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+		Durable:       "agent-" + SanitizeAgentID(agentID),
+		FilterSubject: ipcInputSubject(sanitized, agentID),
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	}); err != nil {
+		return fmt.Errorf("ensure agent consumer: %w", err)
+	}
+	return nil
+}
+
 // PublishOutput publishes a message from an agent to the server output subject.
 func (b *NATSBroker) PublishOutput(ctx context.Context, group, agentID string, msg *IPCMessage) error {
 	sanitized, err := b.ensureStream(ctx, group)

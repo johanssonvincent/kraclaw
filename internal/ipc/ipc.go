@@ -80,6 +80,10 @@ type IPCBroker interface {
 	SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, <-chan error, error)
 	// ReadInput returns a channel receiving input messages for a specific agent.
 	ReadInput(ctx context.Context, group, agentID string) (<-chan *IPCMessage, error)
+	// EnsureStreamForAgent provisions the per-group stream and the per-agent
+	// input consumer before any spawn so the agent can attach without paying
+	// CreateOrUpdate round-trips on boot.
+	EnsureStreamForAgent(ctx context.Context, group, agentID string) error
 	// DeleteStreams removes all IPC data for a group (all agents).
 	DeleteStreams(ctx context.Context, group string) error
 	Close() error
