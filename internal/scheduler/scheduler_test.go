@@ -23,7 +23,9 @@ type mockTaskStore struct {
 	mu          sync.Mutex
 	events      []string
 	updateCalls []store.ScheduledTask
+	updateCtxs  []context.Context
 	logCalls    []store.TaskRunLog
+	logCtxs     []context.Context
 	updateErrs  []error
 }
 
@@ -45,20 +47,18 @@ func (m *mockTaskStore) ListTasksByGroup(context.Context, string) ([]store.Sched
 	return nil, nil
 }
 
-func (m *mockTaskStore) UpdateTask(_ context.Context, t *store.ScheduledTask) error {
+func (m *mockTaskStore) UpdateTask(ctx context.Context, t *store.ScheduledTask) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
 	m.events = append(m.events, "UpdateTask")
-
 	m.updateCalls = append(m.updateCalls, *t)
+
+	m.updateCtxs = append(m.updateCtxs, ctx)
 	if len(m.updateErrs) > 0 {
 		err := m.updateErrs[0]
 		m.updateErrs = m.updateErrs[1:]
-
 		return err
 	}
-
 	return nil
 }
 func (m *mockTaskStore) DeleteTask(context.Context, string, string) error { return nil }
@@ -66,13 +66,12 @@ func (m *mockTaskStore) GetDueTasks(ctx context.Context) ([]store.ScheduledTask,
 	return m.tasks, nil
 }
 
-func (m *mockTaskStore) LogTaskRun(_ context.Context, l *store.TaskRunLog) error {
+func (m *mockTaskStore) LogTaskRun(ctx context.Context, l *store.TaskRunLog) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
 	m.events = append(m.events, "LogTaskRun")
 	m.logCalls = append(m.logCalls, *l)
-
+	m.logCtxs = append(m.logCtxs, ctx)
 	return nil
 }
 
@@ -651,4 +650,119 @@ func TestSchedulerPauseOnPermanent(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPerRunContextIsolation(t *testing.T) {
+	dueOnce := func(id string) store.ScheduledTask {
+		return store.ScheduledTask{
+			ID:            id,
+			ScheduleType:  store.ScheduleOnce,
+			ScheduleValue: time.Now().Add(-time.Minute).Format(time.RFC3339),
+			Status:        store.TaskActive,
+		}
+	}
+
+	t.Run("each run receives a distinct child context", func(t *testing.T) {
+		ms := &mockTaskStore{tasks: []store.ScheduledTask{dueOnce("t1"), dueOnce("t2")}}
+		parent := context.Background()
+		var mu sync.Mutex
+		var execCtxs []context.Context
+		executor := func(ctx context.Context, task store.ScheduledTask) error {
+			mu.Lock()
+			execCtxs = append(execCtxs, ctx)
+			mu.Unlock()
+			return nil
+		}
+		sched, err := New(ms, executor, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sched.poll(parent)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(execCtxs) != 2 {
+			t.Fatalf("executor invocations = %d, want 2", len(execCtxs))
+		}
+		if execCtxs[0] == parent || execCtxs[1] == parent {
+			t.Errorf("executor received the poll's parent context")
+		}
+		if execCtxs[0] == execCtxs[1] {
+			t.Errorf("sibling runs share one context")
+		}
+		ms.mu.Lock()
+		defer ms.mu.Unlock()
+		for i, c := range ms.updateCtxs {
+			if c != parent {
+				t.Errorf("store UpdateTask %d ran on a non-parent context", i)
+			}
+		}
+	})
+
+	t.Run("child contexts are cancelled when the run completes", func(t *testing.T) {
+		ms := &mockTaskStore{tasks: []store.ScheduledTask{dueOnce("t1"), dueOnce("t2")}}
+		var mu sync.Mutex
+		var execCtxs []context.Context
+		executor := func(ctx context.Context, task store.ScheduledTask) error {
+			mu.Lock()
+			execCtxs = append(execCtxs, ctx)
+			mu.Unlock()
+			return nil
+		}
+		sched, err := New(ms, executor, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sched.poll(context.Background())
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(execCtxs) != 2 {
+			t.Fatalf("executor invocations = %d, want 2", len(execCtxs))
+		}
+		for i, c := range execCtxs {
+			select {
+			case <-c.Done():
+			default:
+				t.Errorf("run %d context not cancelled after completion", i)
+			}
+		}
+	})
+
+	t.Run("parent cancellation reaches a running executor", func(t *testing.T) {
+		ms := &mockTaskStore{tasks: []store.ScheduledTask{dueOnce("t1")}}
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		blocked := make(chan error, 1)
+		executor := func(ctx context.Context, task store.ScheduledTask) error {
+			<-ctx.Done()
+			blocked <- ctx.Err()
+			return ctx.Err()
+		}
+		sched, err := New(ms, executor, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		done := make(chan struct{})
+		go func() {
+			sched.poll(parent)
+			close(done)
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+
+		select {
+		case err := <-blocked:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("executor observed %v, want context.Canceled", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("executor not released by parent cancellation")
+		}
+		<-done
+	})
 }

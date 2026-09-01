@@ -107,6 +107,9 @@ func (s *Scheduler) poll(ctx context.Context) {
 }
 
 func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	start := time.Now()
 	s.log.Info("running task", "task_id", task.ID, "group", task.GroupFolder)
 
@@ -146,7 +149,7 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 		return
 	}
 
-	err = s.executor(ctx, task)
+	err = s.executor(runCtx, task)
 
 	duration := time.Since(start)
 	status := store.RunSuccess
