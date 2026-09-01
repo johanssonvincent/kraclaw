@@ -759,43 +759,31 @@ func TestGetTask(t *testing.T) {
 
 func TestDeleteTask(t *testing.T) {
 	tests := []struct {
-		name        string
-		id          string
-		groupFolder string
-		setup       func(sqlmock.Sqlmock)
+		name         string
+		id           string
+		groupFolder  string
+		rowsAffected int64
 	}{
 		{
-			name:        "deletes matching task",
-			id:          "task1",
-			groupFolder: "folder1",
-			setup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectBegin()
-				mock.ExpectExec("DELETE FROM task_run_logs WHERE task_id = \\? AND group_folder = \\?").
-					WithArgs("task1", "folder1").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectExec("DELETE FROM scheduled_tasks WHERE id = \\? AND group_folder = \\?").
-					WithArgs("task1", "folder1").WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectCommit()
-			},
+			name:         "deletes matching task",
+			id:           "task1",
+			groupFolder:  "folder1",
+			rowsAffected: 1,
 		},
 		{
-			name:        "wrong group deletes 0 rows",
-			id:          "task1",
-			groupFolder: "other-group",
-			setup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectBegin()
-				mock.ExpectExec("DELETE FROM task_run_logs WHERE task_id = \\? AND group_folder = \\?").
-					WithArgs("task1", "other-group").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectExec("DELETE FROM scheduled_tasks WHERE id = \\? AND group_folder = \\?").
-					WithArgs("task1", "other-group").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectCommit()
-			},
+			name:         "wrong group deletes 0 rows",
+			id:           "task1",
+			groupFolder:  "other-group",
+			rowsAffected: 0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mock := newTestStore(t)
-			tt.setup(mock)
+			mock.ExpectExec("DELETE FROM scheduled_tasks WHERE id = \\? AND group_folder = \\?").
+				WithArgs(tt.id, tt.groupFolder).
+				WillReturnResult(sqlmock.NewResult(0, tt.rowsAffected))
 
 			err := store.DeleteTask(context.Background(), tt.id, tt.groupFolder)
 			if err != nil {
@@ -805,6 +793,26 @@ func TestDeleteTask(t *testing.T) {
 				t.Errorf("unmet expectations: %v", err)
 			}
 		})
+	}
+}
+
+func TestCompositeIndex(t *testing.T) {
+	up, err := os.ReadFile("../../migrations/20260831000001_scheduler_tasks_composite_index.up.sql")
+	if err != nil {
+		t.Fatalf("read up migration: %v", err)
+	}
+
+	if !strings.Contains(string(up), "CREATE INDEX idx_status_next_run ON scheduled_tasks (status, next_run)") {
+		t.Errorf("up migration must create idx_status_next_run on (status, next_run), got: %s", string(up))
+	}
+
+	down, err := os.ReadFile("../../migrations/20260831000001_scheduler_tasks_composite_index.down.sql")
+	if err != nil {
+		t.Fatalf("read down migration: %v", err)
+	}
+
+	if !strings.Contains(string(down), "DROP INDEX idx_status_next_run") {
+		t.Errorf("down migration must drop idx_status_next_run, got: %s", string(down))
 	}
 }
 

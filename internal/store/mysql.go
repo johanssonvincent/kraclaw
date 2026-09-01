@@ -550,20 +550,12 @@ func (s *MySQLStore) UpdateTask(ctx context.Context, task *ScheduledTask) error 
 }
 
 func (s *MySQLStore) DeleteTask(ctx context.Context, id, groupFolder string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	_, err := s.db.ExecContext(ctx, "DELETE FROM scheduled_tasks WHERE id = ? AND group_folder = ?", id, groupFolder)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, "DELETE FROM task_run_logs WHERE task_id = ? AND group_folder = ?", id, groupFolder); err != nil {
-		return fmt.Errorf("delete task run logs: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM scheduled_tasks WHERE id = ? AND group_folder = ?", id, groupFolder); err != nil {
 		return fmt.Errorf("delete task: %w", err)
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 func (s *MySQLStore) GetDueTasks(ctx context.Context) ([]ScheduledTask, error) {
