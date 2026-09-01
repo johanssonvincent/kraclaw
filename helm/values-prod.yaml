@@ -2,7 +2,11 @@
 # Keys not listed here use base values.yaml defaults
 # Helm applies this AFTER values.yaml — conflicts are won by this file
 
+# See Scope Boundaries in docs/brainstorms/2026-06-10-scheduler-safety-requirements.md for the HA-work rationale.
+# Scaling replicas is unsafe without HA work.
+# single-writer
 replicaCount: 1
+# Recreate guarantees the old pod fully terminates before the replacement starts, so deploys never run two schedulers.
 updateStrategy: Recreate
 
 # Track main builds via :latest

@@ -1,6 +1,9 @@
 # Kraclaw Helm Chart Values
 # All env var defaults are sourced from internal/config/config.go envconfig tags.
 
+# The kraclaw binary is single-writer; it embeds the scheduler and assumes exactly one replica.
+# Scaling replicas is unsafe without HA work.
+# single-writer
 replicaCount: 1
 updateStrategy: RollingUpdate
 
