@@ -2,8 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,22 +17,63 @@ import (
 // mockTaskStore implements store.TaskStore for testing poll concurrency.
 type mockTaskStore struct {
 	tasks []store.ScheduledTask
+
+	mu          sync.Mutex
+	events      []string
+	updateCalls []store.ScheduledTask
+	logCalls    []store.TaskRunLog
+	updateErrs  []error
+}
+
+func (m *mockTaskStore) record(event string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.events = append(m.events, event)
 }
 
 func (m *mockTaskStore) CreateTask(context.Context, *store.ScheduledTask) error { return nil }
 func (m *mockTaskStore) GetTask(context.Context, string, string) (*store.ScheduledTask, error) {
 	return nil, nil
 }
-func (m *mockTaskStore) ListTasks(context.Context) ([]store.ScheduledTask, error)          { return nil, nil }
+
+func (m *mockTaskStore) ListTasks(context.Context) ([]store.ScheduledTask, error) { return nil, nil }
+
 func (m *mockTaskStore) ListTasksByGroup(context.Context, string) ([]store.ScheduledTask, error) {
 	return nil, nil
 }
-func (m *mockTaskStore) UpdateTask(context.Context, *store.ScheduledTask) error  { return nil }
-func (m *mockTaskStore) DeleteTask(context.Context, string, string) error        { return nil }
+
+func (m *mockTaskStore) UpdateTask(_ context.Context, t *store.ScheduledTask) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.events = append(m.events, "UpdateTask")
+
+	m.updateCalls = append(m.updateCalls, *t)
+	if len(m.updateErrs) > 0 {
+		err := m.updateErrs[0]
+		m.updateErrs = m.updateErrs[1:]
+
+		return err
+	}
+
+	return nil
+}
+func (m *mockTaskStore) DeleteTask(context.Context, string, string) error { return nil }
 func (m *mockTaskStore) GetDueTasks(ctx context.Context) ([]store.ScheduledTask, error) {
 	return m.tasks, nil
 }
-func (m *mockTaskStore) LogTaskRun(context.Context, *store.TaskRunLog) error { return nil }
+
+func (m *mockTaskStore) LogTaskRun(_ context.Context, l *store.TaskRunLog) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.events = append(m.events, "LogTaskRun")
+	m.logCalls = append(m.logCalls, *l)
+
+	return nil
+}
+
 func (m *mockTaskStore) GetTaskRunLogs(context.Context, string, string, int) ([]store.TaskRunLog, error) {
 	return nil, nil
 }
@@ -108,7 +152,7 @@ func TestPollConcurrency(t *testing.T) {
 			var maxRunning atomic.Int64
 			// mu removed — unused and copying sync.Mutex triggers copylocks
 
-			executor := func(ctx context.Context, task store.ScheduledTask) error {
+			executor := func(_ context.Context, task store.ScheduledTask) error {
 				cur := running.Add(1)
 				defer running.Add(-1)
 				// Track max concurrency
@@ -147,7 +191,7 @@ func testSlowTaskDoesNotDelayFast(t *testing.T) {
 	var fastDone atomic.Int64
 	var slowStarted atomic.Bool
 
-	executor := func(ctx context.Context, task store.ScheduledTask) error {
+	executor := func(_ context.Context, task store.ScheduledTask) error {
 		if task.ID == "slow" {
 			slowStarted.Store(true)
 			time.Sleep(100 * time.Millisecond)
@@ -182,6 +226,7 @@ func TestComputeNextRun(t *testing.T) {
 	tests := []struct {
 		name      string
 		task      store.ScheduledTask
+		wantErr   bool
 		checkFunc func(t *testing.T, result *time.Time)
 	}{
 		{
@@ -205,11 +250,7 @@ func TestComputeNextRun(t *testing.T) {
 				ScheduleType:  store.ScheduleCron,
 				ScheduleValue: "not a cron",
 			},
-			checkFunc: func(t *testing.T, result *time.Time) {
-				if result != nil {
-					t.Errorf("expected nil for invalid cron, got %v", result)
-				}
-			},
+			wantErr: true,
 		},
 		{
 			name: "interval first run returns now",
@@ -277,11 +318,7 @@ func TestComputeNextRun(t *testing.T) {
 				ScheduleValue: "not-a-duration",
 				LastRun:       &fiveMinAgo,
 			},
-			checkFunc: func(t *testing.T, result *time.Time) {
-				if result != nil {
-					t.Errorf("expected nil for invalid interval, got %v", result)
-				}
-			},
+			wantErr: true,
 		},
 		{
 			name: "once with no last run returns parsed time",
@@ -320,11 +357,7 @@ func TestComputeNextRun(t *testing.T) {
 				ScheduleValue: "not-a-time",
 				LastRun:       nil,
 			},
-			checkFunc: func(t *testing.T, result *time.Time) {
-				if result != nil {
-					t.Errorf("expected nil for invalid once time, got %v", result)
-				}
-			},
+			wantErr: true,
 		},
 		{
 			name: "interval falls back to last_run when next_run is nil",
@@ -355,8 +388,149 @@ func TestComputeNextRun(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := s.computeNextRun(&tt.task)
+			result, err := s.computeNextRun(&tt.task)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("computeNextRun(%q): want error, got nil", tt.task.ScheduleValue)
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("computeNextRun(%q): %v", tt.task.ScheduleValue, err)
+			}
 			tt.checkFunc(t, result)
+		})
+	}
+}
+
+func TestSchedulerAdvanceOrder(t *testing.T) {
+	t.Run("cron task: advance persists before executor", func(t *testing.T) {
+		past := time.Now().Add(-5 * time.Minute)
+		ms := &mockTaskStore{tasks: []store.ScheduledTask{{
+			ID:            "t1",
+			ScheduleType:  store.ScheduleCron,
+			ScheduleValue: "*/5 * * * *",
+			NextRun:       &past,
+			Status:        store.TaskActive,
+		}}}
+		executor := func(_ context.Context, task store.ScheduledTask) error {
+			ms.record("executor")
+
+			return nil
+		}
+
+		sched, err := New(ms, executor, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sched.poll(context.Background())
+
+		ms.mu.Lock()
+		got := slices.Clone(ms.events)
+		ms.mu.Unlock()
+
+		want := []string{"UpdateTask", "executor", "LogTaskRun", "UpdateTask"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("events = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("once task: status completed persisted before executor", func(t *testing.T) {
+		past := time.Now().Add(-5 * time.Minute)
+		ms := &mockTaskStore{tasks: []store.ScheduledTask{{
+			ID:            "t1",
+			ScheduleType:  store.ScheduleOnce,
+			ScheduleValue: past.Format(time.RFC3339),
+			Status:        store.TaskActive,
+		}}}
+
+		var observed *store.ScheduledTask
+
+		executor := func(_ context.Context, task store.ScheduledTask) error {
+			ms.record("executor")
+
+			t := task
+			observed = &t
+
+			return nil
+		}
+
+		sched, err := New(ms, executor, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sched.poll(context.Background())
+
+		if observed == nil {
+			t.Fatal("executor was not called")
+		}
+
+		if observed.Status != store.TaskCompleted {
+			t.Errorf("executor observed Status = %q, want %q", observed.Status, store.TaskCompleted)
+		}
+
+		if observed.NextRun != nil {
+			t.Errorf("executor observed NextRun = %v, want nil", observed.NextRun)
+		}
+	})
+}
+
+func TestLastResultRecorded(t *testing.T) {
+	tests := []struct {
+		name        string
+		executorErr error
+		wantOutcome string
+	}{
+		{name: "success records enqueued", wantOutcome: "enqueued"},
+		{name: "executor error records the error text", executorErr: errors.New("boom"), wantOutcome: "boom"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			past := time.Now().Add(-5 * time.Minute)
+			ms := &mockTaskStore{tasks: []store.ScheduledTask{{
+				ID:            "t1",
+				ScheduleType:  store.ScheduleCron,
+				ScheduleValue: "*/5 * * * *",
+				NextRun:       &past,
+				Status:        store.TaskActive,
+			}}}
+			executor := func(_ context.Context, task store.ScheduledTask) error {
+				ms.record("executor")
+
+				return tt.executorErr
+			}
+
+			sched, err := New(ms, executor, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			sched.poll(context.Background())
+
+			ms.mu.Lock()
+			defer ms.mu.Unlock()
+
+			if len(ms.logCalls) != 1 {
+				t.Fatalf("LogTaskRun calls = %d, want 1", len(ms.logCalls))
+			}
+
+			if ms.logCalls[0].Result == nil || *ms.logCalls[0].Result != tt.wantOutcome {
+				t.Errorf("run log Result = %v, want %q", ms.logCalls[0].Result, tt.wantOutcome)
+			}
+
+			if len(ms.updateCalls) != 2 {
+				t.Fatalf("UpdateTask calls = %d, want 2", len(ms.updateCalls))
+			}
+
+			outcomeTask := ms.updateCalls[1]
+			if outcomeTask.LastResult == nil || *outcomeTask.LastResult != tt.wantOutcome {
+				t.Errorf("outcome UpdateTask LastResult = %v, want %q", outcomeTask.LastResult, tt.wantOutcome)
+			}
 		})
 	}
 }

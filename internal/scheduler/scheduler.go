@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/johanssonvincent/kraclaw/internal/store"
-	"github.com/robfig/cron/v3"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -94,7 +93,28 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 	start := time.Now()
 	s.log.Info("running task", "task_id", task.ID, "group", task.GroupFolder)
 
-	err := s.executor(ctx, task)
+	nextRun, err := s.computeNextRun(&task)
+	if err != nil {
+		s.log.Error("failed to compute next run", "task_id", task.ID, "schedule", task.ScheduleValue, "error", err)
+
+		return
+	}
+
+	task.LastRun = &start
+	if task.ScheduleType == store.ScheduleOnce {
+		task.NextRun = nil
+		task.Status = store.TaskCompleted
+	} else {
+		task.NextRun = nextRun
+	}
+
+	if err := s.store.UpdateTask(ctx, &task); err != nil {
+		s.log.Error("failed to persist task advance", "task_id", task.ID, "error", err)
+
+		return
+	}
+
+	err = s.executor(ctx, task)
 
 	duration := time.Since(start)
 	status := store.RunSuccess
@@ -108,7 +128,11 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 		s.log.Info("task completed", "task_id", task.ID, "duration", duration)
 	}
 
-	// Log the task run.
+	outcome := "enqueued"
+	if err != nil {
+		outcome = err.Error()
+	}
+
 	logErr := s.store.LogTaskRun(ctx, &store.TaskRunLog{
 		TaskID:      task.ID,
 		GroupFolder: task.GroupFolder,
@@ -116,49 +140,44 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 		DurationMs:  int(duration.Milliseconds()),
 		Status:      status,
 		Error:       errStr,
+		Result:      &outcome,
 	})
 	if logErr != nil {
 		s.log.Error("failed to log task run", "task_id", task.ID, "error", logErr)
 	}
 
-	// Compute next run and update the task.
-	now := time.Now()
-	task.LastRun = &now
-	nextRun := s.computeNextRun(&task)
-	task.NextRun = nextRun
-	if nextRun == nil && task.ScheduleType == store.ScheduleOnce {
-		task.Status = store.TaskCompleted
-	}
-
+	task.LastResult = &outcome
 	if updateErr := s.store.UpdateTask(ctx, &task); updateErr != nil {
-		s.log.Error("failed to update task", "task_id", task.ID, "error", updateErr)
+		s.log.Error("failed to record task outcome", "task_id", task.ID, "error", updateErr)
 	}
 }
 
 // computeNextRun calculates the next run time for a task.
-func (s *Scheduler) computeNextRun(task *store.ScheduledTask) *time.Time {
+func (s *Scheduler) computeNextRun(task *store.ScheduledTask) (*time.Time, error) {
 	now := time.Now()
 
 	switch task.ScheduleType {
 	case store.ScheduleCron:
-		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		sched, err := parser.Parse(task.ScheduleValue)
+		sched, err := store.CronParser.Parse(task.ScheduleValue)
 		if err != nil {
-			s.log.Error("invalid cron expression", "task_id", task.ID, "expr", task.ScheduleValue, "error", err)
-			return nil
+			return nil, fmt.Errorf("parse cron expression: %w", err)
 		}
 		next := sched.Next(now)
-		return &next
+
+		return &next, nil
 
 	case store.ScheduleInterval:
 		d, err := time.ParseDuration(task.ScheduleValue)
-		if err != nil || d <= 0 {
-			s.log.Error("invalid interval", "task_id", task.ID, "value", task.ScheduleValue, "error", err)
-			return nil
+		if err != nil {
+			return nil, fmt.Errorf("parse interval: %w", err)
+		}
+
+		if d <= 0 {
+			return nil, fmt.Errorf("interval %q must be positive", task.ScheduleValue)
 		}
 
 		if task.LastRun == nil {
-			return &now
+			return &now, nil
 		}
 
 		// Anchor to last scheduled time and skip forward to prevent drift.
@@ -173,20 +192,21 @@ func (s *Scheduler) computeNextRun(task *store.ScheduledTask) *time.Time {
 		for !next.After(now) {
 			next = next.Add(d)
 		}
-		return &next
+
+		return &next, nil
 
 	case store.ScheduleOnce:
 		if task.LastRun != nil {
-			return nil
+			return nil, nil
 		}
 		t, err := time.Parse(time.RFC3339, task.ScheduleValue)
 		if err != nil {
-			s.log.Error("invalid once schedule", "task_id", task.ID, "value", task.ScheduleValue, "error", err)
-			return nil
+			return nil, fmt.Errorf("parse once schedule: %w", err)
 		}
-		return &t
+
+		return &t, nil
 
 	default:
-		return nil
+		return nil, fmt.Errorf("unknown schedule type %q", task.ScheduleType)
 	}
 }
