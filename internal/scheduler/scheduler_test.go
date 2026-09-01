@@ -143,8 +143,9 @@ func TestPollConcurrency(t *testing.T) {
 			tasks := make([]store.ScheduledTask, tt.taskCount)
 			for i := range tasks {
 				tasks[i] = store.ScheduledTask{
-					ID:           fmt.Sprintf("task-%d", i),
-					ScheduleType: store.ScheduleOnce,
+					ID:            fmt.Sprintf("task-%d", i),
+					ScheduleType:  store.ScheduleOnce,
+					ScheduleValue: time.Now().Add(-time.Minute).Format(time.RFC3339),
 				}
 			}
 
@@ -183,9 +184,9 @@ func TestPollConcurrency(t *testing.T) {
 
 func testSlowTaskDoesNotDelayFast(t *testing.T) {
 	tasks := []store.ScheduledTask{
-		{ID: "slow", ScheduleType: store.ScheduleOnce},
-		{ID: "fast-1", ScheduleType: store.ScheduleOnce},
-		{ID: "fast-2", ScheduleType: store.ScheduleOnce},
+		{ID: "slow", ScheduleType: store.ScheduleOnce, ScheduleValue: time.Now().Add(-time.Minute).Format(time.RFC3339)},
+		{ID: "fast-1", ScheduleType: store.ScheduleOnce, ScheduleValue: time.Now().Add(-time.Minute).Format(time.RFC3339)},
+		{ID: "fast-2", ScheduleType: store.ScheduleOnce, ScheduleValue: time.Now().Add(-time.Minute).Format(time.RFC3339)},
 	}
 
 	var fastDone atomic.Int64
