@@ -146,20 +146,6 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 		return
 	}
 
-	task.LastRun = &start
-	if task.ScheduleType == store.ScheduleOnce {
-		task.NextRun = nil
-		task.Status = store.TaskCompleted
-	} else {
-		task.NextRun = nextRun
-	}
-
-	if err := s.store.UpdateTask(ctx, &task); err != nil {
-		s.log.Error("failed to persist task advance", "task_id", task.ID, "error", err)
-
-		return
-	}
-
 	err = s.executor(ctx, task)
 
 	duration := time.Since(start)
