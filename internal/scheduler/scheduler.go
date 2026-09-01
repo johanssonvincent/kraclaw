@@ -2,17 +2,34 @@ package scheduler
 
 import (
 	"context"
+	"database/sql/driver"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	gosql "github.com/go-sql-driver/mysql"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 	"golang.org/x/sync/semaphore"
 )
 
 // maxConcurrentTasks bounds how many tasks can execute simultaneously within a poll window.
 const maxConcurrentTasks = int64(3)
+
+func isTransientAdvanceError(err error) bool {
+	if errors.Is(err, driver.ErrBadConn) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) {
+		return true
+	}
+
+	if mysqlErr, ok := errors.AsType[*gosql.MySQLError](err); ok {
+		return mysqlErr.Number == 1205 || mysqlErr.Number == 1213
+	}
+
+	return false
+}
 
 // TaskExecutor executes a single scheduled task.
 type TaskExecutor func(ctx context.Context, task store.ScheduledTask) error
@@ -95,8 +112,37 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 
 	nextRun, err := s.computeNextRun(&task)
 	if err != nil {
-		s.log.Error("failed to compute next run", "task_id", task.ID, "schedule", task.ScheduleValue, "error", err)
+		s.log.Error("invalid schedule; pausing task", "task_id", task.ID, "schedule", task.ScheduleValue, "error", err)
 
+		task.Status = store.TaskPaused
+		if pauseErr := s.store.UpdateTask(ctx, &task); pauseErr != nil {
+			s.log.Error("failed to pause task", "task_id", task.ID, "error", pauseErr)
+		}
+
+		return
+	}
+
+	task.LastRun = &start
+	if task.ScheduleType == store.ScheduleOnce {
+		task.NextRun = nil
+		task.Status = store.TaskCompleted
+	} else {
+		task.NextRun = nextRun
+	}
+
+	if err := s.store.UpdateTask(ctx, &task); err != nil {
+		if isTransientAdvanceError(err) {
+			s.log.Error("task advance deferred to next poll", "task_id", task.ID, "error", err)
+
+			return
+		}
+
+		s.log.Error("task advance failed permanently; pausing task", "task_id", task.ID, "error", err)
+
+		task.Status = store.TaskPaused
+		if pauseErr := s.store.UpdateTask(ctx, &task); pauseErr != nil {
+			s.log.Error("failed to pause task", "task_id", task.ID, "error", pauseErr)
+		}
 		return
 	}
 

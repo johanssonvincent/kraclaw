@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	gosql "github.com/go-sql-driver/mysql"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
@@ -531,6 +533,121 @@ func TestLastResultRecorded(t *testing.T) {
 			outcomeTask := ms.updateCalls[1]
 			if outcomeTask.LastResult == nil || *outcomeTask.LastResult != tt.wantOutcome {
 				t.Errorf("outcome UpdateTask LastResult = %v, want %q", outcomeTask.LastResult, tt.wantOutcome)
+			}
+		})
+	}
+}
+
+func TestInvalidSchedulePauses(t *testing.T) {
+	past := time.Now().Add(-5 * time.Minute)
+	ms := &mockTaskStore{tasks: []store.ScheduledTask{{
+		ID:            "t1",
+		ScheduleType:  store.ScheduleCron,
+		ScheduleValue: "not a cron",
+		NextRun:       &past,
+		Status:        store.TaskActive,
+	}}}
+	executor := func(_ context.Context, task store.ScheduledTask) error {
+		ms.record("executor")
+		return nil
+	}
+	sched, err := New(ms, executor, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sched.poll(context.Background())
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	for _, e := range ms.events {
+		if e == "executor" {
+			t.Fatalf("executor was invoked for an unparseable schedule")
+		}
+	}
+	if len(ms.updateCalls) != 1 {
+		t.Fatalf("UpdateTask calls = %d, want 1 (the pause write)", len(ms.updateCalls))
+	}
+	if ms.updateCalls[0].Status != store.TaskPaused {
+		t.Errorf("pause write Status = %q, want %q", ms.updateCalls[0].Status, store.TaskPaused)
+	}
+}
+
+func TestSchedulerPauseOnPermanent(t *testing.T) {
+	permErr := errors.New("constraint violation")
+
+	tests := []struct {
+		name          string
+		updateErrs    []error
+		wantUpdates   int
+		wantPausedIdx int
+	}{
+		{
+			name:        "transient conn error leaves row untouched",
+			updateErrs:  []error{fmt.Errorf("ping: %w", driver.ErrBadConn)},
+			wantUpdates: 1,
+		},
+		{
+			name:        "lock wait timeout is transient",
+			updateErrs:  []error{&gosql.MySQLError{Number: 1205}},
+			wantUpdates: 1,
+		},
+		{
+			name:        "deadlock is transient",
+			updateErrs:  []error{&gosql.MySQLError{Number: 1213}},
+			wantUpdates: 1,
+		},
+		{
+			name:          "permanent error pauses the task",
+			updateErrs:    []error{permErr},
+			wantUpdates:   2,
+			wantPausedIdx: 1,
+		},
+		{
+			name:        "pause write itself fails",
+			updateErrs:  []error{permErr, permErr},
+			wantUpdates: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			past := time.Now().Add(-5 * time.Minute)
+			ms := &mockTaskStore{
+				tasks: []store.ScheduledTask{{
+					ID:            "t1",
+					ScheduleType:  store.ScheduleCron,
+					ScheduleValue: "*/5 * * * *",
+					NextRun:       &past,
+					Status:        store.TaskActive,
+				}},
+				updateErrs: tt.updateErrs,
+			}
+			executor := func(_ context.Context, task store.ScheduledTask) error {
+				ms.record("executor")
+				return nil
+			}
+			sched, err := New(ms, executor, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			sched.poll(context.Background())
+
+			ms.mu.Lock()
+			defer ms.mu.Unlock()
+			for _, e := range ms.events {
+				if e == "executor" {
+					t.Fatalf("executor was invoked despite advance-persist failure")
+				}
+			}
+			if len(ms.updateCalls) != tt.wantUpdates {
+				t.Fatalf("UpdateTask calls = %d, want %d", len(ms.updateCalls), tt.wantUpdates)
+			}
+			if tt.wantPausedIdx > 0 {
+				if ms.updateCalls[tt.wantPausedIdx].Status != store.TaskPaused {
+					t.Errorf("pause write Status = %q, want %q", ms.updateCalls[tt.wantPausedIdx].Status, store.TaskPaused)
+				}
 			}
 		})
 	}
