@@ -14,6 +14,11 @@ import (
 // not exist in the database.
 var ErrGroupNotFound = errors.New("group not found")
 
+// CronParser is the single parser for every schedule string in the codebase —
+// validation and next-run computation must share it or they can drift into
+// accepting different schedules.
+var CronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+
 // ContainerConfig holds per-group container settings.
 type ContainerConfig struct {
 	AdditionalMounts []AdditionalMount `json:"additionalMounts,omitempty"`
@@ -124,8 +129,7 @@ func (t *ScheduledTask) Validate() error {
 	}
 	switch t.ScheduleType {
 	case ScheduleCron:
-		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		if _, err := parser.Parse(t.ScheduleValue); err != nil {
+		if _, err := CronParser.Parse(t.ScheduleValue); err != nil {
 			return fmt.Errorf("invalid cron expression %q: %w", t.ScheduleValue, err)
 		}
 	case ScheduleInterval:
