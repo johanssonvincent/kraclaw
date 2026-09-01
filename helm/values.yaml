@@ -2,6 +2,7 @@
 # All env var defaults are sourced from internal/config/config.go envconfig tags.
 
 replicaCount: 1
+updateStrategy: RollingUpdate
 
 image:
   repository: ghcr.io/johanssonvincent/kraclaw
@@ -150,7 +151,11 @@ sandbox:
     enabled: true
 
   # Default agent container image for SandboxTemplate pod spec (REQUIRED when sandbox.enabled=true)
-  agentImage: ""            # set to the agent image to run, e.g. via --set sandbox.agentImage=...
+  agentImage: "ghcr.io/johanssonvincent/kraclaw-agent-anthropic@sha256:93c2978f705f1a26633fb6576cc23a46b79d16b75763a4b9781e9296bea8fe96"            # set to the agent image to run, e.g. via --set sandbox.agentImage=...
+
+
+
+
 
   # Init container image for per-group directory setup
   initImage: "busybox:latest"

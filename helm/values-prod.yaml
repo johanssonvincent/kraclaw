@@ -2,8 +2,8 @@
 # Keys not listed here use base values.yaml defaults
 # Helm applies this AFTER values.yaml — conflicts are won by this file
 
-# HA deployment: 3 replicas for production resilience
-replicaCount: 3
+replicaCount: 1
+updateStrategy: Recreate
 
 # Track main builds via :latest
 image:
