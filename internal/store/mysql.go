@@ -10,17 +10,34 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	gosql "github.com/go-sql-driver/mysql"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/mysql"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-
 	"github.com/johanssonvincent/kraclaw/migrations"
 )
 
 // MySQLStore implements the Store interface using MySQL.
 type MySQLStore struct {
 	db *sql.DB
+}
+
+func normalizeDSN(dsn string) (string, error) {
+	cfg, err := gosql.ParseDSN(dsn)
+	if err != nil {
+		return "", fmt.Errorf("normalize dsn: %w", err)
+	}
+
+	cfg.ParseTime = true
+
+	cfg.Loc = time.UTC
+	if cfg.Params == nil {
+		cfg.Params = make(map[string]string)
+	}
+
+	cfg.Params["time_zone"] = "'+00:00'"
+
+	return cfg.FormatDSN(), nil
 }
 
 // dirtyMigrationError signals a dirty migration state that must not be retried.
@@ -72,7 +89,12 @@ func retryWithBackoff(attempts int, baseDelay time.Duration, operation string, f
 
 // NewMySQLStore creates a new MySQL-backed store and runs migrations.
 func NewMySQLStore(dsn string, maxOpen, maxIdle int, connMaxLifetime time.Duration) (*MySQLStore, error) {
-	db, err := sql.Open("mysql", dsn)
+	normalizedDSN, err := normalizeDSN(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("normalize dsn: %w", err)
+	}
+
+	db, err := sql.Open("mysql", normalizedDSN)
 	if err != nil {
 		return nil, fmt.Errorf("open mysql: %w", err)
 	}
@@ -90,7 +112,7 @@ func NewMySQLStore(dsn string, maxOpen, maxIdle int, connMaxLifetime time.Durati
 		return nil, err
 	}
 
-	if err := runMigrations(dsn); err != nil {
+	if err := runMigrations(normalizedDSN); err != nil {
 		if cerr := db.Close(); cerr != nil {
 			slog.Warn("close db on migration failure", "error", cerr)
 		}

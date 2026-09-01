@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/DATA-DOG/go-sqlmock"
+	mysqldrv "github.com/go-sql-driver/mysql"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
 )
@@ -123,7 +123,6 @@ func TestRunMigrations_DirtyReturnsError(t *testing.T) {
 	}
 }
 
-
 func TestRetryWithBackoff(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -149,11 +148,11 @@ func TestRetryWithBackoff(t *testing.T) {
 			wantCalls:  2,
 		},
 		{
-			name:        "attempts=1 succeeds on first and only attempt",
-			attempts:    1,
-			returnErrs:  []error{nil},
-			wantErr:     false,
-			wantCalls:   1,
+			name:       "attempts=1 succeeds on first and only attempt",
+			attempts:   1,
+			returnErrs: []error{nil},
+			wantErr:    false,
+			wantCalls:  1,
 		},
 		{
 			name:        "exhausts all attempts",
@@ -242,7 +241,6 @@ func TestPingRetryOnTransientError(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
-
 
 func newTestStore(t *testing.T) (*MySQLStore, sqlmock.Sqlmock) {
 	t.Helper()
@@ -1285,4 +1283,87 @@ func TestMySQLStore_MarkGroupActive_UnknownJID(t *testing.T) {
 			t.Errorf("unmet expectations: %v", err)
 		}
 	})
+}
+
+func TestMySQLTimeZone(t *testing.T) {
+	t.Run("wiring, source assertion", func(t *testing.T) {
+		src, err := os.ReadFile("mysql.go")
+		if err != nil {
+			t.Fatalf("read mysql.go: %v", err)
+		}
+
+		s := string(src)
+
+		start := strings.Index(s, "func NewMySQLStore(")
+		if start < 0 {
+			t.Fatalf("NewMySQLStore not found")
+		}
+
+		body := s[start:]
+		if end := strings.Index(body[1:], "\nfunc "); end >= 0 {
+			body = body[:end+1]
+		}
+
+		if !strings.Contains(body, `sql.Open("mysql", normalizedDSN)`) {
+			t.Errorf("NewMySQLStore must open with the normalized DSN")
+		}
+
+		if !strings.Contains(body, "runMigrations(normalizedDSN)") {
+			t.Errorf("runMigrations must receive the normalized DSN")
+		}
+
+		if strings.Contains(body, `sql.Open("mysql", dsn)`) || strings.Contains(body, "runMigrations(dsn)") {
+			t.Errorf("raw operator DSN must not reach sql.Open or runMigrations")
+		}
+	})
+
+	tests := []struct {
+		name         string
+		dsn          string
+		wantErr      bool
+		wantTimeZone string
+	}{
+		{name: "adds time params to bare DSN", dsn: "user:pass@tcp(localhost:3306)/kraclaw", wantTimeZone: "'+00:00'"},
+		{name: "overrides operator parseTime and loc", dsn: "user@tcp(h)/db?parseTime=false&loc=Local", wantTimeZone: "'+00:00'"},
+		{name: "overrides operator time_zone", dsn: "user@tcp(h)/db?time_zone=+05:30", wantTimeZone: "'+00:00'"},
+		{name: "rejects unparseable DSN", dsn: "not-a-dsn", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized, err := normalizeDSN(tt.dsn)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("normalizeDSN(%q): want error, got nil", tt.dsn)
+				}
+
+				if !strings.Contains(err.Error(), "normalize dsn") {
+					t.Errorf("error = %v, want contains %q", err, "normalize dsn")
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("normalizeDSN(%q): %v", tt.dsn, err)
+			}
+
+			cfg, err := mysqldrv.ParseDSN(normalized)
+			if err != nil {
+				t.Fatalf("ParseDSN(normalized): %v", err)
+			}
+
+			if !cfg.ParseTime {
+				t.Errorf("ParseTime = false, want true")
+			}
+
+			if cfg.Loc != time.UTC {
+				t.Errorf("Loc = %v, want UTC", cfg.Loc)
+			}
+
+			if got := cfg.Params["time_zone"]; got != tt.wantTimeZone {
+				t.Errorf("time_zone = %q, want %q", got, tt.wantTimeZone)
+			}
+		})
+	}
 }
