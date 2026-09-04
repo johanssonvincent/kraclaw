@@ -284,7 +284,7 @@ type mockIPCBroker struct {
 	callOrder                 []string // appended on EnsureStreamForAgent + DeleteStreams
 }
 
-func (m *mockIPCBroker) PublishOutput(_ context.Context, _ string, _ string, msg *ipc.IPCMessage) error {
+func (m *mockIPCBroker) PublishOutput(_ context.Context, _, _ string, msg *ipc.IPCMessage) error {
 	m.published = append(m.published, msg)
 	return nil
 }
@@ -315,7 +315,7 @@ func (m *mockIPCBroker) SendInput(ctx context.Context, group, agentID string, ms
 	return nil
 }
 
-func (m *mockIPCBroker) ReadInput(_ context.Context, _ string, _ string) (<-chan *ipc.IPCMessage, error) {
+func (m *mockIPCBroker) ReadInput(_ context.Context, _, _ string) (<-chan *ipc.IPCMessage, error) {
 	ch := make(chan *ipc.IPCMessage)
 	return ch, nil
 }
@@ -363,7 +363,7 @@ func (m *mockChannel) Disconnect(_ context.Context) error                  { m.c
 func (m *mockChannel) SetTyping(_ context.Context, _ string, _ bool) error { return nil }
 func (m *mockChannel) OwnsJID(jid string) bool                             { return m.ownsJIDs[jid] }
 
-func (m *mockChannel) SendMessage(_ context.Context, jid string, text string) error {
+func (m *mockChannel) SendMessage(_ context.Context, jid, text string) error {
 	m.sent = append(m.sent, sentMessage{jid: jid, text: text})
 	return nil
 }
@@ -4242,131 +4242,120 @@ func TestSpawnAgent_CallsEnsureStreamBeforeCreateSandbox(t *testing.T) {
 	}
 }
 
-func TestSpawnAgent_EnsureStreamFailure_NoSandboxCreated(t *testing.T) {
+func TestSpawnAgent_FailurePaths(t *testing.T) {
 	t.Parallel()
-	s := newMockStore()
-	mq := &mockQueue{active: make(map[string]bool)}
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{ensureStreamForAgentErr: errors.New("boom")}
-	sb := &mockSandboxControllerWithTracking{}
 
-	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
-	o.cfg.K8s.FastStartEnabled = true
-	o.cfg.Queue.MaxConcurrent = 10
-	rtr, _ := router.New([]channel.Channel{ch}, s)
-	o.router = rtr
-	o.auth = auth.New(s)
-
-	// Preset the cursor so we can assert it is rolled back to its pre-spawn
-	// value on failure (a dropped rollback = silent message loss).
-	preSpawnCursor := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
-	o.lastAgentTimestamp["group1@g.us"] = preSpawnCursor
-	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: preSpawnCursor.Add(time.Hour), Sender: "alice"},
-	}
-
-	release, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("claim slot")
-	}
-	defer release()
-
-	_, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {})
-	if err == nil || !strings.Contains(err.Error(), "ensure stream for agent") {
-		t.Fatalf("err = %v, want substring \"ensure stream for agent\"", err)
-	}
-	if sb.createCalled.Load() {
-		t.Error("CreateSandbox was called despite EnsureStreamForAgent failure")
-	}
-	// The stream EnsureStreamForAgent may have partially created must be torn
-	// down (no active sandbox owns the group) so it is not orphaned.
-	if got := b.deleteStreamsCalled; got != 1 {
-		t.Errorf("DeleteStreams calls = %d, want 1 after EnsureStream failure", got)
-	}
-	o.mu.Lock()
-	gotCursor := o.lastAgentTimestamp["group1@g.us"]
-	o.mu.Unlock()
-	if !gotCursor.Equal(preSpawnCursor) {
-		t.Errorf("cursor after EnsureStream failure = %v, want rolled back to %v", gotCursor, preSpawnCursor)
-	}
-}
-
-func TestSpawnAgent_CreateSandboxFailure_AfterEnsureStream_DeletesStreams(t *testing.T) {
-	t.Parallel()
-	s := newMockStore()
-	mq := &mockQueue{active: make(map[string]bool)}
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	sb := &mockSandboxControllerWithTracking{
-		createErr: errors.New("api timeout"),
-		hasActive: false,
+	tests := map[string]struct {
+		ensureStreamForAgentErr  error
+		ensureStreamForAgentErrs []error
+		createErr                error
+		hasActiveErr             error
+		seedCursor               bool
+		wantErr                  bool
+		wantErrContains          string
+		wantEnsureStreamCalls    int
+		wantCreateCalled         bool
+		wantDeleteStreams        int
+	}{
+		"ensure stream fails no sandbox created": {
+			ensureStreamForAgentErr: errors.New("boom"),
+			seedCursor:              true,
+			wantErr:                 true,
+			wantErrContains:         "ensure stream for agent",
+			wantEnsureStreamCalls:   3,
+			wantDeleteStreams:       1,
+		},
+		"create sandbox fails deletes streams": {
+			createErr:             errors.New("api timeout"),
+			wantErr:               true,
+			wantEnsureStreamCalls: 1,
+			wantCreateCalled:      true,
+			wantDeleteStreams:     1,
+		},
+		"create sandbox fails active sandbox error skips delete": {
+			createErr:             errors.New("api timeout"),
+			hasActiveErr:          errors.New("kube api down"),
+			wantErr:               true,
+			wantEnsureStreamCalls: 1,
+			wantCreateCalled:      true,
+			wantDeleteStreams:     0,
+		},
+		"ensure stream transient failure retries then creates sandbox": {
+			ensureStreamForAgentErrs: []error{errors.New("temporary"), nil},
+			wantEnsureStreamCalls:    2,
+			wantCreateCalled:         true,
+		},
 	}
 
-	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
-	o.cfg.K8s.FastStartEnabled = true
-	o.cfg.Queue.MaxConcurrent = 10
-	rtr, _ := router.New([]channel.Channel{ch}, s)
-	o.router = rtr
-	o.auth = auth.New(s)
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
-	}
+			s := newMockStore()
+			mq := &mockQueue{active: make(map[string]bool)}
+			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+			b := &mockIPCBroker{ensureStreamForAgentErr: tt.ensureStreamForAgentErr, ensureStreamForAgentErrs: tt.ensureStreamForAgentErrs}
+			sb := &mockSandboxControllerWithTracking{createErr: tt.createErr, hasActiveErr: tt.hasActiveErr}
 
-	release, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("claim slot")
-	}
-	defer release()
+			o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+			o.cfg.K8s.FastStartEnabled = true
+			o.cfg.Queue.MaxConcurrent = 10
+			rtr, _ := router.New([]channel.Channel{ch}, s)
+			o.router = rtr
+			o.auth = auth.New(s)
 
-	if _, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {}); err == nil {
-		t.Fatal("want error")
-	}
-	if got := b.deleteStreamsCalled; got != 1 {
-		t.Errorf("DeleteStreams calls = %d, want 1", got)
-	}
-}
+			var preSpawnCursor time.Time
+			if tt.seedCursor {
+				preSpawnCursor = time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+				o.lastAgentTimestamp["group1@g.us"] = preSpawnCursor
+				s.messages["group1@g.us"] = []store.Message{
+					{ChatJID: "group1@g.us", Content: "hello", Timestamp: preSpawnCursor.Add(time.Hour), Sender: "alice"},
+				}
+			} else {
+				s.messages["group1@g.us"] = []store.Message{
+					{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+				}
+			}
 
-func TestSpawnAgent_CreateSandboxFailure_HasActiveSandboxError_SkipsDelete(t *testing.T) {
-	t.Parallel()
-	s := newMockStore()
-	mq := &mockQueue{active: make(map[string]bool)}
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{}
-	sb := &mockSandboxControllerWithTracking{
-		createErr:    errors.New("api timeout"),
-		hasActiveErr: errors.New("kube api down"),
-	}
+			o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
 
-	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
-	o.cfg.K8s.FastStartEnabled = true
-	o.cfg.Queue.MaxConcurrent = 10
-	rtr, _ := router.New([]channel.Channel{ch}, s)
-	o.router = rtr
-	o.auth = auth.New(s)
+			release, ok := o.claimSandboxSlot("group1@g.us")
+			if !ok {
+				t.Fatal("claim slot")
+			}
+			defer release()
 
-	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
-	}
+			_, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {})
+			if (err != nil) != tt.wantErr {
+				t.Errorf("processGroupMessages err = %v, wantErr %v", err, tt.wantErr)
+			}
 
-	release, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("claim slot")
-	}
-	defer release()
+			if tt.wantErrContains != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrContains)) {
+				t.Errorf("processGroupMessages err = %v, want substring %q", err, tt.wantErrContains)
+			}
 
-	if _, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {}); err == nil {
-		t.Fatal("want error")
-	}
-	// When HasActiveSandbox returns an error, the conservative behavior is to
-	// skip DeleteStreams (the stream is intentionally left for the
-	// operator/sandboxWatcher to clean up). The error must be logged so the
-	// orphan is detectable; this test asserts the conservative skip.
-	if got := b.deleteStreamsCalled; got != 0 {
-		t.Errorf("DeleteStreams calls = %d, want 0 when HasActiveSandbox errors", got)
+			if got := len(b.ensureStreamForAgentCalls); got != tt.wantEnsureStreamCalls {
+				t.Errorf("EnsureStreamForAgent calls = %d, want %d", got, tt.wantEnsureStreamCalls)
+			}
+
+			if got := sb.createCalled.Load(); got != tt.wantCreateCalled {
+				t.Errorf("CreateSandbox called = %v, want %v", got, tt.wantCreateCalled)
+			}
+
+			if got := b.deleteStreamsCalled; got != tt.wantDeleteStreams {
+				t.Errorf("DeleteStreams calls = %d, want %d", got, tt.wantDeleteStreams)
+			}
+
+			if tt.seedCursor {
+				o.mu.Lock()
+				gotCursor := o.lastAgentTimestamp["group1@g.us"]
+				o.mu.Unlock()
+
+				if !gotCursor.Equal(preSpawnCursor) {
+					t.Errorf("cursor after spawn failure = %v, want rolled back to %v", gotCursor, preSpawnCursor)
+				}
+			}
+		})
 	}
 }
 
@@ -4435,43 +4424,6 @@ func TestSpawnAgent_FastStartDisabled_LegacyPath(t *testing.T) {
 				t.Errorf("CreateSandbox called = %v, want %v", got, tt.wantCreateCalled)
 			}
 		})
-	}
-}
-
-func TestSpawnAgent_EnsureStreamTransientFailure_RetriesThenCreatesSandbox(t *testing.T) {
-	t.Parallel()
-	s := newMockStore()
-	mq := &mockQueue{active: make(map[string]bool)}
-	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
-	b := &mockIPCBroker{ensureStreamForAgentErrs: []error{errors.New("temporary"), nil}}
-	sb := &mockSandboxControllerWithTracking{}
-
-	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
-	o.cfg.K8s.FastStartEnabled = true
-	o.cfg.Queue.MaxConcurrent = 10
-	rtr, _ := router.New([]channel.Channel{ch}, s)
-	o.router = rtr
-	o.auth = auth.New(s)
-
-	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
-	s.messages["group1@g.us"] = []store.Message{
-		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
-	}
-
-	release, ok := o.claimSandboxSlot("group1@g.us")
-	if !ok {
-		t.Fatal("claim slot")
-	}
-	defer release()
-
-	if _, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {}); err != nil {
-		t.Fatalf("processGroupMessages: %v", err)
-	}
-	if got := len(b.ensureStreamForAgentCalls); got != 2 {
-		t.Errorf("EnsureStreamForAgent calls = %d, want 2", got)
-	}
-	if !sb.createCalled.Load() {
-		t.Error("CreateSandbox not called after retry succeeded")
 	}
 }
 
