@@ -528,7 +528,7 @@ func (o *Orchestrator) onInboundMessage(chatJID string, msg *channel.InboundMess
 }
 
 // onChatMeta handles chat metadata updates from channels.
-func (o *Orchestrator) onChatMeta(chatJID string, timestamp time.Time, name string, ch string, isGroup bool) {
+func (o *Orchestrator) onChatMeta(chatJID string, timestamp time.Time, name, ch string, isGroup bool) {
 	ctx := o.ctx
 	chat := &store.Chat{
 		JID:             chatJID,
@@ -871,6 +871,70 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 
 	o.log.Info("processing messages", "group", group.Name, "count", len(messages))
 
+	status, err := o.spawnAgent(ctx, chatJID, &group, previousCursor, sessionID, formatted, releaseSlot)
+	if err != nil {
+		return false, err
+	}
+
+	// Mark initial messages as confirmed since they're pre-populated in the IPC stream
+	// and the new agent will read them on startup.
+	o.mu.Lock()
+	o.lastConfirmedTimestamp[chatJID] = o.lastAgentTimestamp[chatJID]
+	o.mu.Unlock()
+
+	if err := o.saveState(ctx); err != nil {
+		o.log.Error("failed to save confirmed cursor after sandbox creation", "group", group.Name, "error", err)
+	}
+
+	o.log.Info("sandbox created", "group", group.Name, "job", status.Name)
+
+	return true, nil
+}
+
+type spawnContext struct {
+	chatJID        string
+	group          store.Group
+	previousCursor time.Time
+	sandboxCreated bool
+	cleanup        []func(context.Context)
+}
+
+func (sc *spawnContext) stage(fn func(context.Context)) {
+	sc.cleanup = append(sc.cleanup, fn)
+}
+
+func (sc *spawnContext) abortOnError(ctx context.Context) {
+	for _, fn := range sc.cleanup {
+		fn(ctx)
+	}
+}
+
+func (o *Orchestrator) rollbackCursorStep(sc *spawnContext) func(context.Context) {
+	return func(ctx context.Context) {
+		o.mu.Lock()
+		o.lastAgentTimestamp[sc.chatJID] = sc.previousCursor
+		o.mu.Unlock()
+
+		if err := o.saveState(ctx); err != nil {
+			o.log.Error("failed to save state", "error", err)
+		}
+	}
+}
+
+// spawnAgent acquires the sandbox and IPC resources for one agent run. Every
+// failure path compensates through the staged cleanup list, so a new failure
+// branch cannot forget a step — it only adds its own error return.
+func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *store.Group, previousCursor time.Time, sessionID, formatted string, releaseSlot func()) (status *sandbox.SandboxStatus, err error) {
+	sc := &spawnContext{chatJID: chatJID, group: *group, previousCursor: previousCursor}
+
+	defer func() {
+		if err != nil {
+			sc.abortOnError(ctx)
+		}
+	}()
+
+	sc.stage(o.rollbackCursorStep(sc))
+
 	// Determine timeout.
 	timeout := o.cfg.Queue.IdleTimeout
 	if group.ContainerConfig != nil && group.ContainerConfig.Timeout > 0 {
@@ -882,20 +946,11 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		modelName = group.ContainerConfig.Model
 	}
 
-	// Marshal initial input payload.
 	payload, err := o.marshalInitialInput(map[string]string{"messages": formatted})
 	if err != nil {
-		// Roll back cursor on error.
-		o.mu.Lock()
-		o.lastAgentTimestamp[chatJID] = previousCursor
-		o.mu.Unlock()
-		if saveErr := o.saveState(ctx); saveErr != nil {
-			o.log.Error("failed to save state", "error", saveErr)
-		}
-		return false, fmt.Errorf("marshal initial input: %w", err)
+		return nil, fmt.Errorf("marshal initial input: %w", err)
 	}
 
-	// Create sandbox.
 	sbCfg := sandbox.SandboxConfig{
 		GroupFolder:     group.Folder,
 		GroupJID:        chatJID,
@@ -912,15 +967,18 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 	}
 
 	if o.sandbox == nil {
-		// Roll back cursor on error.
-		o.mu.Lock()
-		o.lastAgentTimestamp[chatJID] = previousCursor
-		o.mu.Unlock()
-		if err := o.saveState(ctx); err != nil {
-			o.log.Error("failed to save state", "error", err)
-		}
-		return false, fmt.Errorf("create sandbox: sandbox controller is nil (Kubernetes not connected)")
+		return nil, fmt.Errorf("create sandbox: sandbox controller is nil (Kubernetes not connected)")
 	}
+
+	// A failure before the sandbox exists must tear down any stream the ensure
+	// step partially created, but only when no active sandbox owns the group.
+	sc.stage(func(ctx context.Context) {
+		if sc.sandboxCreated {
+			return
+		}
+
+		o.releaseOrphanedStreams(ctx, sc.group, "EnsureStream")
+	})
 
 	// Pre-create the IPC stream + consumer so the agent skips CreateOrUpdate
 	// round-trips on boot. Idempotent; safe to call on every spawn. Gated on
@@ -928,17 +986,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 	if o.cfg.K8s.FastStartEnabled {
 		ensureStart := time.Now()
 		if err := o.ensureStreamForAgentWithRetry(ctx, group.Folder, ipc.DefaultAgentID); err != nil {
-			o.mu.Lock()
-			o.lastAgentTimestamp[chatJID] = previousCursor
-			o.mu.Unlock()
-			// EnsureStreamForAgent creates the stream before the consumer, so a
-			// consumer-step failure can leave the stream behind. Tear it down if
-			// no active sandbox owns the group (spawnStart is not yet seeded here).
-			o.releaseOrphanedStreams(ctx, group, "EnsureStream")
-			if saveErr := o.saveState(ctx); saveErr != nil {
-				o.log.Error("failed to save state", "error", saveErr)
-			}
-			return false, fmt.Errorf("ensure stream for agent: %w", err)
+			return nil, fmt.Errorf("ensure stream for agent: %w", err)
 		}
 		metrics.ObserveSpawnPhase(metrics.PhaseEnsureStream, time.Since(ensureStart))
 	}
@@ -946,55 +994,54 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 	o.spawnStartMu.Lock()
 	o.spawnStart[chatJID] = time.Now()
 	o.spawnStartMu.Unlock()
+	sc.stage(func(context.Context) { o.clearSpawnStart(chatJID) })
 
 	crdStart := time.Now()
-	status, err := o.sandbox.CreateSandbox(ctx, sbCfg)
-	if err != nil {
-		// Roll back cursor on error.
-		o.mu.Lock()
-		o.lastAgentTimestamp[chatJID] = previousCursor
-		o.mu.Unlock()
-		o.clearSpawnStart(chatJID)
-		if err := o.saveState(ctx); err != nil {
-			o.log.Error("failed to save state", "error", err)
-		}
-		o.releaseOrphanedStreams(ctx, group, "CreateSandbox")
-		return false, fmt.Errorf("create sandbox: %w", err)
+
+	created, cerr := o.sandbox.CreateSandbox(ctx, sbCfg)
+	if cerr != nil {
+		return nil, fmt.Errorf("create sandbox: %w", cerr)
 	}
+
+	sc.sandboxCreated = true
 	// Observe only successful creates so a fast-fail rejection cannot corrupt the
 	// cold-start latency series (mirrors the ensure_stream placement above).
 	metrics.ObserveSpawnPhase(metrics.PhaseCRDCreate, time.Since(crdStart))
 
 	o.mu.Lock()
-	o.activeSandboxes[chatJID] = status.Name
+	o.activeSandboxes[chatJID] = created.Name
 	o.mu.Unlock()
 
-	if err := o.queue.MarkActive(ctx, chatJID); err != nil {
-		o.log.Error("failed to mark group active, cleaning up sandbox", "group", group.Name, "error", err)
-		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
-			o.log.Error("failed to cleanup sandbox after MarkActive failure", "group", group.Name, "job", status.Name, "error", cleanupErr)
+	sbName := created.Name
+
+	sc.stage(func(ctx context.Context) {
+		if cleanupErr := o.sandbox.StopSandbox(ctx, sbName); cleanupErr != nil {
+			o.log.Error("failed to stop sandbox", "group", group.Name, "job", sbName, "error", cleanupErr)
 		}
-		// Roll back cursor and clean up sandbox tracking.
 		o.mu.Lock()
 		delete(o.activeSandboxes, chatJID)
-		o.lastAgentTimestamp[chatJID] = previousCursor
 		o.mu.Unlock()
-		o.clearSpawnStart(chatJID)
-		// The IPC stream pre-created above (FastStart) is now orphaned. We cannot
-		// use the HasActiveSandbox-gated releaseOrphanedStreams helper here:
-		// StopSandbox deletes the CR asynchronously, so HasActiveSandbox would
-		// still observe this very sandbox as Pending/Running (it does not filter
-		// DeletionTimestamp) and skip the delete — a TOCTOU leak. Since the stream
-		// was pre-created for THIS spawn and the sandbox is being torn down,
-		// delete unconditionally, matching the SubscribeOutput/SendInput paths.
+	})
+
+	// Unconditional delete: StopSandbox's CR removal is async, so the gated
+	// helper would still observe this sandbox as active (it does not filter
+	// DeletionTimestamp) and skip the delete — a TOCTOU leak. The stream was
+	// pre-created for THIS spawn and the sandbox is being torn down.
+	sc.stage(func(ctx context.Context) {
 		if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
-			o.log.Error("failed to delete IPC streams after MarkActive failure", "group", group.Name, "error", delErr)
+			o.log.Error("failed to delete IPC streams", "group", group.Name, "error", delErr)
 		}
-		if saveErr := o.saveState(ctx); saveErr != nil {
-			o.log.Error("failed to save state", "error", saveErr)
-		}
-		return false, fmt.Errorf("mark active: %w", err)
+	})
+
+	if err := o.queue.MarkActive(ctx, chatJID); err != nil {
+		return nil, fmt.Errorf("mark active: %w", err)
 	}
+
+	sc.stage(func(ctx context.Context) {
+		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
+			o.log.Error("failed to mark group inactive", "group", group.Name, "error", markErr)
+		}
+	})
 
 	// Release the in-flight slot now that MarkActive has landed. MySQL's
 	// ActiveCount covers this group from this point forward, so the slot is no
@@ -1022,25 +1069,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 	// SendInput, so we cannot miss the agent's first output (race fix).
 	outputCh, outputErrCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
 	if err != nil {
-		o.log.Error("failed to subscribe to IPC output, tearing down sandbox", "group", group.Name, "error", err)
-		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
-			o.log.Error("failed to stop sandbox after SubscribeOutput failure", "group", group.Name, "job", status.Name, "error", cleanupErr)
-		}
-		if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
-			o.log.Error("failed to delete IPC streams after SubscribeOutput failure", "group", group.Name, "error", delErr)
-		}
-		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
-			o.log.Error("failed to mark group inactive after SubscribeOutput failure", "group", group.Name, "error", markErr)
-		}
-		o.mu.Lock()
-		delete(o.activeSandboxes, chatJID)
-		o.lastAgentTimestamp[chatJID] = previousCursor
-		o.mu.Unlock()
-		o.clearSpawnStart(chatJID)
-		if saveErr := o.saveState(ctx); saveErr != nil {
-			o.log.Error("failed to save state after SubscribeOutput failure", "group", group.Name, "error", saveErr)
-		}
-		return false, fmt.Errorf("subscribe output: %w", err)
+		return nil, fmt.Errorf("subscribe output: %w", err)
 	}
 
 	// Spawn watchGroupOutput directly to listen for agent output (no event channel).
@@ -1062,38 +1091,10 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		Type:    ipc.IPCMessageText,
 		Payload: payload,
 	}); err != nil {
-		o.log.Error("failed to send initial input to agent, tearing down sandbox", "group", group.Name, "error", err)
-		if cleanupErr := o.sandbox.StopSandbox(ctx, status.Name); cleanupErr != nil {
-			o.log.Error("failed to stop sandbox after SendInput failure", "group", group.Name, "job", status.Name, "error", cleanupErr)
-		}
-		if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
-			o.log.Error("failed to delete IPC streams after SendInput failure", "group", group.Name, "error", delErr)
-		}
-		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
-			o.log.Error("failed to mark group inactive after SendInput failure", "group", group.Name, "error", markErr)
-		}
-		o.mu.Lock()
-		delete(o.activeSandboxes, chatJID)
-		o.lastAgentTimestamp[chatJID] = previousCursor
-		o.mu.Unlock()
-		o.clearSpawnStart(chatJID)
-		if saveErr := o.saveState(ctx); saveErr != nil {
-			o.log.Error("failed to save state after SendInput failure", "group", group.Name, "error", saveErr)
-		}
-		return false, fmt.Errorf("send initial input: %w", err)
+		return nil, fmt.Errorf("send initial input: %w", err)
 	}
 
-	// Mark initial messages as confirmed since they're pre-populated in the IPC stream
-	// and the new agent will read them on startup.
-	o.mu.Lock()
-	o.lastConfirmedTimestamp[chatJID] = o.lastAgentTimestamp[chatJID]
-	o.mu.Unlock()
-	if err := o.saveState(ctx); err != nil {
-		o.log.Error("failed to save confirmed cursor after sandbox creation", "group", group.Name, "error", err)
-	}
-
-	o.log.Info("sandbox created", "group", group.Name, "job", status.Name)
-	return true, nil
+	return created, nil
 }
 
 // sandboxWatcher runs a self-healing loop that subscribes to Sandbox lifecycle events.
