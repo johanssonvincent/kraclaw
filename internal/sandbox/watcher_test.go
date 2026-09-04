@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
+	"github.com/johanssonvincent/kraclaw/internal/metrics/metricstest"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
@@ -331,30 +331,6 @@ func TestWatchMapping_Lifecycle(t *testing.T) {
 	}
 }
 
-// phaseSampleCount reads the current observation count for a given phase label
-// of the global SandboxSpawnDuration histogram. Used for delta assertions; the
-// metric is process-global so callers must not run in parallel with each other.
-func phaseSampleCount(t *testing.T, phase string) uint64 {
-	t.Helper()
-	mfs, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		t.Fatalf("gather metrics: %v", err)
-	}
-	for _, mf := range mfs {
-		if mf.GetName() != "kraclaw_sandbox_spawn_duration_seconds" {
-			continue
-		}
-		for _, m := range mf.GetMetric() {
-			for _, lp := range m.GetLabel() {
-				if lp.GetName() == "phase" && lp.GetValue() == phase {
-					return m.GetHistogram().GetSampleCount()
-				}
-			}
-		}
-	}
-	return 0
-}
-
 // TestRecordPhaseTransitions exercises the phase histogram recording and its
 // data-quality guards. Cases are NOT run in parallel: they assert deltas on the
 // process-global SandboxSpawnDuration histogram.
@@ -451,7 +427,7 @@ func TestRecordPhaseTransitions(t *testing.T) {
 
 			before := map[string]uint64{}
 			for phase := range tt.wantDelta {
-				before[phase] = phaseSampleCount(t, phase)
+				before[phase] = metricstest.PhaseSampleCount(t, phase)
 			}
 
 			var buf bytes.Buffer
@@ -472,7 +448,7 @@ func TestRecordPhaseTransitions(t *testing.T) {
 				}
 			}
 			for phase, wantDelta := range tt.wantDelta {
-				if got := phaseSampleCount(t, phase) - before[phase]; got != wantDelta {
+				if got := metricstest.PhaseSampleCount(t, phase) - before[phase]; got != wantDelta {
 					t.Errorf("phase %q sample-count delta = %d, want %d", phase, got, wantDelta)
 				}
 			}

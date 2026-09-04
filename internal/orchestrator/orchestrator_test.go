@@ -17,36 +17,12 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/config"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/metrics"
+	"github.com/johanssonvincent/kraclaw/internal/metrics/metricstest"
 	"github.com/johanssonvincent/kraclaw/internal/queue"
 	"github.com/johanssonvincent/kraclaw/internal/router"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 	"github.com/johanssonvincent/kraclaw/internal/store"
-	"github.com/prometheus/client_golang/prometheus"
 )
-
-// phaseSampleCount returns the current histogram sample count for the given
-// spawn phase label. Mirrors the helper in internal/metrics; kept local to avoid
-// a cross-package test-helper export.
-func phaseSampleCount(t *testing.T, phase string) uint64 {
-	t.Helper()
-	mfs, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		t.Fatalf("gather metrics: %v", err)
-	}
-	for _, mf := range mfs {
-		if mf.GetName() != "kraclaw_sandbox_spawn_duration_seconds" {
-			continue
-		}
-		for _, m := range mf.GetMetric() {
-			for _, lp := range m.GetLabel() {
-				if lp.GetName() == "phase" && lp.GetValue() == phase {
-					return m.GetHistogram().GetSampleCount()
-				}
-			}
-		}
-	}
-	return 0
-}
 
 // --- Mock Store ---
 
@@ -254,6 +230,7 @@ func (m *mockQueue) Enqueue(_ context.Context, _ string, _ *queue.QueueMessage) 
 func (m *mockQueue) Dequeue(_ context.Context, _ string) (*queue.QueueMessage, error) {
 	return nil, nil
 }
+
 func (m *mockQueue) Peek(_ context.Context, _ string) (*queue.QueueMessage, error) { return nil, nil }
 func (m *mockQueue) Len(_ context.Context, _ string) (int64, error)                { return 0, nil }
 func (m *mockQueue) MarkActive(_ context.Context, groupJID string) error {
@@ -263,6 +240,7 @@ func (m *mockQueue) MarkActive(_ context.Context, groupJID string) error {
 	m.active[groupJID] = true
 	return nil
 }
+
 func (m *mockQueue) MarkInactive(_ context.Context, groupJID string) error {
 	if m.markInactiveErr != nil {
 		return m.markInactiveErr
@@ -270,6 +248,7 @@ func (m *mockQueue) MarkInactive(_ context.Context, groupJID string) error {
 	delete(m.active, groupJID)
 	return nil
 }
+
 func (m *mockQueue) IsActive(_ context.Context, groupJID string) (bool, error) {
 	if m.isActiveErr != nil {
 		return false, m.isActiveErr
@@ -309,6 +288,7 @@ func (m *mockIPCBroker) PublishOutput(_ context.Context, _ string, _ string, msg
 	m.published = append(m.published, msg)
 	return nil
 }
+
 func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, <-chan error, error) {
 	m.subscribeCount++
 	if m.subscribeOutputFn != nil {
@@ -326,6 +306,7 @@ func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-ch
 	ch := make(chan *ipc.IPCMessage)
 	return ch, make(chan error), nil
 }
+
 func (m *mockIPCBroker) SendInput(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {
 	if m.sendInputFn != nil {
 		return m.sendInputFn(ctx, group, agentID, msg)
@@ -333,10 +314,12 @@ func (m *mockIPCBroker) SendInput(ctx context.Context, group, agentID string, ms
 	m.inputSent = append(m.inputSent, msg)
 	return nil
 }
+
 func (m *mockIPCBroker) ReadInput(_ context.Context, _ string, _ string) (<-chan *ipc.IPCMessage, error) {
 	ch := make(chan *ipc.IPCMessage)
 	return ch, nil
 }
+
 func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, group, agentID string) error {
 	m.callOrderMu.Lock()
 	defer m.callOrderMu.Unlock()
@@ -379,6 +362,7 @@ func (m *mockChannel) IsConnected() bool                                   { ret
 func (m *mockChannel) Disconnect(_ context.Context) error                  { m.connected = false; return nil }
 func (m *mockChannel) SetTyping(_ context.Context, _ string, _ bool) error { return nil }
 func (m *mockChannel) OwnsJID(jid string) bool                             { return m.ownsJIDs[jid] }
+
 func (m *mockChannel) SendMessage(_ context.Context, jid string, text string) error {
 	m.sent = append(m.sent, sentMessage{jid: jid, text: text})
 	return nil
@@ -728,10 +712,12 @@ func (m *mockSandboxControllerWithTracking) CreateSandbox(_ context.Context, _ s
 	}
 	return &sandbox.SandboxStatus{Name: "test-sandbox", State: sandbox.StatePending}, nil
 }
+
 func (m *mockSandboxControllerWithTracking) StopSandbox(_ context.Context, _ string) error {
 	m.stopCalled.Store(true)
 	return nil
 }
+
 func (m *mockSandboxControllerWithTracking) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
 	return m.hasActive, m.hasActiveErr
 }
@@ -1637,10 +1623,12 @@ func (m *mockSandboxController) StopSandbox(_ context.Context, _ string) error {
 func (m *mockSandboxController) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
 	return m.hasActive, m.hasErr
 }
+
 func (m *mockSandboxController) CleanupOrphans(_ context.Context) error {
 	m.cleanupOrphansCalled.Add(1)
 	return nil
 }
+
 func (m *mockSandboxController) WatchSandboxes(_ context.Context) (<-chan sandbox.SandboxEvent, error) {
 	ch := make(chan sandbox.SandboxEvent)
 	// Return an open channel that never sends — tests don't exercise the watcher loop.
@@ -4499,11 +4487,11 @@ func TestRecordFirstOutputPhase(t *testing.T) {
 	o.spawnStart["seeded@g.us"] = time.Now().Add(-100 * time.Millisecond)
 	o.spawnStartMu.Unlock()
 
-	before := phaseSampleCount(t, string(metrics.PhaseFirstOutput))
+	before := metricstest.PhaseSampleCount(t, string(metrics.PhaseFirstOutput))
 	o.recordFirstOutputPhase("seeded@g.us")
 
 	// A seeded observation must record exactly one first_output histogram sample.
-	if got := phaseSampleCount(t, string(metrics.PhaseFirstOutput)) - before; got != 1 {
+	if got := metricstest.PhaseSampleCount(t, string(metrics.PhaseFirstOutput)) - before; got != 1 {
 		t.Errorf("recordFirstOutputPhase(seeded) sample-count delta = %d, want 1", got)
 	}
 
