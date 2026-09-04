@@ -86,5 +86,7 @@ type IPCBroker interface {
 	EnsureStreamForAgent(ctx context.Context, group, agentID string) error
 	// DeleteStreams removes all IPC data for a group (all agents).
 	DeleteStreams(ctx context.Context, group string) error
+	// StreamExists reports whether the per-group IPC stream is provisioned.
+	StreamExists(ctx context.Context, group string) (bool, error)
 	Close() error
 }

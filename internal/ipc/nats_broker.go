@@ -233,6 +233,25 @@ func (b *NATSBroker) DeleteStreams(ctx context.Context, group string) error {
 	return nil
 }
 
+// StreamExists reports whether the per-group IPC stream is provisioned on the
+// broker; unlike the streamCreated cache it always consults the server, so it
+// reflects streams created before a broker restart.
+func (b *NATSBroker) StreamExists(ctx context.Context, group string) (bool, error) {
+	sanitized := sanitizeGroupID(group)
+	streamName := ipcStreamName(sanitized)
+
+	_, err := b.js.Stream(ctx, streamName)
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("lookup ipc stream %s: %w", streamName, err)
+	}
+
+	return true, nil
+}
+
 // Close stops all background goroutines and closes the broker.
 func (b *NATSBroker) Close() error {
 	b.mu.Lock()

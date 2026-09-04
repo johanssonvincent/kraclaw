@@ -280,6 +280,7 @@ type mockIPCBroker struct {
 	ensureStreamForAgentCalls []struct{ group, agentID string }
 	ensureStreamForAgentErrs  []error // queue of errors; consumed in order. nil entry = success.
 	ensureStreamForAgentErr   error   // fallback if errs queue empty
+	streams                   map[string]bool
 	callOrderMu               sync.Mutex
 	callOrder                 []string // appended on EnsureStreamForAgent + DeleteStreams
 }
@@ -325,6 +326,11 @@ func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, group, agentID s
 	defer m.callOrderMu.Unlock()
 	m.ensureStreamForAgentCalls = append(m.ensureStreamForAgentCalls, struct{ group, agentID string }{group, agentID})
 	m.callOrder = append(m.callOrder, "EnsureStreamForAgent")
+	if m.streams == nil {
+		m.streams = make(map[string]bool)
+	}
+
+	m.streams[group] = true
 	if len(m.ensureStreamForAgentErrs) > 0 {
 		err := m.ensureStreamForAgentErrs[0]
 		m.ensureStreamForAgentErrs = m.ensureStreamForAgentErrs[1:]
@@ -333,11 +339,23 @@ func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, group, agentID s
 	return m.ensureStreamForAgentErr
 }
 func (m *mockIPCBroker) Close() error { return nil }
+func (m *mockIPCBroker) StreamExists(_ context.Context, group string) (bool, error) {
+	m.callOrderMu.Lock()
+	defer m.callOrderMu.Unlock()
+
+	return m.streams[group], nil
+}
+
 func (m *mockIPCBroker) DeleteStreams(_ context.Context, group string) error {
 	m.callOrderMu.Lock()
 	m.deleteStreamsCalled++
 	m.deleteStreamsGroup = group
 	m.callOrder = append(m.callOrder, "DeleteStreams")
+	if m.streams == nil {
+		m.streams = make(map[string]bool)
+	}
+
+	delete(m.streams, group)
 	m.callOrderMu.Unlock()
 	return nil
 }
@@ -4424,6 +4442,126 @@ func TestSpawnAgent_FastStartDisabled_LegacyPath(t *testing.T) {
 				t.Errorf("CreateSandbox called = %v, want %v", got, tt.wantCreateCalled)
 			}
 		})
+	}
+}
+
+func TestReconcileIPCStreams(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		streamExists bool
+		queueActive  bool
+		isActiveErr  error
+		hasActive    bool
+		hasActiveErr error
+		inflight     bool
+		wantDeletes  int
+	}{
+		"reclaims orphaned stream": {
+			streamExists: true,
+			wantDeletes:  1,
+		},
+		"skips group with active sandbox": {
+			streamExists: true,
+			hasActive:    true,
+			wantDeletes:  0,
+		},
+		"skips group with in-flight spawn claim": {
+			streamExists: true,
+			inflight:     true,
+			wantDeletes:  0,
+		},
+		"skips group with active queue": {
+			streamExists: true,
+			queueActive:  true,
+			wantDeletes:  0,
+		},
+		"skips when queue check errors": {
+			streamExists: true,
+			isActiveErr:  errors.New("db down"),
+			wantDeletes:  0,
+		},
+		"skips when active-sandbox check errors": {
+			streamExists: true,
+			hasActiveErr: errors.New("kube api down"),
+			wantDeletes:  0,
+		},
+		"skips when stream absent": {
+			wantDeletes: 0,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newMockStore()
+			mq := &mockQueue{active: make(map[string]bool)}
+			b := &mockIPCBroker{}
+			sb := &mockSandboxControllerWithTracking{hasActive: tt.hasActive, hasActiveErr: tt.hasActiveErr}
+			o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+			o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+
+			if tt.queueActive {
+				mq.active["group1@g.us"] = true
+			}
+
+			if tt.isActiveErr != nil {
+				mq.isActiveErr = tt.isActiveErr
+			}
+
+			if tt.streamExists {
+				if err := b.EnsureStreamForAgent(context.Background(), "test-group", ipc.DefaultAgentID); err != nil {
+					t.Fatalf("seed stream: %v", err)
+				}
+			}
+
+			if tt.inflight {
+				o.inflightSandboxes.Store("group1@g.us", struct{}{})
+				defer o.inflightSandboxes.Delete("group1@g.us")
+			}
+
+			o.reconcileIPCStreams(context.Background())
+
+			if got := b.deleteStreamsCalled; got != tt.wantDeletes {
+				t.Errorf("DeleteStreams calls = %d, want %d", got, tt.wantDeletes)
+			}
+
+			if tt.streamExists && !tt.inflight && !tt.queueActive && !tt.hasActive && tt.hasActiveErr == nil && tt.isActiveErr == nil {
+				if b.streams["test-group"] {
+					t.Error("stream still present after reclamation")
+				}
+			}
+		})
+	}
+}
+
+func TestReconcileIPCStreams_MultipleGroups(t *testing.T) {
+	t.Parallel()
+
+	s := newMockStore()
+	mq := &mockQueue{active: make(map[string]bool)}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{}
+	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+	o.registeredGroups["orphan@g.us"] = store.Group{JID: "orphan@g.us", Folder: "orphan", IsMain: true}
+	o.registeredGroups["live@g.us"] = store.Group{JID: "live@g.us", Folder: "live", IsMain: true}
+	mq.active["live@g.us"] = true
+
+	for _, folder := range []string{"orphan", "live"} {
+		if err := b.EnsureStreamForAgent(context.Background(), folder, ipc.DefaultAgentID); err != nil {
+			t.Fatalf("seed stream %s: %v", folder, err)
+		}
+	}
+
+	o.reconcileIPCStreams(context.Background())
+
+	if got := b.deleteStreamsCalled; got != 1 {
+		t.Errorf("DeleteStreams calls = %d, want 1", got)
+	}
+
+	if got := b.deleteStreamsGroup; got != "orphan" {
+		t.Errorf("DeleteStreams group = %q, want %q", got, "orphan")
 	}
 }
 

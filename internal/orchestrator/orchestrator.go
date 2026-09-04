@@ -274,6 +274,11 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		go o.sandboxWatcher(ctx)
 	}
 
+	// 8a. Start periodic IPC stream reconciler.
+	if o.sandbox != nil {
+		go o.streamReconciler(ctx)
+	}
+
 	// 9. Start message loop in goroutine.
 	go o.messageLoop(ctx)
 
@@ -1884,6 +1889,101 @@ func (o *Orchestrator) releaseOrphanedStreams(ctx context.Context, group store.G
 	if delErr := o.ipc.DeleteStreams(cleanupCtx, group.Folder); delErr != nil {
 		o.log.Error("failed to delete IPC streams after spawn failure",
 			"group", group.Name, "reason", reason, "error", delErr)
+	}
+}
+
+const streamReconcileInterval = 10 * time.Minute
+
+// streamReconciler periodically reclaims IPC streams orphaned by spawn
+// failures that hit the conservative HasActiveSandbox-error skip (e.g. a
+// sustained K8s API outage that also failed the spawn).
+func (o *Orchestrator) streamReconciler(ctx context.Context) {
+	timer := time.NewTimer(jitteredReconcileDelay())
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			o.reconcileIPCStreams(ctx)
+			timer.Reset(jitteredReconcileDelay())
+		}
+	}
+}
+
+func jitteredReconcileDelay() time.Duration {
+	spread := streamReconcileInterval / 5
+
+	return streamReconcileInterval - spread + rand.N(2*spread) //nolint:gosec // schedule jitter, not security-sensitive
+}
+
+// reconcileIPCStreams deletes the IPC stream of every registered group that
+// has no in-flight spawn claim, an inactive queue, and no active sandbox.
+// Any check that errors skips the group conservatively: an unreachable
+// dependency must never cause a live stream to be deleted.
+func (o *Orchestrator) reconcileIPCStreams(ctx context.Context) {
+	o.mu.Lock()
+
+	groups := make([]store.Group, 0, len(o.registeredGroups))
+	for _, g := range o.registeredGroups {
+		groups = append(groups, g)
+	}
+	o.mu.Unlock()
+
+	for _, g := range groups {
+		if ctx.Err() != nil {
+			return
+		}
+
+		if _, inflight := o.inflightSandboxes.Load(g.JID); inflight {
+			continue
+		}
+
+		queueActive, err := o.queue.IsActive(ctx, g.JID)
+		if err != nil {
+			o.log.Warn("stream reconcile: queue check failed; skipping",
+				"group", g.Name, "error", err)
+
+			continue
+		}
+
+		if queueActive {
+			continue
+		}
+
+		has, err := o.sandbox.HasActiveSandbox(ctx, g.Folder)
+		if err != nil {
+			o.log.Warn("stream reconcile: active-sandbox check failed; skipping",
+				"group", g.Name, "error", err)
+
+			continue
+		}
+
+		if has {
+			continue
+		}
+
+		exists, err := o.ipc.StreamExists(ctx, g.Folder)
+		if err != nil {
+			o.log.Warn("stream reconcile: stream check failed; skipping",
+				"group", g.Name, "error", err)
+
+			continue
+		}
+
+		if !exists {
+			continue
+		}
+
+		if err := o.ipc.DeleteStreams(ctx, g.Folder); err != nil {
+			o.log.Error("stream reconcile: failed to delete orphaned stream",
+				"group", g.Name, "error", err)
+
+			continue
+		}
+
+		o.log.Info("reclaimed orphaned IPC stream", "group", g.Name)
 	}
 }
 
