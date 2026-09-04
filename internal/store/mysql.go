@@ -10,11 +10,10 @@ import (
 	"strings"
 	"time"
 
-	gosql "github.com/go-sql-driver/mysql"
-	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/mysql"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/go-sql-driver/mysql"
 	"github.com/johanssonvincent/kraclaw/migrations"
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/database"
 )
 
 // MySQLStore implements the Store interface using MySQL.
@@ -23,7 +22,7 @@ type MySQLStore struct {
 }
 
 func normalizeDSN(dsn string) (string, error) {
-	cfg, err := gosql.ParseDSN(dsn)
+	cfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
 		return "", fmt.Errorf("normalize dsn: %w", err)
 	}
@@ -40,39 +39,12 @@ func normalizeDSN(dsn string) (string, error) {
 	return cfg.FormatDSN(), nil
 }
 
-// dirtyMigrationError signals a dirty migration state that must not be retried.
-// It holds the original errors so callers can inspect them via errors.As/errors.Is.
-type dirtyMigrationError struct {
-	msg        string
-	migErr     error
-	versionErr error // non-nil when the version check after migration failure also failed
-}
-
-func (e *dirtyMigrationError) Error() string { return e.msg }
-
-// Unwrap returns the wrapped errors for use with errors.As and errors.Is.
-func (e *dirtyMigrationError) Unwrap() []error {
-	if e.versionErr != nil {
-		return []error{e.migErr, e.versionErr}
-	}
-	return []error{e.migErr}
-}
-
-// retryWithBackoff retries fn up to attempts times using exponential backoff
-// starting at baseDelay (capped at 30 seconds). The operation name is used for
-// structured log output on each retry. Returns the last error wrapped with the
-// attempt count if all attempts are exhausted. Non-retryable errors
-// (dirtyMigrationError) are returned as-is without attempt-count wrapping.
 func retryWithBackoff(attempts int, baseDelay time.Duration, operation string, fn func() error) error {
 	var err error
 	for i := range attempts {
 		err = fn()
 		if err == nil {
 			return nil
-		}
-		var nonRetryable *dirtyMigrationError
-		if errors.As(err, &nonRetryable) {
-			return err
 		}
 		if i == attempts-1 {
 			break
@@ -88,7 +60,7 @@ func retryWithBackoff(attempts int, baseDelay time.Duration, operation string, f
 }
 
 // NewMySQLStore creates a new MySQL-backed store and runs migrations.
-func NewMySQLStore(dsn string, maxOpen, maxIdle int, connMaxLifetime time.Duration) (*MySQLStore, error) {
+func NewMySQLStore(ctx context.Context, dsn string, maxOpen, maxIdle int, connMaxLifetime time.Duration) (*MySQLStore, error) {
 	normalizedDSN, err := normalizeDSN(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("normalize dsn: %w", err)
@@ -112,7 +84,7 @@ func NewMySQLStore(dsn string, maxOpen, maxIdle int, connMaxLifetime time.Durati
 		return nil, err
 	}
 
-	if err := runMigrations(normalizedDSN); err != nil {
+	if err := runMigrations(ctx, normalizedDSN); err != nil {
 		if cerr := db.Close(); cerr != nil {
 			slog.Warn("close db on migration failure", "error", cerr)
 		}
@@ -133,8 +105,7 @@ func (s *MySQLStore) DB() *sql.DB {
 	return s.db
 }
 
-func runMigrations(dsn string) error {
-	// golang-migrate requires multiStatements for multi-statement migration files.
+func runMigrations(ctx context.Context, dsn string) error {
 	if strings.Contains(dsn, "?") {
 		dsn += "&multiStatements=true"
 	} else {
@@ -151,47 +122,108 @@ func runMigrations(dsn string) error {
 		}
 	}()
 
-	src, err := iofs.New(migrations.FS, ".")
+	provider, err := goose.NewProvider(goose.DialectMySQL, db, migrations.FS, goose.WithSlog(slog.Default()))
 	if err != nil {
-		return fmt.Errorf("create migration source: %w", err)
+		return fmt.Errorf("create migration provider: %w", err)
 	}
 
-	driver, err := mysql.WithInstance(db, &mysql.Config{})
-	if err != nil {
-		return fmt.Errorf("create migrate driver: %w", err)
+	sources := provider.ListSources()
+
+	versions := make([]int64, 0, len(sources))
+	for _, src := range sources {
+		versions = append(versions, src.Version)
 	}
 
-	m, err := migrate.NewWithInstance("iofs", src, "mysql", driver)
-	if err != nil {
-		return fmt.Errorf("create migrate instance: %w", err)
+	if err := seedLegacyMigrations(ctx, db, versions); err != nil {
+		return fmt.Errorf("seed legacy migrations: %w", err)
 	}
 
 	if err := retryWithBackoff(5, 1*time.Second, "migrate up", func() error {
-		err := m.Up()
-		if err == nil || errors.Is(err, migrate.ErrNoChange) {
-			return nil
-		}
-		_, dirty, verr := m.Version()
-		if verr != nil {
-			return &dirtyMigrationError{
-				msg:        fmt.Sprintf("migration failed and version check also failed — manual intervention required: migration error: %v, version error: %v", err, verr),
-				migErr:     err,
-				versionErr: verr,
-			}
-		}
-		if dirty {
-			// Dirty migration state requires manual intervention — do not retry.
-			return &dirtyMigrationError{
-				msg:    fmt.Sprintf("dirty migration state detected at startup — manual intervention required: inspect schema and run 'migrate force <version>': migration error: %v", err),
-				migErr: err,
-			}
-		}
+		_, err := provider.Up(ctx)
+
 		return err
 	}); err != nil {
 		return fmt.Errorf("migrate up: %w", err)
 	}
 
 	return nil
+}
+
+func seedLegacyMigrations(ctx context.Context, db *sql.DB, versions []int64) error {
+	const legacyTable = "schema_migrations"
+
+	versionStore, err := database.NewStore(database.DialectMySQL, goose.DefaultTablename)
+	if err != nil {
+		return fmt.Errorf("create migration store: %w", err)
+	}
+
+	gooseExists, err := tableExists(ctx, db, goose.DefaultTablename)
+	if err != nil {
+		return fmt.Errorf("check %s exists: %w", goose.DefaultTablename, err)
+	}
+
+	legacyExists, err := tableExists(ctx, db, legacyTable)
+	if err != nil {
+		return fmt.Errorf("check %s exists: %w", legacyTable, err)
+	}
+
+	if gooseExists {
+		if !legacyExists {
+			return nil
+		}
+
+		_, verr := versionStore.GetLatestVersion(ctx, db)
+		switch {
+		case verr == nil:
+			return nil
+		case errors.Is(verr, database.ErrVersionNotFound):
+		default:
+			return fmt.Errorf("read %s version: %w", goose.DefaultTablename, verr)
+		}
+	}
+
+	if !legacyExists {
+		return nil
+	}
+
+	var (
+		legacyVersion int64
+		dirty         bool
+	)
+	if err := db.QueryRowContext(ctx, "SELECT version, dirty FROM "+legacyTable).Scan(&legacyVersion, &dirty); err != nil {
+		return fmt.Errorf("read legacy migration version: %w", err)
+	}
+
+	if dirty {
+		return fmt.Errorf("dirty migration state detected at legacy version %d — manual intervention required: inspect schema and resolve the failed migration before restarting", legacyVersion)
+	}
+
+	if !gooseExists {
+		if err := versionStore.CreateVersionTable(ctx, db); err != nil {
+			return fmt.Errorf("create %s table: %w", goose.DefaultTablename, err)
+		}
+	}
+
+	for _, v := range versions {
+		if v > legacyVersion {
+			continue
+		}
+
+		if err := versionStore.Insert(ctx, db, database.InsertRequest{Version: v}); err != nil {
+			return fmt.Errorf("seed migration version %d: %w", v, err)
+		}
+	}
+
+	return nil
+}
+
+func tableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
+	var exists bool
+	if err := db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?)", name).Scan(&exists); err != nil {
+		return false, fmt.Errorf("query information_schema: %w", err)
+	}
+
+	return exists, nil
 }
 
 // Close closes the underlying database connection.

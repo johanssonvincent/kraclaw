@@ -1,3 +1,4 @@
+-- +goose Up
 -- Step 1: Add group_folder column as nullable first (safe for existing rows)
 ALTER TABLE task_run_logs
     ADD COLUMN group_folder VARCHAR(64) NULL AFTER task_id;
@@ -26,3 +27,17 @@ ALTER TABLE task_run_logs
     ADD CONSTRAINT fk_task_run_logs_task
     FOREIGN KEY (task_id) REFERENCES scheduled_tasks (id)
     ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- +goose Down
+-- Reverse in opposite order of up migration
+ALTER TABLE task_run_logs
+    DROP FOREIGN KEY fk_task_run_logs_task;
+
+ALTER TABLE scheduled_tasks
+    DROP FOREIGN KEY fk_scheduled_tasks_group;
+
+ALTER TABLE task_run_logs
+    DROP INDEX idx_group_task_run;
+
+ALTER TABLE task_run_logs
+    DROP COLUMN group_folder;

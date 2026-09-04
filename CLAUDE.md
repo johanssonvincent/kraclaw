@@ -38,7 +38,7 @@ make docker-build   # Build container image
 | `internal/orchestrator/` | Top-level wiring, message loop, channel lifecycle |
 | `internal/metrics/` | Prometheus metrics |
 | `proto/` | Protobuf service definitions |
-| `migrations/` | MySQL migration files (golang-migrate) |
+| `migrations/` | MySQL migration files (goose) |
 
 ## Conventions
 
@@ -85,7 +85,7 @@ Single Go binary with multiple concurrent goroutines. NATS JetStream IPC and mes
 - **Orchestration** (`internal/orchestrator/`): Message polling, channel lifecycle, command handling, group state.
 - **Messaging** (`internal/channel/`, `internal/router/`, `internal/queue/`): Channel implementations, message formatting, per-group queues.
 - **IPC** (`internal/ipc/`): NATS JetStream broker for server↔agent communication.
-- **Storage** (`internal/store/`): MySQL interface with golang-migrate migrations.
+- **Storage** (`internal/store/`): MySQL interface with goose migrations.
 - **Sandbox** (`internal/sandbox/`): K8s Job controller for agent lifecycle.
 - **Credential Proxy** (`internal/credproxy/`): HTTP reverse proxy injecting API credentials.
 - **Scheduler** (`internal/scheduler/`): Cron/interval/once task scheduling with per-group isolation.

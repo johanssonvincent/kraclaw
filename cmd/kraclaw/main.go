@@ -69,7 +69,7 @@ func main() {
 	}()
 
 	// Connect MySQL and run migrations
-	mysqlStore, err := store.NewMySQLStore(cfg.MySQL.DSN, cfg.MySQL.MaxOpenConns, cfg.MySQL.MaxIdleConns, cfg.MySQL.ConnMaxLifetime)
+	mysqlStore, err := store.NewMySQLStore(ctx, cfg.MySQL.DSN, cfg.MySQL.MaxOpenConns, cfg.MySQL.MaxIdleConns, cfg.MySQL.ConnMaxLifetime)
 	if err != nil {
 		log.Error("failed to initialise MySQL store", "error", err)
 		os.Exit(1)

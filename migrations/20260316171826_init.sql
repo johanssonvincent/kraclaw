@@ -1,3 +1,4 @@
+-- +goose Up
 CREATE TABLE IF NOT EXISTS `groups` (
     jid VARCHAR(255) PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
@@ -76,3 +77,13 @@ CREATE TABLE IF NOT EXISTS sender_allowlist (
     mode ENUM('trigger', 'drop') NOT NULL DEFAULT 'trigger',
     UNIQUE INDEX idx_chat_pattern (chat_jid, allow_pattern)
 );
+
+-- +goose Down
+DROP TABLE IF EXISTS sender_allowlist;
+DROP TABLE IF EXISTS router_state;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS task_run_logs;
+DROP TABLE IF EXISTS scheduled_tasks;
+DROP TABLE IF EXISTS chats;
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS `groups`;
