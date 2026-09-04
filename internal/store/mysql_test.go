@@ -13,8 +13,8 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	mysqldrv "github.com/go-sql-driver/mysql"
-	"github.com/ory/dockertest/v3"
-	"github.com/ory/dockertest/v3/docker"
+	"github.com/moby/moby/api/types/container"
+	"github.com/ory/dockertest/v4"
 )
 
 // ---------------------------------------------------------------------------
@@ -25,8 +25,8 @@ var (
 	realStoreOnce sync.Once
 	realStoreDSN  string
 	realStoreErr  error
-	realStorePool *dockertest.Pool
-	realStoreRes  *dockertest.Resource
+	realStorePool dockertest.ClosablePool
+	realStoreRes  dockertest.ClosableResource
 )
 
 func requireTestStore(t *testing.T) *MySQLStore {
@@ -36,25 +36,26 @@ func requireTestStore(t *testing.T) *MySQLStore {
 	}
 
 	realStoreOnce.Do(func() {
-		pool, err := dockertest.NewPool("")
+		ctx := context.Background()
+
+		pool, err := dockertest.NewPool(ctx, "", dockertest.WithMaxWait(2*time.Minute))
 		if err != nil {
 			realStoreErr = fmt.Errorf("create docker pool: %w", err)
 			return
 		}
-		pool.MaxWait = 2 * time.Minute
 		realStorePool = pool
 
-		res, err := pool.RunWithOptions(&dockertest.RunOptions{
-			Repository: "mysql",
-			Tag:        "8.0",
-			Env: []string{
+		res, err := pool.Run(ctx, "mysql",
+			dockertest.WithTag("8.0"),
+			dockertest.WithEnv([]string{
 				"MYSQL_ROOT_PASSWORD=kraclaw",
 				"MYSQL_DATABASE=kraclaw_test",
-			},
-		}, func(hc *docker.HostConfig) {
-			hc.AutoRemove = true
-			hc.RestartPolicy = docker.RestartPolicy{Name: "no"}
-		})
+			}),
+			dockertest.WithHostConfig(func(hc *container.HostConfig) {
+				hc.AutoRemove = true
+				hc.RestartPolicy = container.RestartPolicy{Name: "no"}
+			}),
+		)
 		if err != nil {
 			realStoreErr = fmt.Errorf("start mysql container: %w", err)
 			return
@@ -64,7 +65,7 @@ func requireTestStore(t *testing.T) *MySQLStore {
 		port := res.GetPort("3306/tcp")
 		dsn := fmt.Sprintf("root:kraclaw@tcp(localhost:%s)/kraclaw_test?parseTime=true", port)
 
-		if err := pool.Retry(func() error {
+		if err := pool.Retry(ctx, 2*time.Minute, func() error {
 			db, err := sql.Open("mysql", dsn)
 			if err != nil {
 				return err
@@ -73,7 +74,7 @@ func requireTestStore(t *testing.T) *MySQLStore {
 			return db.Ping()
 		}); err != nil {
 			realStoreErr = fmt.Errorf("wait for mysql: %w", err)
-			_ = pool.Purge(res)
+			_ = res.Close(ctx)
 			return
 		}
 
