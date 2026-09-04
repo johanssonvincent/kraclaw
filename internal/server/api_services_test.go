@@ -404,7 +404,10 @@ func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, _ string, _ stri
 	return nil
 }
 func (m *mockIPCBroker) DeleteStreams(ctx context.Context, group string) error { return nil }
-func (m *mockIPCBroker) Close() error                                          { return nil }
+func (m *mockIPCBroker) StreamExists(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (m *mockIPCBroker) Close() error { return nil }
 
 type mockStreamServer struct {
 	ctx     context.Context
@@ -424,8 +427,8 @@ func (m *mockStreamServer) Context() context.Context     { return m.ctx }
 func (m *mockStreamServer) SetHeader(metadata.MD) error  { return nil }
 func (m *mockStreamServer) SendHeader(metadata.MD) error { return nil }
 func (m *mockStreamServer) SetTrailer(metadata.MD)       {}
-func (m *mockStreamServer) SendMsg(interface{}) error    { return nil }
-func (m *mockStreamServer) RecvMsg(interface{}) error    { return nil }
+func (m *mockStreamServer) SendMsg(any) error            { return nil }
+func (m *mockStreamServer) RecvMsg(any) error            { return nil }
 
 func testLogger() *slog.Logger {
 	return slog.Default()
@@ -463,6 +466,7 @@ func (m *mockGroupStore) StoreBatch(context.Context, []store.Message) error  { r
 func (m *mockGroupStore) GetNewMessages(context.Context, []string, time.Time, int) ([]store.Message, error) {
 	return nil, nil
 }
+
 func (m *mockGroupStore) GetMessagesSince(context.Context, string, time.Time, int) ([]store.Message, error) {
 	return nil, nil
 }
@@ -476,6 +480,7 @@ func (m *mockGroupStore) CreateTask(_ context.Context, task *store.ScheduledTask
 	m.createdTask = task
 	return nil
 }
+
 func (m *mockGroupStore) GetTask(_ context.Context, id, groupFolder string) (*store.ScheduledTask, error) {
 	if m.getTaskErr != nil {
 		return nil, m.getTaskErr
@@ -485,10 +490,13 @@ func (m *mockGroupStore) GetTask(_ context.Context, id, groupFolder string) (*st
 	}
 	return nil, fmt.Errorf("task %q not found", id)
 }
+
 func (m *mockGroupStore) ListTasks(context.Context) ([]store.ScheduledTask, error) { return nil, nil }
+
 func (m *mockGroupStore) ListTasksByGroup(context.Context, string) ([]store.ScheduledTask, error) {
 	return nil, nil
 }
+
 func (m *mockGroupStore) UpdateTask(_ context.Context, task *store.ScheduledTask) error {
 	if m.updateTaskErr != nil {
 		return m.updateTaskErr
@@ -504,6 +512,7 @@ func (m *mockGroupStore) LogTaskRun(context.Context, *store.TaskRunLog) error { 
 func (m *mockGroupStore) GetTaskRunLogs(context.Context, string, string, int) ([]store.TaskRunLog, error) {
 	return nil, nil
 }
+
 func (m *mockGroupStore) GetSession(context.Context, string) (*store.Session, error) {
 	return nil, nil
 }
@@ -514,6 +523,7 @@ func (m *mockGroupStore) SetState(context.Context, string, string) error      { 
 func (m *mockGroupStore) GetAllowlist(context.Context, string) ([]store.SenderAllowlistEntry, error) {
 	return nil, nil
 }
+
 func (m *mockGroupStore) UpsertAllowlistEntry(context.Context, *store.SenderAllowlistEntry) error {
 	return nil
 }
