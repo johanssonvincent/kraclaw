@@ -7,10 +7,6 @@ on:
   push:
     branches: [ main ]
 
-concurrency:
-  group: test-integration-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   test-integration:
     runs-on: ubuntu-latest
