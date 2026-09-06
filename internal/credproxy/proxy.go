@@ -21,7 +21,6 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 )
 
-// resolvedCredential contains provider-specific routing info for a single request.
 type resolvedCredential struct {
 	Provider    string
 	AuthMode    AuthMode
@@ -61,6 +60,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 		if err != nil {
 			return nil, fmt.Errorf("resolve credential: %w", err)
 		}
+
 		if cred != nil {
 			if cred.AuthMode == AuthModeChatGPT {
 				if requestedProvider != "" && cred.Provider != requestedProvider {
@@ -71,6 +71,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 					)
 				} else {
 					tokens := cred.ChatGPT()
+
 					return &resolvedCredential{
 						Provider:    provider.ProviderOpenAI,
 						AuthMode:    AuthModeChatGPT,
@@ -98,6 +99,7 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 				default:
 					rc.UpstreamURL = r.cfg.AnthropicUpstreamURL
 				}
+
 				return rc, nil
 			}
 		}
@@ -133,10 +135,12 @@ func (r *defaultCredentialResolver) Resolve(ctx context.Context, groupJID string
 				UpstreamURL: r.cfg.AnthropicUpstreamURL,
 			}, nil
 		}
+
 		if r.cfg.OpenAIAPIKey != "" {
 			slog.Warn("no anthropic credentials available, falling back to openai platform credentials",
 				"group", groupJID,
 			)
+
 			return &resolvedCredential{
 				Provider:    provider.ProviderOpenAI,
 				AuthMode:    AuthModeAPIKey,
@@ -177,13 +181,16 @@ func New(cfg config.ProxyConfig) (*Proxy, error) {
 	if cfg.AnthropicUpstreamURL == "" {
 		cfg.AnthropicUpstreamURL = "https://api.anthropic.com"
 	}
+
 	upstream, err := url.Parse(cfg.AnthropicUpstreamURL)
 	if err != nil {
 		return nil, fmt.Errorf("credproxy: invalid upstream URL: %w", err)
 	}
+
 	if cfg.AnthropicAPIKey == "" {
 		return nil, fmt.Errorf("credproxy: AnthropicAPIKey must be set (use NewMultiProviderProxy for per-group credentials)")
 	}
+
 	return &Proxy{
 		upstream:    upstream,
 		allowedHost: upstream.Host,
@@ -201,13 +208,16 @@ func NewMultiProviderProxy(cfg config.ProxyConfig, resolver CredentialResolver) 
 	if cfg.AnthropicUpstreamURL == "" {
 		cfg.AnthropicUpstreamURL = "https://api.anthropic.com"
 	}
+
 	upstream, err := url.Parse(cfg.AnthropicUpstreamURL)
 	if err != nil {
 		return nil, fmt.Errorf("credproxy: invalid upstream URL: %w", err)
 	}
+
 	allowedHosts := map[string]bool{
 		upstream.Host: true,
 	}
+
 	if cfg.OpenAIUpstreamURL != "" {
 		if u, err := url.Parse(cfg.OpenAIUpstreamURL); err == nil {
 			allowedHosts[u.Host] = true
@@ -215,6 +225,7 @@ func NewMultiProviderProxy(cfg config.ProxyConfig, resolver CredentialResolver) 
 	} else {
 		allowedHosts["api.openai.com"] = true
 	}
+
 	if u, err := url.Parse(chatGPTCodexUpstreamURL); err == nil {
 		allowedHosts[u.Host] = true
 	}
@@ -237,6 +248,7 @@ func (p *Proxy) handler() http.Handler {
 	mux.HandleFunc("/readyz", p.handleReadyz)
 	rp := p.newReverseProxy()
 	mux.Handle("/", p.metricsMiddleware(p.hostGuard(p.credentialMiddleware(rp))))
+
 	return mux
 }
 
@@ -254,10 +266,12 @@ func (p *Proxy) Start(ctx context.Context) error {
 	p.log.Info("credential proxy starting", "addr", p.addr, "upstream", p.upstream.String(), "auth_mode", p.authMode())
 
 	errCh := make(chan error, 1)
+
 	go func() {
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
+
 		close(errCh)
 	}()
 
@@ -274,7 +288,9 @@ func (p *Proxy) Stop(ctx context.Context) error {
 	if p.server == nil {
 		return nil
 	}
+
 	p.log.Info("credential proxy stopping")
+
 	return p.server.Shutdown(ctx)
 }
 
@@ -311,77 +327,81 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 	rp := &httputil.ReverseProxy{
 		Transport:     transport,
 		FlushInterval: -1, // flush SSE events immediately
-		Director: func(req *http.Request) {
+		Rewrite: func(pr *httputil.ProxyRequest) {
 			// Check for pre-resolved credentials from middleware.
-			if rd, ok := req.Context().Value(credentialContextKey).(*resolvedData); ok {
-				req.URL.Scheme = rd.upstreamURL.Scheme
-				req.URL.Host = rd.upstreamURL.Host
-				req.URL.Path = upstreamPath(rd.upstreamURL.Path, req.URL.Path, rd.cred.AuthMode)
-				req.Host = rd.upstreamURL.Host
+			if rd, ok := pr.In.Context().Value(credentialContextKey).(*resolvedData); ok {
+				pr.Out.URL.Scheme = rd.upstreamURL.Scheme
+				pr.Out.URL.Host = rd.upstreamURL.Host
+				pr.Out.URL.Path = upstreamPath(rd.upstreamURL.Path, pr.Out.URL.Path, rd.cred.AuthMode)
+				pr.Out.Host = rd.upstreamURL.Host
 
 				// Strip hop-by-hop and kraclaw-internal headers.
-				req.Header.Del("Connection")
-				req.Header.Del("Keep-Alive")
-				req.Header.Del("Transfer-Encoding")
-				req.Header.Del("X-Kraclaw-Group")
-				req.Header.Del("X-Kraclaw-Provider")
+				pr.Out.Header.Del("Connection")
+				pr.Out.Header.Del("Keep-Alive")
+				pr.Out.Header.Del("Transfer-Encoding")
+				pr.Out.Header.Del("X-Kraclaw-Group")
+				pr.Out.Header.Del("X-Kraclaw-Provider")
 
 				// Inject provider-specific auth headers.
 				switch rd.cred.Provider {
 				case provider.ProviderOpenAI:
-					req.Header.Del("X-Api-Key")
-					req.Header.Set("Authorization", "Bearer "+rd.cred.APIKey)
+					pr.Out.Header.Del("X-Api-Key")
+					pr.Out.Header.Set("Authorization", "Bearer "+rd.cred.APIKey)
+
 					if rd.cred.AuthMode == AuthModeChatGPT {
-						req.Header.Set("ChatGPT-Account-ID", rd.cred.AccountID)
+						pr.Out.Header.Set("ChatGPT-Account-ID", rd.cred.AccountID)
+
 						if rd.cred.IsFedRAMP {
-							req.Header.Set("X-OpenAI-Fedramp", "true")
+							pr.Out.Header.Set("X-OpenAI-Fedramp", "true")
 						} else {
-							req.Header.Del("X-OpenAI-Fedramp")
+							pr.Out.Header.Del("X-OpenAI-Fedramp")
 						}
 					} else {
-						req.Header.Del("ChatGPT-Account-ID")
-						req.Header.Del("X-OpenAI-Fedramp")
+						pr.Out.Header.Del("ChatGPT-Account-ID")
+						pr.Out.Header.Del("X-OpenAI-Fedramp")
 					}
-				default: // anthropic
-					req.Header.Del("Authorization")
-					req.Header.Del("ChatGPT-Account-ID")
-					req.Header.Del("X-OpenAI-Fedramp")
-					req.Header.Set("X-Api-Key", rd.cred.APIKey)
+				case provider.ProviderAnthropic:
+					pr.Out.Header.Del("Authorization")
+					pr.Out.Header.Del("ChatGPT-Account-ID")
+					pr.Out.Header.Del("X-OpenAI-Fedramp")
+					pr.Out.Header.Set("X-Api-Key", rd.cred.APIKey)
 				}
+
 				return
 			}
 
 			// Legacy single-provider path (backwards compatible).
 			// Rewrite target to configured upstream.
-			req.URL.Scheme = p.upstream.Scheme
-			req.URL.Host = p.upstream.Host
-			req.Host = p.upstream.Host
+			pr.Out.URL.Scheme = p.upstream.Scheme
+			pr.Out.URL.Host = p.upstream.Host
+			pr.Out.Host = p.upstream.Host
 
 			// Safety check: verify the target host matches the allowlist.
 			// This guards against programming errors or request manipulation
 			// that could route credentials to an unintended host.
-			if req.URL.Host != p.allowedHost {
+			if pr.Out.URL.Host != p.allowedHost {
 				p.log.Error("blocked request to non-allowed host",
-					"target_host", req.URL.Host,
+					"target_host", pr.Out.URL.Host,
 					"allowed_host", p.allowedHost,
-					"path", req.URL.Path,
+					"path", pr.Out.URL.Path,
 				)
 				// Clear any credentials that may have been set and return.
 				// The request will fail at the transport level but no credentials leak.
-				req.Header.Del("X-Api-Key")
-				req.Header.Del("Authorization")
+				pr.Out.Header.Del("X-Api-Key")
+				pr.Out.Header.Del("Authorization")
+
 				return
 			}
 
 			// Strip hop-by-hop headers
-			req.Header.Del("Connection")
-			req.Header.Del("Keep-Alive")
-			req.Header.Del("Transfer-Encoding")
+			pr.Out.Header.Del("Connection")
+			pr.Out.Header.Del("Keep-Alive")
+			pr.Out.Header.Del("Transfer-Encoding")
 
 			// API key mode: strip incoming auth, inject real key.
-			req.Header.Del("X-Api-Key")
-			req.Header.Del("Authorization")
-			req.Header.Set("X-Api-Key", p.apiKey)
+			pr.Out.Header.Del("X-Api-Key")
+			pr.Out.Header.Del("Authorization")
+			pr.Out.Header.Set("X-Api-Key", p.apiKey)
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			p.log.Debug("upstream response",
@@ -389,14 +409,17 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 				"content_type", resp.Header.Get("Content-Type"),
 				"path", resp.Request.URL.Path,
 			)
+
 			if resp.StatusCode >= 400 {
 				body, err := io.ReadAll(resp.Body)
 				if err != nil {
 					return fmt.Errorf("read upstream error body: %w", err)
 				}
+
 				_ = resp.Body.Close()
 				resp.Body = io.NopCloser(bytes.NewReader(body))
 				resp.ContentLength = int64(len(body))
+
 				logBody := body
 				if len(logBody) > maxUpstreamErrorBodyBytes {
 					logBody = logBody[:maxUpstreamErrorBodyBytes]
@@ -414,23 +437,29 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 					"x_error_json", resp.Header.Get("x-error-json"),
 				)
 			}
+
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if errors.Is(err, context.Canceled) {
 				p.log.Debug("client disconnected", "path", r.URL.Path)
+
 				return
 			}
+
 			if errors.Is(err, context.DeadlineExceeded) {
 				p.log.Warn("upstream timeout", "path", r.URL.Path)
 				w.WriteHeader(http.StatusGatewayTimeout)
+
 				return
 			}
+
 			p.log.Error("upstream error", "url", r.URL.String(), "error", err)
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte("Bad Gateway"))
 		},
 	}
+
 	return rp
 }
 
@@ -442,12 +471,15 @@ func upstreamPath(basePath, requestPath string, authMode AuthMode) string {
 			path = "/"
 		}
 	}
+
 	if basePath == "" || basePath == "/" {
 		return path
 	}
+
 	if path == "" || path == "/" {
 		return basePath
 	}
+
 	return strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
@@ -456,6 +488,7 @@ func (p *Proxy) metricsMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rw, r)
+
 		duration := time.Since(start).Seconds()
 
 		metrics.ProxyRequests.WithLabelValues(strconv.Itoa(rw.statusCode)).Inc()
@@ -474,6 +507,7 @@ func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 		// Director, so static host checking is not applicable.
 		if p.resolver != nil {
 			next.ServeHTTP(w, r)
+
 			return
 		}
 		// If the request has an explicit upstream target in the URL (absolute URI),
@@ -484,8 +518,10 @@ func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 				"allowed_host", p.allowedHost,
 			)
 			http.Error(w, "Forbidden: target host not allowed", http.StatusForbidden)
+
 			return
 		}
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -499,6 +535,7 @@ func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 
 		if p.resolver != nil && groupJID != "" {
 			requestedProvider := r.Header.Get("X-Kraclaw-Provider")
+
 			cred, err := p.resolver.Resolve(r.Context(), groupJID, requestedProvider)
 			if err != nil {
 				p.log.Error("credential resolution failed",
@@ -506,6 +543,7 @@ func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 					"error", err,
 				)
 				http.Error(w, "credential resolution failed", http.StatusBadGateway)
+
 				return
 			}
 
@@ -516,6 +554,7 @@ func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 					"error", err,
 				)
 				http.Error(w, "invalid upstream URL for resolved credential", http.StatusBadGateway)
+
 				return
 			}
 
@@ -526,6 +565,7 @@ func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 					"group", groupJID,
 				)
 				http.Error(w, "Forbidden: resolved upstream host not allowed", http.StatusForbidden)
+
 				return
 			}
 
@@ -534,6 +574,7 @@ func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 				upstreamURL: upstreamURL,
 			})
 			next.ServeHTTP(w, r.WithContext(ctx))
+
 			return
 		}
 
