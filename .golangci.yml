@@ -12,7 +12,7 @@ linters:
     - wsl_v5
   settings:
     forbidigo:
-      forbid-patterns:
+      forbid:
         - pattern: ^fmt\.Print
   exclusions:
     rules:
