@@ -67,19 +67,24 @@ func NewIPCClient(nc *nats.Conn, group, agentID string, logger *slog.Logger) (*I
 	if nc == nil {
 		return nil, fmt.Errorf("ipc client: NATS connection is required")
 	}
+
 	if group == "" {
 		return nil, fmt.Errorf("ipc client: group is required")
 	}
+
 	if agentID == "" {
 		agentID = ipc.DefaultAgentID
 	}
+
 	if logger == nil {
 		logger = slog.Default()
 	}
+
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("ipc client: jetstream: %w", err)
 	}
+
 	return &IPCClient{
 		nc:              nc,
 		js:              js,
@@ -113,9 +118,11 @@ func (c *IPCClient) outputSubject() string {
 func (c *IPCClient) ensureStream(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	if c.streamCreated {
 		return nil
 	}
+
 	sanitized := c.sanitized()
 	if _, err := c.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: c.streamName(),
@@ -130,7 +137,9 @@ func (c *IPCClient) ensureStream(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("ensure ipc stream %s: %w", c.streamName(), err)
 	}
+
 	c.streamCreated = true
+
 	return nil
 }
 
@@ -152,15 +161,19 @@ func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error 
 		if err != nil {
 			return fmt.Errorf("marshal payload: %w", err)
 		}
+
 		ipcMsg["payload"] = json.RawMessage(payload)
 	}
+
 	data, err := json.Marshal(ipcMsg)
 	if err != nil {
 		return fmt.Errorf("marshal ipc message: %w", err)
 	}
+
 	if _, err := c.js.Publish(ctx, c.outputSubject(), data); err != nil {
 		return fmt.Errorf("publish output: %w", err)
 	}
+
 	return nil
 }
 
@@ -179,15 +192,18 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 	c.readOnce.Do(func() {
 		c.msgCh = make(chan *InboundMessage, 64)
 		c.errCh = make(chan error, 1)
+
 		c.readErr = c.startReadInput(ctx, c.msgCh, c.errCh)
 		if c.readErr != nil {
 			c.msgCh = nil
 			c.errCh = nil
 		}
 	})
+
 	if c.readErr != nil {
 		return nil, nil, c.readErr
 	}
+
 	return c.msgCh, c.errCh, nil
 }
 
@@ -201,6 +217,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 
 	streamName := c.streamName()
 	consName := "agent-" + ipc.SanitizeAgentID(c.agentID)
+
 	backoff := c.consumerFetchBackoff
 	if backoff == 0 {
 		backoff = 100 * time.Millisecond
@@ -220,6 +237,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 			!errors.Is(err, jetstream.ErrStreamNotFound) {
 			return fmt.Errorf("fetch input consumer %s: %w", consName, err)
 		}
+
 		if attempt == 5 {
 			break // avoid wasted sleep after the last attempt
 		}
@@ -230,13 +248,16 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 		if half := backoff / 2; half > 0 {
 			jitter = time.Duration(rand.Int64N(int64(half)))
 		}
+
 		select {
 		case <-time.After(backoff + jitter):
 		case <-ctx.Done():
 			return fmt.Errorf("fetch input consumer %s: %w", consName, ctx.Err())
 		}
+
 		backoff *= 2
 	}
+
 	if err != nil {
 		return fmt.Errorf("fetch input consumer %s after retries: %w", consName, err)
 	}
@@ -248,6 +269,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 		iter, err := cons.Messages()
 		if err != nil {
 			errCh <- fmt.Errorf("create message iterator: %w", err)
+
 			return
 		}
 		defer iter.Stop()
@@ -263,6 +285,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 				// Consumer exited (iter error); watcher can exit too.
 			}
 		}()
+
 		defer close(done)
 
 		for {
@@ -277,11 +300,14 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 				if ctx.Err() != nil {
 					return
 				}
+
 				c.logger.Error("ipc read goroutine terminating",
 					"group", c.group,
 					"agent_id", c.agentID,
 					"error", err)
+
 				errCh <- fmt.Errorf("ipc read: %w", err)
+
 				return
 			}
 
@@ -291,15 +317,18 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 			}
 			if err := json.Unmarshal(jmsg.Data(), &ipcMsg); err != nil {
 				meta, _ := jmsg.Metadata()
+
 				var seq uint64
 				if meta != nil {
 					seq = meta.Sequence.Stream
 				}
+
 				c.logger.Error("unmarshal ipc message",
 					"group", c.group,
 					"agent_id", c.agentID,
 					"sequence", seq,
 					"error", err)
+
 				if err := jmsg.Ack(); err != nil {
 					c.logger.Error("ack malformed message",
 						"group", c.group,
@@ -307,6 +336,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 						"sequence", seq,
 						"error", err)
 				}
+
 				continue
 			}
 
@@ -316,31 +346,38 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 			case ch <- msg:
 				if err := jmsg.Ack(); err != nil {
 					meta, _ := jmsg.Metadata()
+
 					var seq uint64
 					if meta != nil {
 						seq = meta.Sequence.Stream
 					}
+
 					c.logger.Error("ack ipc message",
 						"group", c.group,
 						"agent_id", c.agentID,
 						"sequence", seq,
 						"error", err)
+
 					errCh <- fmt.Errorf("ack ipc message: %w", err)
+
 					return
 				}
 			case <-ctx.Done():
 				if err := jmsg.Nak(); err != nil {
 					meta, _ := jmsg.Metadata()
+
 					var seq uint64
 					if meta != nil {
 						seq = meta.Sequence.Stream
 					}
+
 					c.logger.Error("nak message on context cancel",
 						"group", c.group,
 						"agent_id", c.agentID,
 						"sequence", seq,
 						"error", err)
 				}
+
 				return
 			}
 		}

@@ -47,10 +47,12 @@ func ParseIDToken(token string) (IDTokenClaims, error) {
 	if token == "" {
 		return IDTokenClaims{}, fmt.Errorf("chatgpt: id_token is empty")
 	}
+
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return IDTokenClaims{}, fmt.Errorf("chatgpt: id_token is not a 3-part JWT (got %d parts)", len(parts))
 	}
+
 	payload, err := decodeJWTSegment(parts[1])
 	if err != nil {
 		return IDTokenClaims{}, fmt.Errorf("chatgpt: decode id_token payload: %w", err)
@@ -67,18 +69,23 @@ func ParseIDToken(token string) (IDTokenClaims, error) {
 	if claims.Email == "" && raw.Profile != nil {
 		claims.Email = raw.Profile.Email
 	}
+
 	if raw.Auth != nil {
 		claims.AccountID = raw.Auth.ChatGPTAccountID
+
 		claims.UserID = raw.Auth.ChatGPTUserID
 		if claims.UserID == "" {
 			claims.UserID = raw.Auth.UserID
 		}
+
 		claims.PlanType = raw.Auth.ChatGPTPlanType
 		claims.IsFedRAMP = raw.Auth.ChatGPTAccountIsFedRAMP
 	}
+
 	if raw.Exp > 0 {
 		claims.ExpiresAt = time.Unix(raw.Exp, 0).UTC()
 	}
+
 	return claims, nil
 }
 
@@ -88,8 +95,10 @@ func decodeJWTSegment(seg string) ([]byte, error) {
 	if pad := len(seg) % 4; pad != 0 {
 		seg += strings.Repeat("=", 4-pad)
 	}
+
 	if b, err := base64.URLEncoding.DecodeString(seg); err == nil {
 		return b, nil
 	}
+
 	return base64.StdEncoding.DecodeString(seg)
 }

@@ -47,16 +47,20 @@ func retryWithBackoff(attempts int, baseDelay time.Duration, operation string, f
 		if err == nil {
 			return nil
 		}
+
 		if i == attempts-1 {
 			break
 		}
+
 		delay := baseDelay * (1 << i)
 		if delay > 30*time.Second {
 			delay = 30 * time.Second
 		}
+
 		slog.Warn("retrying operation", "operation", operation, "attempt", i+1, "backoff", delay, "error", err)
 		time.Sleep(delay)
 	}
+
 	return fmt.Errorf("%s failed after %d attempts: %w", operation, attempts, err)
 }
 
@@ -82,6 +86,7 @@ func NewMySQLStore(ctx context.Context, dsn string, maxOpen, maxIdle int, connMa
 		if cerr := db.Close(); cerr != nil {
 			slog.Warn("close db on ping failure", "error", cerr)
 		}
+
 		return nil, err
 	}
 
@@ -89,10 +94,12 @@ func NewMySQLStore(ctx context.Context, dsn string, maxOpen, maxIdle int, connMa
 		if cerr := db.Close(); cerr != nil {
 			slog.Warn("close db on migration failure", "error", cerr)
 		}
+
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
 	slog.Info("mysql store initialised")
+
 	return &MySQLStore{db: db}, nil
 }
 
@@ -255,6 +262,7 @@ func (s *MySQLStore) GetGroup(ctx context.Context, jid string) (*Group, error) {
 		"SELECT jid, name, folder, trigger_pattern, is_main, requires_trigger, container_config, added_at FROM `groups` WHERE jid = ?",
 		jid,
 	)
+
 	return scanGroup(row)
 }
 
@@ -263,6 +271,7 @@ func (s *MySQLStore) GetGroupByFolder(ctx context.Context, folder string) (*Grou
 		"SELECT jid, name, folder, trigger_pattern, is_main, requires_trigger, container_config, added_at FROM `groups` WHERE folder = ?",
 		folder,
 	)
+
 	return scanGroup(row)
 }
 
@@ -276,13 +285,16 @@ func (s *MySQLStore) ListGroups(ctx context.Context) ([]Group, error) {
 	defer func() { _ = rows.Close() }()
 
 	var groups []Group
+
 	for rows.Next() {
 		g, err := scanGroupRows(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		groups = append(groups, *g)
 	}
+
 	return groups, rows.Err()
 }
 
@@ -307,6 +319,7 @@ func (s *MySQLStore) UpsertGroup(ctx context.Context, g *Group) error {
 	if err != nil {
 		return fmt.Errorf("upsert group: %w", err)
 	}
+
 	return nil
 }
 
@@ -315,6 +328,7 @@ func (s *MySQLStore) DeleteGroup(ctx context.Context, jid string) error {
 	if err != nil {
 		return fmt.Errorf("delete group: %w", err)
 	}
+
 	return nil
 }
 
@@ -323,33 +337,44 @@ type scanner interface {
 }
 
 func scanGroup(row scanner) (*Group, error) {
-	var g Group
-	var ccRaw []byte
+	var (
+		g     Group
+		ccRaw []byte
+	)
+
 	err := row.Scan(&g.JID, &g.Name, &g.Folder, &g.TriggerPattern, &g.IsMain, &g.RequiresTrigger, &ccRaw, &g.AddedAt)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("scan group: %w", err)
 	}
+
 	g.ContainerConfig, err = ParseContainerConfig(ccRaw)
 	if err != nil {
 		return nil, fmt.Errorf("parse container config: %w", err)
 	}
+
 	return &g, nil
 }
 
 func scanGroupRows(rows *sql.Rows) (*Group, error) {
-	var g Group
-	var ccRaw []byte
+	var (
+		g     Group
+		ccRaw []byte
+	)
+
 	err := rows.Scan(&g.JID, &g.Name, &g.Folder, &g.TriggerPattern, &g.IsMain, &g.RequiresTrigger, &ccRaw, &g.AddedAt)
 	if err != nil {
 		return nil, fmt.Errorf("scan group row: %w", err)
 	}
+
 	g.ContainerConfig, err = ParseContainerConfig(ccRaw)
 	if err != nil {
 		return nil, fmt.Errorf("parse container config: %w", err)
 	}
+
 	return &g, nil
 }
 
@@ -366,6 +391,7 @@ func (s *MySQLStore) StoreMessage(ctx context.Context, msg *Message) error {
 	if err != nil {
 		return fmt.Errorf("store message: %w", err)
 	}
+
 	return nil
 }
 
@@ -399,6 +425,7 @@ func (s *MySQLStore) StoreBatch(ctx context.Context, msgs []Message) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit batch: %w", err)
 	}
+
 	return nil
 }
 
@@ -410,10 +437,13 @@ func (s *MySQLStore) GetNewMessages(ctx context.Context, jids []string, since ti
 	placeholders := make([]string, len(jids))
 	args := make([]any, 0, len(jids)+2)
 	args = append(args, since)
+
 	for i, jid := range jids {
 		placeholders[i] = "?"
+
 		args = append(args, jid)
 	}
+
 	args = append(args, limit)
 
 	query := fmt.Sprintf(`
@@ -461,13 +491,16 @@ func (s *MySQLStore) GetMessagesSince(ctx context.Context, chatJID string, since
 
 func scanMessages(rows *sql.Rows) ([]Message, error) {
 	var msgs []Message
+
 	for rows.Next() {
 		var m Message
 		if err := rows.Scan(&m.ID, &m.ChatJID, &m.Sender, &m.SenderName, &m.Content, &m.Timestamp, &m.IsFromMe, &m.IsBotMessage); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
+
 		msgs = append(msgs, m)
 	}
+
 	return msgs, rows.Err()
 }
 
@@ -489,11 +522,13 @@ func (s *MySQLStore) UpsertChat(ctx context.Context, c *Chat) error {
 	if err != nil {
 		return fmt.Errorf("upsert chat: %w", err)
 	}
+
 	return nil
 }
 
 func (s *MySQLStore) GetChat(ctx context.Context, jid string) (*Chat, error) {
 	var c Chat
+
 	err := s.db.QueryRowContext(ctx,
 		"SELECT jid, name, channel, is_group, last_message_time FROM chats WHERE jid = ?",
 		jid,
@@ -501,9 +536,11 @@ func (s *MySQLStore) GetChat(ctx context.Context, jid string) (*Chat, error) {
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("get chat: %w", err)
 	}
+
 	return &c, nil
 }
 
@@ -517,13 +554,16 @@ func (s *MySQLStore) ListChats(ctx context.Context) ([]Chat, error) {
 	defer func() { _ = rows.Close() }()
 
 	var chats []Chat
+
 	for rows.Next() {
 		var c Chat
 		if err := rows.Scan(&c.JID, &c.Name, &c.Channel, &c.IsGroup, &c.LastMessageTime); err != nil {
 			return nil, fmt.Errorf("scan chat: %w", err)
 		}
+
 		chats = append(chats, c)
 	}
+
 	return chats, rows.Err()
 }
 
@@ -542,6 +582,7 @@ func (s *MySQLStore) CreateTask(ctx context.Context, task *ScheduledTask) error 
 	if err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
+
 	return nil
 }
 
@@ -551,6 +592,7 @@ func (s *MySQLStore) GetTask(ctx context.Context, id, groupFolder string) (*Sche
 		        next_run, last_run, last_result, status, created_at
 		 FROM scheduled_tasks WHERE id = ? AND group_folder = ?`, id, groupFolder,
 	)
+
 	return scanTask(row)
 }
 
@@ -564,6 +606,7 @@ func (s *MySQLStore) ListTasks(ctx context.Context) ([]ScheduledTask, error) {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+
 	return scanTasks(rows)
 }
 
@@ -577,6 +620,7 @@ func (s *MySQLStore) ListTasksByGroup(ctx context.Context, groupFolder string) (
 		return nil, fmt.Errorf("list tasks by group: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+
 	return scanTasks(rows)
 }
 
@@ -593,6 +637,7 @@ func (s *MySQLStore) UpdateTask(ctx context.Context, task *ScheduledTask) error 
 	if err != nil {
 		return fmt.Errorf("update task: %w", err)
 	}
+
 	return nil
 }
 
@@ -607,6 +652,7 @@ func (s *MySQLStore) DeleteTask(ctx context.Context, id, groupFolder string) err
 
 func (s *MySQLStore) GetDueTasks(ctx context.Context) ([]ScheduledTask, error) {
 	now := time.Now().UTC()
+
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode,
 		        next_run, last_run, last_result, status, created_at
@@ -617,7 +663,9 @@ func (s *MySQLStore) GetDueTasks(ctx context.Context) ([]ScheduledTask, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get due tasks: %w", err)
 	}
+
 	defer func() { _ = rows.Close() }()
+
 	return scanTasks(rows)
 }
 
@@ -630,6 +678,7 @@ func (s *MySQLStore) LogTaskRun(ctx context.Context, log *TaskRunLog) error {
 	if err != nil {
 		return fmt.Errorf("log task run: %w", err)
 	}
+
 	return nil
 }
 
@@ -645,34 +694,41 @@ func (s *MySQLStore) GetTaskRunLogs(ctx context.Context, taskID, groupFolder str
 	defer func() { _ = rows.Close() }()
 
 	var logs []TaskRunLog
+
 	for rows.Next() {
 		var l TaskRunLog
 		if err := rows.Scan(&l.ID, &l.TaskID, &l.GroupFolder, &l.RunAt, &l.DurationMs, &l.Status, &l.Result, &l.Error); err != nil {
 			return nil, fmt.Errorf("scan task run log: %w", err)
 		}
+
 		logs = append(logs, l)
 	}
+
 	return logs, rows.Err()
 }
 
 func scanTask(row scanner) (*ScheduledTask, error) {
 	var t ScheduledTask
+
 	err := row.Scan(
 		&t.ID, &t.GroupFolder, &t.ChatJID, &t.Prompt,
 		&t.ScheduleType, &t.ScheduleValue, &t.ContextMode,
 		&t.NextRun, &t.LastRun, &t.LastResult, &t.Status, &t.CreatedAt,
 	)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
 	}
+
 	return &t, nil
 }
 
 func scanTasks(rows *sql.Rows) ([]ScheduledTask, error) {
 	var tasks []ScheduledTask
+
 	for rows.Next() {
 		var t ScheduledTask
 		if err := rows.Scan(
@@ -682,8 +738,10 @@ func scanTasks(rows *sql.Rows) ([]ScheduledTask, error) {
 		); err != nil {
 			return nil, fmt.Errorf("scan task: %w", err)
 		}
+
 		tasks = append(tasks, t)
 	}
+
 	return tasks, rows.Err()
 }
 
@@ -693,6 +751,7 @@ func scanTasks(rows *sql.Rows) ([]ScheduledTask, error) {
 
 func (s *MySQLStore) GetSession(ctx context.Context, groupFolder string) (*Session, error) {
 	var sess Session
+
 	err := s.db.QueryRowContext(ctx,
 		"SELECT group_folder, session_id FROM sessions WHERE group_folder = ?",
 		groupFolder,
@@ -700,9 +759,11 @@ func (s *MySQLStore) GetSession(ctx context.Context, groupFolder string) (*Sessi
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
 	}
+
 	return &sess, nil
 }
 
@@ -714,6 +775,7 @@ func (s *MySQLStore) UpsertSession(ctx context.Context, sess *Session) error {
 	if err != nil {
 		return fmt.Errorf("upsert session: %w", err)
 	}
+
 	return nil
 }
 
@@ -725,6 +787,7 @@ func (s *MySQLStore) DeleteSession(ctx context.Context, groupFolder string) erro
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
+
 	return nil
 }
 
@@ -734,15 +797,18 @@ func (s *MySQLStore) DeleteSession(ctx context.Context, groupFolder string) erro
 
 func (s *MySQLStore) GetState(ctx context.Context, key string) (string, error) {
 	var value string
+
 	err := s.db.QueryRowContext(ctx,
 		"SELECT value FROM router_state WHERE `key` = ?", key,
 	).Scan(&value)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
+
 	if err != nil {
 		return "", fmt.Errorf("get state: %w", err)
 	}
+
 	return value, nil
 }
 
@@ -754,6 +820,7 @@ func (s *MySQLStore) SetState(ctx context.Context, key, value string) error {
 	if err != nil {
 		return fmt.Errorf("set state: %w", err)
 	}
+
 	return nil
 }
 
@@ -772,13 +839,16 @@ func (s *MySQLStore) GetAllowlist(ctx context.Context, chatJID string) ([]Sender
 	defer func() { _ = rows.Close() }()
 
 	var entries []SenderAllowlistEntry
+
 	for rows.Next() {
 		var e SenderAllowlistEntry
 		if err := rows.Scan(&e.ID, &e.ChatJID, &e.AllowPattern, &e.Mode); err != nil {
 			return nil, fmt.Errorf("scan allowlist entry: %w", err)
 		}
+
 		entries = append(entries, e)
 	}
+
 	return entries, rows.Err()
 }
 
@@ -792,6 +862,7 @@ func (s *MySQLStore) UpsertAllowlistEntry(ctx context.Context, entry *SenderAllo
 	if err != nil {
 		return fmt.Errorf("upsert allowlist entry: %w", err)
 	}
+
 	return nil
 }
 
@@ -800,6 +871,7 @@ func (s *MySQLStore) DeleteAllowlistEntry(ctx context.Context, id int64) error {
 	if err != nil {
 		return fmt.Errorf("delete allowlist entry: %w", err)
 	}
+
 	return nil
 }
 
@@ -819,13 +891,16 @@ func (s *MySQLStore) MarkGroupActive(ctx context.Context, jid string) error {
 	if err != nil {
 		return fmt.Errorf("mark group active: %w", err)
 	}
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("mark group active rows affected: %w", err)
 	}
+
 	if n == 0 {
 		return s.requireGroupExists(ctx, jid, "mark group active")
 	}
+
 	return nil
 }
 
@@ -837,13 +912,16 @@ func (s *MySQLStore) MarkGroupInactive(ctx context.Context, jid string) error {
 	if err != nil {
 		return fmt.Errorf("mark group inactive: %w", err)
 	}
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("mark group inactive rows affected: %w", err)
 	}
+
 	if n == 0 {
 		return s.requireGroupExists(ctx, jid, "mark group inactive")
 	}
+
 	return nil
 }
 
@@ -852,39 +930,47 @@ func (s *MySQLStore) MarkGroupInactive(ctx context.Context, jid string) error {
 // Used as a tie-breaker after RowsAffected returns 0 on an UPDATE.
 func (s *MySQLStore) requireGroupExists(ctx context.Context, jid, op string) error {
 	var exists bool
+
 	err := s.db.QueryRowContext(ctx,
 		"SELECT EXISTS(SELECT 1 FROM `groups` WHERE jid = ?)", jid).Scan(&exists)
 	if err != nil {
 		return fmt.Errorf("%s check existence: %w", op, err)
 	}
+
 	if !exists {
 		return fmt.Errorf("%s: %w", op, ErrGroupNotFound)
 	}
+
 	return nil
 }
 
 // IsGroupActive returns true if the group has is_active = TRUE.
 func (s *MySQLStore) IsGroupActive(ctx context.Context, jid string) (bool, error) {
 	var active bool
+
 	err := s.db.QueryRowContext(ctx,
 		"SELECT is_active FROM `groups` WHERE jid = ?", jid).Scan(&active)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
+
 	if err != nil {
 		return false, fmt.Errorf("is group active: %w", err)
 	}
+
 	return active, nil
 }
 
 // ActiveGroupCount returns the number of groups with is_active = TRUE.
 func (s *MySQLStore) ActiveGroupCount(ctx context.Context) (int64, error) {
 	var count int64
+
 	err := s.db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM `groups` WHERE is_active = TRUE").Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("active group count: %w", err)
 	}
+
 	return count, nil
 }
 
@@ -900,17 +986,22 @@ func (s *MySQLStore) ActiveGroupJIDs(ctx context.Context) ([]string, error) {
 			slog.Default().Warn("active group jids: close rows", "error", cerr)
 		}
 	}()
+
 	var jids []string
+
 	for rows.Next() {
 		var jid string
 		if err := rows.Scan(&jid); err != nil {
 			return nil, fmt.Errorf("scan active jid: %w", err)
 		}
+
 		jids = append(jids, jid)
 	}
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("active group jids rows: %w", err)
 	}
+
 	return jids, nil
 }
 

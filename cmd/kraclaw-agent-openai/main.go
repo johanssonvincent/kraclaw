@@ -27,10 +27,12 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 	if model == "" {
 		model = "gpt-5.5"
 	}
+
 	proxyURL := os.Getenv("KRACLAW_PROXY_URL")
 	if proxyURL == "" {
 		return fmt.Errorf("KRACLAW_PROXY_URL is required")
 	}
+
 	groupJID := os.Getenv("KRACLAW_GROUP")
 	if groupJID == "" {
 		return fmt.Errorf("KRACLAW_GROUP is required")
@@ -63,23 +65,27 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 				text, err := extractMessageText(msg.Payload)
 				if err != nil {
 					log.Warn("failed to extract message text", "error", err)
+
 					continue
 				}
 
 				fullResponse, err := client.streamResponse(ctx, model, history, text)
 				if err != nil {
 					log.Error("openai stream error", "error", err)
+
 					if sendErr := ipc.SendOutput(ctx, &agent.OutboundMessage{
 						Type: "message",
 						Text: "I encountered an error processing your message. Please try again.",
 					}); sendErr != nil {
 						log.Error("failed to send error message", "error", sendErr)
 					}
+
 					continue
 				}
 
 				if fullResponse == "" {
 					log.Warn("openai returned empty response", "model", model)
+
 					fullResponse = "I received an empty response from the model. Please try again."
 				}
 
@@ -88,6 +94,7 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 					Text: fullResponse,
 				}); err != nil {
 					log.Error("failed to send response, discarding from history", "error", err)
+
 					continue
 				}
 				// Only append to history after successful send.
@@ -109,6 +116,7 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 
 			case "shutdown":
 				log.Info("shutdown signal received")
+
 				return nil
 
 			default:
@@ -126,11 +134,14 @@ func extractMessageText(payload json.RawMessage) (string, error) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return "", err
 	}
+
 	if p.Messages != "" {
 		return p.Messages, nil
 	}
+
 	if p.Text != "" {
 		return p.Text, nil
 	}
+
 	return "", fmt.Errorf("no text content in payload")
 }

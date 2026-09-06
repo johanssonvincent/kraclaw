@@ -97,17 +97,20 @@ func NewRegistryForTest(providers map[string]ProviderInfo) *Registry {
 	if providers == nil {
 		providers = make(map[string]ProviderInfo)
 	}
+
 	for id, p := range providers {
 		if !p.AuthMode.Valid() {
 			panic(fmt.Sprintf("provider.NewRegistryForTest: provider %q has invalid AuthMode %q", id, p.AuthMode))
 		}
 	}
+
 	return &Registry{providers: providers}
 }
 
 // Get returns a provider by ID.
 func (r *Registry) Get(id string) (ProviderInfo, bool) {
 	p, ok := r.providers[id]
+
 	return p, ok
 }
 
@@ -122,14 +125,17 @@ func (r *Registry) ValidateModel(providerID, model string) error {
 	if !ok {
 		return fmt.Errorf("unknown provider %q", providerID)
 	}
+
 	if model == "" {
 		return nil
 	}
+
 	for _, m := range p.Models {
 		if m.ID == model {
 			return nil
 		}
 	}
+
 	return fmt.Errorf("model %q is not valid for provider %q", model, providerID)
 }
 
@@ -139,8 +145,10 @@ func (r *Registry) Models(providerID string) []ModelInfo {
 	if !ok {
 		return nil
 	}
+
 	out := make([]ModelInfo, len(p.Models))
 	copy(out, p.Models)
+
 	return out
 }
 
@@ -150,5 +158,6 @@ func (r *Registry) Providers() []string {
 	for id := range r.providers {
 		ids = append(ids, id)
 	}
+
 	return ids
 }

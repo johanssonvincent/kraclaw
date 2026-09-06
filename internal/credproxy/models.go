@@ -38,6 +38,7 @@ func (l *ModelLister) ListModels(ctx context.Context, groupJID string, providerI
 	if l == nil || l.resolver == nil {
 		return nil, fmt.Errorf("model lister not configured")
 	}
+
 	switch providerID {
 	case provider.ProviderOpenAI:
 		return l.listOpenAIModels(ctx, groupJID)
@@ -51,6 +52,7 @@ func (l *ModelLister) listOpenAIModels(ctx context.Context, groupJID string) ([]
 	if err != nil {
 		return nil, err
 	}
+
 	if cred.Provider != provider.ProviderOpenAI {
 		return nil, fmt.Errorf("resolved provider %q, want %q", cred.Provider, provider.ProviderOpenAI)
 	}
@@ -59,18 +61,23 @@ func (l *ModelLister) listOpenAIModels(ctx context.Context, groupJID string) ([]
 	if upstream == "" {
 		upstream = "https://api.openai.com"
 	}
+
 	modelsPath := "/v1/models"
 	if cred.AuthMode == AuthModeChatGPT {
 		modelsPath = "/models?client_version=" + url.QueryEscape(codexClientVersion)
 	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream+modelsPath, nil)
 	if err != nil {
 		return nil, err
 	}
+
 	req.Header.Set("Authorization", "Bearer "+cred.APIKey)
+
 	if cred.AuthMode == AuthModeChatGPT {
 		req.Header.Set("version", codexClientVersion)
 		req.Header.Set("ChatGPT-Account-ID", cred.AccountID)
+
 		if cred.IsFedRAMP {
 			req.Header.Set("X-OpenAI-Fedramp", "true")
 		}
@@ -80,11 +87,14 @@ func (l *ModelLister) listOpenAIModels(ctx context.Context, groupJID string) ([]
 	if client == nil {
 		client = http.DefaultClient
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
+
 	defer func() { _ = resp.Body.Close() }()
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("openai list models returned %s", resp.Status)
 	}
@@ -98,9 +108,11 @@ func (l *ModelLister) listOpenAIModels(ctx context.Context, groupJID string) ([]
 	for _, model := range modelsByID {
 		models = append(models, model)
 	}
+
 	sort.Slice(models, func(i, j int) bool {
 		return models[i].ID < models[j].ID
 	})
+
 	return models, nil
 }
 
@@ -108,9 +120,11 @@ func hasOpenAIModelFamilyPrefix(id string, family string) bool {
 	if !strings.HasPrefix(id, family) {
 		return false
 	}
+
 	if len(id) == len(family) {
 		return true
 	}
+
 	switch id[len(family)] {
 	case '-', '_':
 		return true
@@ -131,18 +145,22 @@ func decodeOpenAIModels(r io.Reader, authMode AuthMode) (map[string]provider.Mod
 		if err := json.NewDecoder(r).Decode(&body); err != nil {
 			return nil, err
 		}
+
 		modelsByID := make(map[string]provider.ModelInfo, len(body.Models))
 		for _, item := range body.Models {
 			id := strings.TrimSpace(item.Slug)
 			if id == "" || !item.SupportedInAPI || !isUserSelectableOpenAIModel(id) {
 				continue
 			}
+
 			displayName := strings.TrimSpace(item.DisplayName)
 			if displayName == "" {
 				displayName = displayNameFromModelID(id)
 			}
+
 			modelsByID[id] = provider.ModelInfo{ID: id, DisplayName: displayName}
 		}
+
 		return modelsByID, nil
 	}
 
@@ -154,14 +172,17 @@ func decodeOpenAIModels(r io.Reader, authMode AuthMode) (map[string]provider.Mod
 	if err := json.NewDecoder(r).Decode(&body); err != nil {
 		return nil, err
 	}
+
 	modelsByID := make(map[string]provider.ModelInfo, len(body.Data))
 	for _, item := range body.Data {
 		id := strings.TrimSpace(item.ID)
 		if !isUserSelectableOpenAIModel(id) {
 			continue
 		}
+
 		modelsByID[id] = provider.ModelInfo{ID: id, DisplayName: displayNameFromModelID(id)}
 	}
+
 	return modelsByID, nil
 }
 
@@ -169,6 +190,7 @@ func isUserSelectableOpenAIModel(id string) bool {
 	if id == "" {
 		return false
 	}
+
 	return strings.HasPrefix(id, "gpt-") ||
 		hasOpenAIModelFamilyPrefix(id, "o1") ||
 		hasOpenAIModelFamilyPrefix(id, "o3") ||
@@ -181,12 +203,16 @@ func displayNameFromModelID(id string) string {
 		if part == "" {
 			continue
 		}
+
 		lower := strings.ToLower(part)
 		if strings.HasPrefix(lower, "gpt") || strings.HasPrefix(lower, "o") {
 			parts[i] = strings.ToUpper(part)
+
 			continue
 		}
+
 		parts[i] = strings.ToUpper(part[:1]) + part[1:]
 	}
+
 	return strings.Join(parts, " ")
 }

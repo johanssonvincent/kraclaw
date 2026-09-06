@@ -141,6 +141,7 @@ func loadInitialTheme() {
 	if name == "" {
 		name = os.Getenv("KRACLAW_TUI_THEME")
 	}
+
 	applyThemeName(name)
 }
 
@@ -211,8 +212,10 @@ func configPath() (string, error) {
 		if err != nil {
 			return "", err
 		}
+
 		base = filepath.Join(home, ".config")
 	}
+
 	return filepath.Join(base, "kraclaw", "tui.json"), nil
 }
 
@@ -226,14 +229,17 @@ func loadSavedThemeName() string {
 	if err != nil {
 		return ""
 	}
+
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
+
 	var cfg tuiConfig
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return ""
 	}
+
 	return cfg.Theme
 }
 
@@ -243,12 +249,15 @@ func persistTheme(name string) error {
 	if err != nil {
 		return err
 	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+
 	b, err := json.Marshal(tuiConfig{Theme: name})
 	if err != nil {
 		return err
 	}
+
 	return os.WriteFile(path, b, 0o644)
 }

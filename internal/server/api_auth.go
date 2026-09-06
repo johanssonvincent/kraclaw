@@ -38,9 +38,11 @@ func newAuthService(c *chatgpt.Client, s *credproxy.CredentialStore, r *provider
 	if log == nil {
 		log = slog.Default()
 	}
+
 	if r == nil {
 		r = provider.NewRegistry()
 	}
+
 	return &authService{chatgpt: c, creds: s, providers: r, log: log}
 }
 
@@ -50,10 +52,12 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 	if req.GetGroupJid() == "" {
 		return s.sendError(stream, kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT, "group_jid is required")
 	}
+
 	prov, ok := s.providers.Get(req.GetProvider())
 	if !ok {
 		return s.sendError(stream, kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT, fmt.Sprintf("unknown provider %q", req.GetProvider()))
 	}
+
 	if prov.AuthMode != provider.AuthModeChatGPT {
 		return s.sendError(stream, kraclawv1.DeviceAuthEvent_INVALID_ARGUMENT, fmt.Sprintf("provider %q does not use chatgpt auth", prov.ID))
 	}
@@ -119,6 +123,7 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 			slog.Time("expires_at", tokens.ExpiresAt),
 			slog.String("err", err.Error()),
 		)
+
 		return s.sendError(stream, kraclawv1.DeviceAuthEvent_INTERNAL, "failed to persist credentials")
 	}
 
@@ -132,6 +137,7 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 	}); err != nil {
 		return fmt.Errorf("send success event: %w", err)
 	}
+
 	return nil
 }
 
@@ -140,6 +146,7 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 // in-band so the client can render it without translating status codes).
 func (s *authService) sendError(stream kraclawv1.AuthService_StartChatGPTDeviceAuthServer, code kraclawv1.DeviceAuthEvent_ErrorCode, msg string) error {
 	s.log.Warn("StartChatGPTDeviceAuth error", "code", code.String(), "msg", msg)
+
 	if err := stream.Send(&kraclawv1.DeviceAuthEvent{
 		Event: &kraclawv1.DeviceAuthEvent_Error_{
 			Error: &kraclawv1.DeviceAuthEvent_Error{Code: code, Message: msg},
@@ -147,6 +154,7 @@ func (s *authService) sendError(stream kraclawv1.AuthService_StartChatGPTDeviceA
 	}); err != nil {
 		return fmt.Errorf("send error event: %w", err)
 	}
+
 	return nil
 }
 

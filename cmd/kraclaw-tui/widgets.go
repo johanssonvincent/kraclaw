@@ -13,16 +13,22 @@ func sectionRule(width int, label string) string {
 	if width <= 0 {
 		return ""
 	}
+
 	if label == "" {
 		return sectionRuleStyle.Render(strings.Repeat("─", width))
 	}
+
 	const leftPad = 2
+
 	labelText := " " + label + " "
+
 	lblLen := len(labelText)
 	if leftPad+lblLen+1 >= width {
 		return sectionRuleStyle.Render(strings.Repeat("─", width))
 	}
+
 	right := width - leftPad - lblLen
+
 	return sectionRuleStyle.Render(strings.Repeat("─", leftPad)) +
 		coralStyle.Render(labelText) +
 		sectionRuleStyle.Render(strings.Repeat("─", right))
@@ -34,14 +40,17 @@ func keyBar(hints [][2]string, width int) string {
 	if len(hints) == 0 {
 		return ""
 	}
+
 	parts := make([]string, 0, len(hints))
 	for _, h := range hints {
 		parts = append(parts, keyHintKeyStyle.Render(h[0])+" "+keyHintLabelStyle.Render(h[1]))
 	}
+
 	joined := " " + strings.Join(parts, "  ")
 	if width > 0 && lipgloss.Width(joined) < width {
 		joined += strings.Repeat(" ", width-lipgloss.Width(joined))
 	}
+
 	return joined
 }
 
@@ -51,19 +60,25 @@ func statusLine(cells []string, width int) string {
 	if len(cells) == 0 || width <= 0 {
 		return ""
 	}
+
 	sep := statusLineSepStyle.Render("│")
+
 	segs := make([]string, 0, len(cells))
 	for _, c := range cells {
 		segs = append(segs, statusLineStyle.Render(" "+c+" "))
 	}
+
 	joined := strings.Join(segs, sep)
+
 	visible := lipgloss.Width(joined)
 	if visible > width {
 		return lipgloss.NewStyle().MaxWidth(width).Render(joined)
 	}
+
 	if visible < width {
 		joined += statusLineStyle.Render(strings.Repeat(" ", width-visible))
 	}
+
 	return joined
 }
 
@@ -75,6 +90,7 @@ func bigMetric(value, unit, caption string) string {
 	if unit != "" {
 		v += bigMetricUnitStyle.Render(unit)
 	}
+
 	return lipgloss.JoinVertical(lipgloss.Left, v, dimStyle.Render(caption))
 }
 
@@ -99,6 +115,7 @@ func boolState(ok bool) string {
 	if ok {
 		return "ok"
 	}
+
 	return "err"
 }
 
@@ -109,6 +126,7 @@ func padRight(s string, n int) string {
 	if w >= n {
 		return s
 	}
+
 	return s + strings.Repeat(" ", n-w)
 }
 
@@ -118,16 +136,20 @@ func truncateWidth(s string, n int) string {
 	if n <= 0 {
 		return ""
 	}
+
 	if lipgloss.Width(s) <= n {
 		return s
 	}
+
 	if n == 1 {
 		return "…"
 	}
+
 	runes := []rune(s)
 	if len(runes) > n-1 {
 		runes = runes[:n-1]
 	}
+
 	return string(runes) + "…"
 }
 
@@ -136,5 +158,6 @@ func formatCount(n int) string {
 	if n < 1000 {
 		return fmt.Sprintf("%d", n)
 	}
+
 	return fmt.Sprintf("%.1fk", float64(n)/1000.0)
 }

@@ -102,7 +102,7 @@ func TestLoggingInterceptor_PropagatesError(t *testing.T) {
 	if resp != nil {
 		t.Errorf("response = %v, want nil", resp)
 	}
-	if err != wantErr {
+	if !errors.Is(err, wantErr) {
 		t.Errorf("error = %v, want %v", err, wantErr)
 	}
 }

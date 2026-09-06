@@ -33,25 +33,25 @@ func (m *mockInboundStreamServer) Send(msg *kraclawv1.InboundMessage) error {
 	return nil
 }
 
-func (m *mockInboundStreamServer) Context() context.Context        { return m.ctx }
-func (m *mockInboundStreamServer) SetHeader(metadata.MD) error     { return nil }
-func (m *mockInboundStreamServer) SendHeader(metadata.MD) error    { return nil }
-func (m *mockInboundStreamServer) SetTrailer(metadata.MD)          {}
-func (m *mockInboundStreamServer) SendMsg(interface{}) error       { return nil }
-func (m *mockInboundStreamServer) RecvMsg(interface{}) error       { return nil }
+func (m *mockInboundStreamServer) Context() context.Context     { return m.ctx }
+func (m *mockInboundStreamServer) SetHeader(metadata.MD) error  { return nil }
+func (m *mockInboundStreamServer) SendHeader(metadata.MD) error { return nil }
+func (m *mockInboundStreamServer) SetTrailer(metadata.MD)       {}
+func (m *mockInboundStreamServer) SendMsg(interface{}) error    { return nil }
+func (m *mockInboundStreamServer) RecvMsg(interface{}) error    { return nil }
 
 type mockChannel struct {
 	name      string
 	connected bool
 }
 
-func (m *mockChannel) Name() string                                              { return m.name }
-func (m *mockChannel) Connect(_ context.Context) error                           { return nil }
-func (m *mockChannel) SendMessage(_ context.Context, _ string, _ string) error   { return nil }
-func (m *mockChannel) IsConnected() bool                                         { return m.connected }
-func (m *mockChannel) OwnsJID(_ string) bool                                     { return false }
-func (m *mockChannel) Disconnect(_ context.Context) error                        { return nil }
-func (m *mockChannel) SetTyping(_ context.Context, _ string, _ bool) error       { return nil }
+func (m *mockChannel) Name() string                                            { return m.name }
+func (m *mockChannel) Connect(_ context.Context) error                         { return nil }
+func (m *mockChannel) SendMessage(_ context.Context, _ string, _ string) error { return nil }
+func (m *mockChannel) IsConnected() bool                                       { return m.connected }
+func (m *mockChannel) OwnsJID(_ string) bool                                   { return false }
+func (m *mockChannel) Disconnect(_ context.Context) error                      { return nil }
+func (m *mockChannel) SetTyping(_ context.Context, _ string, _ bool) error     { return nil }
 
 // --- SendMessage tests ---
 

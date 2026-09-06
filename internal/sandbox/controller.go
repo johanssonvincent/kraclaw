@@ -70,9 +70,11 @@ func (c *SandboxConfig) Validate() error {
 	if c.GroupFolder == "" {
 		return fmt.Errorf("sandbox: GroupFolder is required")
 	}
+
 	if c.GroupJID == "" {
 		return fmt.Errorf("sandbox: GroupJID is required")
 	}
+
 	return nil
 }
 
@@ -108,9 +110,11 @@ func New(
 	if clientset == nil {
 		return nil, fmt.Errorf("sandbox: kubernetes clientset is required")
 	}
+
 	if agentImages == nil {
 		agentImages = map[string]string{}
 	}
+
 	return &Controller{
 		clientset:        clientset,
 		ctrlClient:       ctrlClient,
@@ -130,12 +134,15 @@ func (c *Controller) agentImageForProvider(prov string) (string, error) {
 	if prov == "" {
 		prov = provider.ProviderAnthropic
 	}
+
 	if img, ok := c.agentImages[prov]; ok && img != "" {
 		return img, nil
 	}
+
 	if prov == provider.ProviderAnthropic {
 		return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_ANTHROPIC); legacy AGENT_IMAGE fallback is not supported with NATS", prov)
 	}
+
 	return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_%s)", prov, strings.ToUpper(prov))
 }
 
@@ -146,7 +153,9 @@ func isTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
+
 	msg := err.Error()
+
 	return strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "timeout") ||
 		strings.Contains(msg, "deadline exceeded") ||
@@ -168,17 +177,20 @@ func (c *Controller) CreateSandbox(ctx context.Context, cfg SandboxConfig) (*San
 	}
 
 	var lastErr error
+
 	backoff := sandboxCreateBaseBackoff
 
 	for attempt := 1; attempt <= sandboxCreateMaxRetries; attempt++ {
 		if attempt > 1 {
 			c.log.Warn("retrying sandbox creation",
 				"attempt", attempt, "group", cfg.GroupFolder, "error", lastErr)
+
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
+
 			backoff *= 2
 		}
 
@@ -186,6 +198,7 @@ func (c *Controller) CreateSandbox(ctx context.Context, cfg SandboxConfig) (*San
 		if err != nil {
 			return nil, fmt.Errorf("sandbox: build sandbox: %w", err)
 		}
+
 		if err := c.ctrlClient.Create(ctx, sb); err != nil {
 			lastErr = err
 			if isTransientError(err) {
@@ -196,6 +209,7 @@ func (c *Controller) CreateSandbox(ctx context.Context, cfg SandboxConfig) (*San
 		}
 
 		c.log.Info("sandbox created", "name", name, "group", cfg.GroupFolder)
+
 		return sandboxToStatus(sb), nil
 	}
 
@@ -213,23 +227,28 @@ func (c *Controller) StopSandbox(ctx context.Context, name string) error {
 	if err := c.ctrlClient.Delete(ctx, sandbox); err != nil {
 		return fmt.Errorf("sandbox: delete sandbox %s: %w", name, err)
 	}
+
 	c.log.Info("sandbox stopped", "name", name)
+
 	return nil
 }
 
 // GetSandbox returns the status of a single Sandbox resource.
 func (c *Controller) GetSandbox(ctx context.Context, name string) (*SandboxStatus, error) {
 	sandbox := &agentsandboxv1alpha1.Sandbox{}
+
 	err := c.ctrlClient.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: name}, sandbox)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: get sandbox %s: %w", name, err)
 	}
+
 	return sandboxToStatus(sandbox), nil
 }
 
 // ListSandboxes returns the status of all kraclaw-managed Sandbox resources.
 func (c *Controller) ListSandboxes(ctx context.Context) ([]SandboxStatus, error) {
 	var sandboxes agentsandboxv1alpha1.SandboxList
+
 	err := c.ctrlClient.List(ctx, &sandboxes, client.InNamespace(c.namespace), client.MatchingLabels{
 		labelManagedBy: managedByValue,
 	})
@@ -241,12 +260,14 @@ func (c *Controller) ListSandboxes(ctx context.Context) ([]SandboxStatus, error)
 	for i := range sandboxes.Items {
 		statuses = append(statuses, *sandboxToStatus(&sandboxes.Items[i]))
 	}
+
 	return statuses, nil
 }
 
 // HasActiveSandbox checks whether a running or pending Sandbox exists for the given group.
 func (c *Controller) HasActiveSandbox(ctx context.Context, groupFolder string) (bool, error) {
 	var sandboxes agentsandboxv1alpha1.SandboxList
+
 	err := c.ctrlClient.List(ctx, &sandboxes, client.InNamespace(c.namespace), client.MatchingLabels{
 		labelManagedBy: managedByValue,
 		labelGroup:     groupFolder,
@@ -254,12 +275,14 @@ func (c *Controller) HasActiveSandbox(ctx context.Context, groupFolder string) (
 	if err != nil {
 		return false, fmt.Errorf("sandbox: list sandboxes for group %s: %w", groupFolder, err)
 	}
+
 	for i := range sandboxes.Items {
 		s := sandboxToStatus(&sandboxes.Items[i])
 		if s.State == StatePending || s.State == StateRunning {
 			return true, nil
 		}
 	}
+
 	return false, nil
 }
 
@@ -268,9 +291,11 @@ func (c *Controller) generateSandboxName(folder string) (string, error) {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
 			return r
 		}
+
 		if r >= 'A' && r <= 'Z' {
 			return r + 32 // lowercase
 		}
+
 		return '-'
 	}, folder)
 	if len(safe) > 40 {
@@ -281,6 +306,7 @@ func (c *Controller) generateSandboxName(folder string) (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
+
 	return fmt.Sprintf("kraclaw-agent-%s-%s", safe, hex.EncodeToString(b)), nil
 }
 
@@ -289,6 +315,7 @@ func pvcName(configured, defaultName string) string {
 	if configured != "" {
 		return configured
 	}
+
 	return defaultName
 }
 
@@ -312,6 +339,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 	if cfg.ContainerConfig != nil {
 		providerID = cfg.ContainerConfig.Provider
 	}
+
 	image, err := c.agentImageForProvider(providerID)
 	if err != nil {
 		return nil, err
@@ -336,6 +364,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		if cfg.ContainerConfig != nil {
 			model = cfg.ContainerConfig.Model
 		}
+
 		envVars = append(envVars, corev1.EnvVar{Name: "OPENAI_MODEL", Value: model})
 		envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
 	case provider.ProviderAnthropic, "":
@@ -343,6 +372,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		if cfg.ContainerConfig != nil {
 			model = cfg.ContainerConfig.Model
 		}
+
 		envVars = append(envVars, corev1.EnvVar{Name: "ANTHROPIC_MODEL", Value: model})
 		envVars = append(envVars, corev1.EnvVar{Name: "HOME", Value: "/home/nonroot"})
 	default:
@@ -474,12 +504,15 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 	// Apply additional mounts from group ContainerConfig.
 	if cfg.ContainerConfig != nil {
 		podSpec := &sb.Spec.PodTemplate.Spec
+
 		for i, mount := range cfg.ContainerConfig.AdditionalMounts {
 			volName := fmt.Sprintf("extra-%d", i)
+
 			mountPath := mount.ContainerPath
 			if mountPath == "" {
 				mountPath = mount.HostPath
 			}
+
 			hostPathType := corev1.HostPathDirectory
 			podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
 				Name: volName,

@@ -5,5 +5,6 @@ package main
 // the previous theme — a single-line bar is the whole composer.
 func renderInputBox(inputView string, width int) string {
 	prompt := composerPromptStyle.Render("▌ ")
+
 	return inputBoxStyle.Width(width).Render(prompt + inputView)
 }

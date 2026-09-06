@@ -133,6 +133,7 @@ func newAPIClient(serverAddr, caCertFile, clientCertFile, clientKeyFile, serverN
 		if err != nil {
 			return nil, err
 		}
+
 		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
 	}
 
@@ -184,6 +185,7 @@ func loadClientTLSConfig(serverAddr, caCertFile, clientCertFile, clientKeyFile, 
 		if err != nil {
 			host = serverAddr
 		}
+
 		serverName = host
 	}
 
@@ -277,6 +279,7 @@ func (m model) calculateLayout() layoutDims {
 	if m.activeTab == tabMessages && m.chatState == chatStateChatting {
 		reservedVertical = 11
 	}
+
 	d.viewportHeight = m.height - reservedVertical
 	if d.viewportHeight < 3 {
 		d.viewportHeight = 3
@@ -307,6 +310,7 @@ func (m model) applyLayout() model {
 		if contentWidth < 10 {
 			contentWidth = 10
 		}
+
 		m.ensureMarkdownRenderer(contentWidth)
 		m.chatViewport.SetContent(m.formatChatMessages())
 	}
@@ -318,6 +322,7 @@ func (m *model) ensureMarkdownRenderer(width int) {
 	if m.mdRenderer != nil && m.mdRendererWidth == width {
 		return
 	}
+
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStylePath("dark"),
 		glamour.WithWordWrap(width),
@@ -325,6 +330,7 @@ func (m *model) ensureMarkdownRenderer(width int) {
 	if err != nil {
 		return
 	}
+
 	m.mdRenderer = r
 	m.mdRendererWidth = width
 }
@@ -333,13 +339,16 @@ func (m model) refreshChatViewportContent() model {
 	if m.chatState != chatStateChatting {
 		return m
 	}
+
 	contentWidth := m.chatViewport.Width() - 6
 	if contentWidth < 10 {
 		contentWidth = 10
 	}
+
 	m.mdRenderer = nil
 	m.ensureMarkdownRenderer(contentWidth)
 	m.chatViewport.SetContent(m.formatChatMessages())
+
 	return m
 }
 
@@ -541,6 +550,7 @@ func (m model) openEventStream() tea.Cmd {
 		if err != nil {
 			return eventStreamOpenedMsg{err: err}
 		}
+
 		return eventStreamOpenedMsg{stream: stream}
 	}
 }
@@ -551,6 +561,7 @@ func readEventCmd(stream kraclawv1.AdminService_StreamEventsClient) tea.Cmd {
 		if err != nil {
 			return eventReceivedMsg{err: err}
 		}
+
 		return eventReceivedMsg{
 			event: &EventInfo{
 				Timestamp: formatProtoTime(evt.Timestamp),
@@ -571,9 +582,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if activePalette.Name == "light" {
 				next = "dark"
 			}
+
 			setTheme(next)
 			_ = persistTheme(next) // best-effort; surface via slog only
 			m = m.refreshChatViewportContent()
+
 			return m, nil
 		}
 
@@ -586,40 +599,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "tab":
 			m.activeTab = (m.activeTab + 1) % len(m.tabs)
+
 			return m, nil
 		case "shift+tab":
 			m.activeTab = (m.activeTab - 1 + len(m.tabs)) % len(m.tabs)
+
 			return m, nil
 		case "1":
 			m.activeTab = tabDashboard
+
 			return m, nil
 		case "2":
 			m.activeTab = tabSandboxes
+
 			return m, nil
 		case "3":
 			m.activeTab = tabGroups
+
 			return m, nil
 		case "4":
 			m.activeTab = tabTasks
+
 			return m, nil
 		case "5":
 			m.activeTab = tabEvents
+
 			return m, nil
 		case "6":
 			m.activeTab = tabMessages
+
 			return m, nil
 		case "7":
 			m.activeTab = tabChannels
+
 			return m, nil
 		case "8":
 			m.activeTab = tabConfig
+
 			return m, nil
 		case "r":
 			m.loading = true
+
 			cmds := []tea.Cmd{m.fetchAll()}
 			if m.eventStream == nil {
 				cmds = append(cmds, m.openEventStream())
 			}
+
 			return m, tea.Batch(cmds...)
 		case "j", "down":
 			return m.moveCursor(+1), nil
@@ -629,21 +654,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeTab == tabSandboxes && len(m.sandboxes) > 0 {
 				m.sandboxDetailOpen = true
 			}
+
 			return m, nil
 		case "esc":
 			m.sandboxDetailOpen = false
+
 			return m, nil
 		case "g":
 			if m.activeTab == tabTasks {
 				m.cycleTaskFilter()
 			}
+
 			return m, nil
 		}
 
 	case tea.MouseWheelMsg, tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
 		if m.activeTab == tabMessages && m.chatState == chatStateChatting {
 			var cmd tea.Cmd
+
 			m.chatViewport, cmd = m.chatViewport.Update(msg)
+
 			return m, cmd
 		}
 
@@ -651,56 +681,69 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m = m.applyLayout()
+
 		return m, nil
 
 	case tickMsg:
 		m.now = time.Time(msg)
+
 		cmds := []tea.Cmd{m.fetchAll(), tickCmd()}
 		if m.eventStream == nil {
 			cmds = append(cmds, m.openEventStream())
 		}
+
 		return m, tea.Batch(cmds...)
 
 	case statusMsg:
 		m.loading = false
 		m.status = msg.status
 		m.statusErr = msg.err
+
 		return m, nil
 
 	case sandboxesMsg:
 		m.sandboxes = msg.sandboxes
+
 		m.sandboxesErr = msg.err
 		if m.sandboxCursor >= len(m.sandboxes) {
 			m.sandboxCursor = 0
 			m.sandboxDetailOpen = false
 		}
+
 		return m, nil
 
 	case groupsMsg:
 		m.groups = msg.groups
+
 		m.groupsErr = msg.err
 		if m.groupsCursor >= len(m.groups) {
 			m.groupsCursor = 0
 		}
+
 		return m, nil
 
 	case tasksMsg:
 		m.tasks = msg.tasks
 		m.tasksErr = msg.err
+
 		filtered := m.filteredTasks()
 		if m.tasksCursor >= len(filtered) {
 			m.tasksCursor = 0
 		}
+
 		return m, nil
 
 	case eventStreamOpenedMsg:
 		if msg.err != nil {
 			m.eventsErr = msg.err
 			m.eventStream = nil
+
 			return m, nil
 		}
+
 		m.eventsErr = nil
 		m.eventStream = msg.stream
+
 		return m, readEventCmd(msg.stream)
 
 	case eventReceivedMsg:
@@ -708,21 +751,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !errors.Is(msg.err, io.EOF) && status.Code(msg.err) != codes.Canceled {
 				m.eventsErr = msg.err
 			}
+
 			m.eventStream = nil
+
 			return m, nil
 		}
 
 		m.eventsErr = nil
+
 		m.events = append([]EventInfo{*msg.event}, m.events...)
 		if len(m.events) > 200 {
 			m.events = m.events[:200]
 		}
+
 		return m, readEventCmd(m.eventStream)
 
 	case providersLoadedMsg:
 		if (m.chatState != chatStateSelectProvider && m.chatState != chatStateSelectModel) || msg.flowID != m.creationFlowID {
 			return m, nil
 		}
+
 		if msg.err != nil {
 			slog.Error("failed to load providers",
 				"grpc_code", status.Code(msg.err).String(),
@@ -734,11 +782,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.creationProviders = nil
 			m.creationPicker = creationPickerState{}
 			m.creationProvidersLoaded = false
+
 			return m, nil
 		}
+
 		m.creationProviders = msg.providers
 		if m.chatState == chatStateSelectModel && m.creationSelectedProvider != "" {
 			items := buildModelItems(msg.providers, m.creationSelectedProvider)
+
 			m.creationPicker = creationPickerState{items: items}
 			if len(items) == 0 {
 				m.chatErr = fmt.Errorf("provider %q has no models configured — press Esc to cancel", m.creationSelectedProvider)
@@ -749,7 +800,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			items, _ := buildProviderItems(msg.providers, "")
 			m.creationPicker = creationPickerState{items: items}
 		}
+
 		m.creationProvidersLoaded = true
+
 		return m, nil
 
 	case groupRegisteredMsg:
@@ -761,8 +814,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.creationProviders = nil
 			m.creationPicker = creationPickerState{}
 			m.creationProvidersLoaded = false
+
 			return m, m.fetchGroups()
 		}
+
 		g := GroupInfo{
 			JID:    msg.group.Jid,
 			Name:   msg.group.Name,
@@ -774,6 +829,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatErr = nil
 		m.chatMessages = nil
 		m.chatModel = ""
+
 		return m, tea.Batch(m.fetchGroups(), m.openInboundStreamCmd(g.JID))
 
 	case streamOpenedMsg:
@@ -781,14 +837,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatErr = msg.err
 			m.chatWaitingForAgent = false
 			m.chatState = chatStateSelectGroup
+
 			return m, nil
 		}
+
 		m.inboundStream = msg.stream
 		m.chatCancel = msg.cancel
 		m.chatState = chatStateChatting
 		m.chatErr = nil
 		m.chatInput.Focus()
 		m = m.applyLayout()
+
 		return m, readInboundCmd(msg.stream)
 
 	case channelOutputMsg:
@@ -797,23 +856,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !errors.Is(msg.err, io.EOF) && status.Code(msg.err) != codes.Canceled {
 				m.chatErr = msg.err
 			}
+
 			m.inboundStream = nil
 			m.chatMessages = append(m.chatMessages, chatMessage{
 				sender:  "system",
 				content: "[stream disconnected. press esc to return.]",
 			})
+
 			contentWidth := m.chatViewport.Width() - 6
 			if contentWidth < 10 {
 				contentWidth = 10
 			}
+
 			m.ensureMarkdownRenderer(contentWidth)
 			m.chatViewport.SetContent(m.formatChatMessages())
 			m.chatViewport.GotoBottom()
+
 			return m, nil
 		}
+
 		if msg.msg != nil && msg.msg.Model != "" {
 			m.chatModel = msg.msg.Model
 		}
+
 		if msg.msg != nil && m.modelPicker.Open {
 			content := msg.msg.Content
 			if strings.HasPrefix(content, "Failed to fetch models:") {
@@ -822,12 +887,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if strings.HasPrefix(content, "Models") {
 				parsed := parseModelList(content)
 				m.modelPicker.Loading = false
+
 				m.modelPicker.LastError = ""
 				if len(parsed) > 0 {
 					m.modelPicker.Options = parsed
 					if m.modelPicker.Cursor < 0 {
 						m.modelPicker.Cursor = 0
 					}
+
 					if m.modelPicker.Cursor >= len(m.modelPicker.Options) {
 						m.modelPicker.Cursor = len(m.modelPicker.Options) - 1
 					}
@@ -837,6 +904,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+
 		if msg.msg != nil && msg.msg.Content != "" {
 			m.chatWaitingForAgent = false
 			wasAtBottom := m.chatViewport.AtBottom()
@@ -844,25 +912,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				sender:  "agent",
 				content: msg.msg.Content,
 			})
+
 			contentWidth := m.chatViewport.Width() - 6
 			if contentWidth < 10 {
 				contentWidth = 10
 			}
+
 			m.ensureMarkdownRenderer(contentWidth)
 			m.chatViewport.SetContent(m.formatChatMessages())
+
 			if wasAtBottom {
 				m.chatViewport.GotoBottom()
 			}
 		}
+
 		if m.inboundStream != nil {
 			return m, readInboundCmd(m.inboundStream)
 		}
+
 		return m, nil
 
 	case inputSentMsg:
 		if msg.err != nil {
 			m.chatErr = msg.err
 		}
+
 		return m, nil
 
 	case authStartedMsg:
@@ -873,7 +947,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
+
 		m.spinner, cmd = m.spinner.Update(msg)
+
 		return m, cmd
 	}
 
@@ -890,6 +966,7 @@ func (m model) moveCursor(delta int) model {
 	case tabTasks:
 		m.tasksCursor = clampCursor(m.tasksCursor+delta, len(m.filteredTasks()))
 	}
+
 	return m
 }
 
@@ -897,12 +974,15 @@ func clampCursor(n, size int) int {
 	if size == 0 {
 		return 0
 	}
+
 	if n < 0 {
 		return 0
 	}
+
 	if n >= size {
 		return size - 1
 	}
+
 	return n
 }
 
@@ -910,32 +990,43 @@ func clampCursor(n, size int) int {
 // present in the task list (including an empty "all" state).
 func (m *model) cycleTaskFilter() {
 	seen := map[string]struct{}{}
+
 	var folders []string
+
 	for _, t := range m.tasks {
 		if _, ok := seen[t.GroupFolder]; ok {
 			continue
 		}
+
 		seen[t.GroupFolder] = struct{}{}
 		folders = append(folders, t.GroupFolder)
 	}
+
 	sort.Strings(folders)
+
 	if len(folders) == 0 {
 		m.tasksFilterFolder = ""
+
 		return
 	}
+
 	idx := -1
+
 	for i, f := range folders {
 		if f == m.tasksFilterFolder {
 			idx = i
+
 			break
 		}
 	}
+
 	idx++
 	if idx >= len(folders) {
 		m.tasksFilterFolder = ""
 	} else {
 		m.tasksFilterFolder = folders[idx]
 	}
+
 	m.tasksCursor = 0
 }
 
@@ -943,12 +1034,14 @@ func (m model) filteredTasks() []TaskInfo {
 	if m.tasksFilterFolder == "" {
 		return m.tasks
 	}
+
 	out := make([]TaskInfo, 0, len(m.tasks))
 	for _, t := range m.tasks {
 		if t.GroupFolder == m.tasksFilterFolder {
 			out = append(out, t)
 		}
 	}
+
 	return out
 }
 
@@ -966,11 +1059,14 @@ func (m model) View() tea.View {
 		if contentHeight < 3 {
 			contentHeight = 3
 		}
+
 		rendered := m.renderContent()
+
 		lines := strings.Split(rendered, "\n")
 		if len(lines) > contentHeight && contentHeight > 0 {
 			lines = lines[:contentHeight]
 		}
+
 		b.WriteString(strings.Join(lines, "\n"))
 
 		currentLines := strings.Count(b.String(), "\n") + 1
@@ -987,6 +1083,7 @@ func (m model) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
+
 	return v
 }
 
@@ -997,15 +1094,18 @@ func (m model) renderTabBar() string {
 	}
 
 	compact := []string{"dash", "sbx", "grp", "tsk", "evt", "msg", "chn", "cfg"}
+
 	out = m.renderTabBarWithLabels(compact)
 	if lipgloss.Width(out) > m.width {
 		out = lipgloss.NewStyle().MaxWidth(m.width).Render(out)
 	}
+
 	return out
 }
 
 func (m model) renderTabBarWithLabels(labels []string) string {
 	var tabs []string
+
 	for i, t := range labels {
 		num := fmt.Sprintf("[%d]", i+1)
 		if i == m.activeTab {
@@ -1018,6 +1118,7 @@ func (m model) renderTabBarWithLabels(labels []string) string {
 			tabs = append(tabs, numSpan+labelSpan)
 		}
 	}
+
 	return lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
 }
 
@@ -1029,6 +1130,7 @@ func (m model) renderContent() string {
 		if m.sandboxDetailOpen {
 			return m.renderSandboxDetail()
 		}
+
 		return m.renderSandboxes()
 	case tabGroups:
 		return m.renderGroups()
@@ -1051,12 +1153,14 @@ func (m model) contentWidth() int {
 	if m.width > 4 {
 		return m.width - 2
 	}
+
 	return m.width
 }
 
 // renderDashboard — design variant C. Big metric row + systems row + recent list.
 func (m model) renderDashboard() string {
 	w := m.contentWidth()
+
 	var b strings.Builder
 
 	b.WriteString(" " + coralStyle.Render("overview") + dimStyle.Render(" · "+m.serverAddr) + "\n\n")
@@ -1064,6 +1168,7 @@ func (m model) renderDashboard() string {
 	if m.statusErr != nil {
 		b.WriteString("  " + errStyle.Render("connection error: "+m.statusErr.Error()) + "\n")
 		b.WriteString("  " + dimStyle.Render("server may be offline. press 'r' to retry.") + "\n")
+
 		return b.String()
 	}
 
@@ -1073,6 +1178,7 @@ func (m model) renderDashboard() string {
 		} else {
 			b.WriteString("  " + dimStyle.Render("no status data available.") + "\n")
 		}
+
 		return b.String()
 	}
 
@@ -1090,6 +1196,7 @@ func (m model) renderDashboard() string {
 	b.WriteString("\n\n")
 
 	b.WriteString(sectionRule(w, "systems") + "\n  ")
+
 	systems := []string{
 		dotIndicator(boolState(m.statusErr == nil && m.status != nil)) + " grpc",
 		dotIndicator(boolState(m.eventStream != nil && m.eventsErr == nil)) + " events",
@@ -1100,19 +1207,24 @@ func (m model) renderDashboard() string {
 	b.WriteString("\n\n")
 
 	b.WriteString(sectionRule(w, "recent") + "\n")
+
 	limit := 6
 	if len(m.events) < limit {
 		limit = len(m.events)
 	}
+
 	if limit == 0 {
 		b.WriteString("  " + dimStyle.Render("no events yet.") + "\n")
 	}
+
 	for i := 0; i < limit; i++ {
 		e := m.events[i]
+
 		ts := e.Timestamp
 		if len(ts) >= 19 {
 			ts = ts[11:19]
 		}
+
 		fmt.Fprintf(&b, "  %s  %s  %s\n",
 			dimStyle.Render(ts),
 			krakenStyle.Render(padRight(truncateWidth(e.Source, 14), 14)),
@@ -1126,26 +1238,32 @@ func (m model) renderDashboard() string {
 // renderSandboxes — design variant A: dense table + inspector panel.
 func (m model) renderSandboxes() string {
 	w := m.contentWidth()
+
 	var b strings.Builder
 
 	counts := map[string]int{}
 	for _, s := range m.sandboxes {
 		counts[strings.ToLower(s.State)]++
 	}
+
 	summary := fmt.Sprintf("%d running · %d other", counts["running"], len(m.sandboxes)-counts["running"])
 	b.WriteString(" " + coralStyle.Render("sandboxes") + " " + dimStyle.Render("· "+summary) + "\n\n")
 
 	if m.sandboxesErr != nil {
 		b.WriteString("  " + errStyle.Render("error: "+m.sandboxesErr.Error()) + "\n")
+
 		return b.String()
 	}
+
 	if len(m.sandboxes) == 0 {
 		b.WriteString(sectionRule(w, "") + "\n")
 		b.WriteString("  " + dimStyle.Render("no sandboxes running.") + "\n")
+
 		return b.String()
 	}
 
 	b.WriteString(sectionRule(w, "") + "\n")
+
 	headerCols := fmt.Sprintf("  %-10s %-18s %-10s %-10s %-10s",
 		"ID", "GROUP", "STATE", "STARTED", "SESSION")
 	b.WriteString(dimStyle.Render(headerCols) + "\n")
@@ -1164,20 +1282,24 @@ func (m model) renderSandboxes() string {
 		} else {
 			b.WriteString(fgStyle.Render(row))
 		}
+
 		b.WriteString("\n")
 	}
 
 	// Inspector
 	b.WriteString("\n" + sectionRule(w, "inspector") + "\n")
+
 	if m.sandboxCursor < len(m.sandboxes) {
 		s := m.sandboxes[m.sandboxCursor]
 		b.WriteString("  " + dimStyle.Render("id        ") + fgStyle.Render(s.Name) + "\n")
 		b.WriteString("  " + dimStyle.Render("group     ") + fgStyle.Render(s.GroupFolder) + "  " + dimStyle.Render(s.GroupJID) + "\n")
 		b.WriteString("  " + dimStyle.Render("state     ") + stateStyle(s.State).Render(s.State) + "\n")
 		b.WriteString("  " + dimStyle.Render("started   ") + fgStyle.Render(s.StartTime) + "\n")
+
 		if s.EndTime != "" {
 			b.WriteString("  " + dimStyle.Render("ended     ") + fgStyle.Render(s.EndTime) + "\n")
 		}
+
 		b.WriteString("  " + dimStyle.Render("session   ") + fgStyle.Render(s.SessionID) + "\n")
 	}
 
@@ -1188,12 +1310,14 @@ func (m model) renderSandboxes() string {
 // dim "—" placeholders and we name the RPC the server needs.
 func (m model) renderSandboxDetail() string {
 	w := m.contentWidth()
+
 	var b strings.Builder
 
 	name := "(none)"
 	if m.sandboxCursor < len(m.sandboxes) {
 		name = m.sandboxes[m.sandboxCursor].Name
 	}
+
 	b.WriteString(" " + coralStyle.Render("sandbox") + " · " + fgStyle.Render(name) + "\n\n")
 
 	b.WriteString(sectionRule(w, "resources") + "\n")
@@ -1209,22 +1333,27 @@ func (m model) renderSandboxDetail() string {
 	b.WriteString("  " + dimStyle.Render("—") + "\n\n")
 
 	b.WriteString("  " + stubMessageStyle.Render("needs GetSandboxDetail + StreamLogs RPCs on AdminService") + "\n")
+
 	return b.String()
 }
 
 // renderGroups — design variant C: per-group focus view.
 func (m model) renderGroups() string {
 	w := m.contentWidth()
+
 	var b strings.Builder
 
 	b.WriteString(" " + coralStyle.Render("groups") + " " + dimStyle.Render(fmt.Sprintf("· %d registered", len(m.groups))) + "\n\n")
 
 	if m.groupsErr != nil {
 		b.WriteString("  " + errStyle.Render("error: "+m.groupsErr.Error()) + "\n")
+
 		return b.String()
 	}
+
 	if len(m.groups) == 0 {
 		b.WriteString("  " + dimStyle.Render("no groups registered.") + "\n")
+
 		return b.String()
 	}
 
@@ -1235,44 +1364,56 @@ func (m model) renderGroups() string {
 	}
 
 	var left strings.Builder
+
 	for i, g := range m.groups {
 		name := g.Name
 		if name == "" {
 			name = g.Folder
 		}
+
 		line := truncateWidth(name, listW-2)
 		if i == m.groupsCursor {
 			left.WriteString(selStrongStyle.Render(padRight("  "+line, listW)))
 		} else {
 			left.WriteString(fgStyle.Render(padRight("  "+line, listW)))
 		}
+
 		left.WriteString("\n")
 	}
 
 	var right strings.Builder
+
 	sel := m.groups[m.groupsCursor]
+
 	name := sel.Name
 	if name == "" {
 		name = sel.Folder
 	}
+
 	detailW := w - listW - 2
 	right.WriteString(sectionRule(detailW, "identity") + "\n")
 	right.WriteString("  " + dimStyle.Render("name     ") + fgStyle.Render(name) + "\n")
 	right.WriteString("  " + dimStyle.Render("folder   ") + fgStyle.Render(sel.Folder) + "\n")
 	right.WriteString("  " + dimStyle.Render("jid      ") + fgStyle.Render(sel.JID) + "\n")
+
 	if sel.TriggerPattern != "" {
 		right.WriteString("  " + dimStyle.Render("trigger  ") + fgStyle.Render(sel.TriggerPattern) + "\n")
 	}
+
 	right.WriteString("  " + dimStyle.Render("main     ") + fgStyle.Render(yesNo(sel.IsMain)) + "\n\n")
 
 	right.WriteString(sectionRule(detailW, "active sandbox") + "\n")
+
 	var sb *SandboxInfo
+
 	for i := range m.sandboxes {
 		if m.sandboxes[i].GroupJID == sel.JID {
 			sb = &m.sandboxes[i]
+
 			break
 		}
 	}
+
 	if sb == nil {
 		right.WriteString("  " + dimStyle.Render("none") + "\n\n")
 	} else {
@@ -1287,23 +1428,28 @@ func (m model) renderGroups() string {
 // renderTasks — design variant A: table + inspector + group filter chip.
 func (m model) renderTasks() string {
 	w := m.contentWidth()
+
 	var b strings.Builder
 
 	filterChip := "all groups"
 	if m.tasksFilterFolder != "" {
 		filterChip = m.tasksFilterFolder
 	}
+
 	b.WriteString(" " + coralStyle.Render("tasks") + " " +
 		dimStyle.Render(fmt.Sprintf("· %d scheduled", len(m.tasks))) +
 		"  " + dimStyle.Render("filter:") + " " + coralStyle.Render(filterChip) + "\n\n")
 
 	if m.tasksErr != nil {
 		b.WriteString("  " + errStyle.Render("error: "+m.tasksErr.Error()) + "\n")
+
 		return b.String()
 	}
 
 	tasks := m.filteredTasks()
+
 	b.WriteString(sectionRule(w, "") + "\n")
+
 	header := fmt.Sprintf("  %-10s %-14s %-8s %-14s %-8s %-18s",
 		"ID", "GROUP", "TYPE", "SCHEDULE", "STATUS", "NEXT RUN")
 	b.WriteString(dimStyle.Render(header) + "\n")
@@ -1311,6 +1457,7 @@ func (m model) renderTasks() string {
 
 	if len(tasks) == 0 {
 		b.WriteString("  " + dimStyle.Render("no tasks scheduled.") + "\n")
+
 		return b.String()
 	}
 
@@ -1328,10 +1475,12 @@ func (m model) renderTasks() string {
 		} else {
 			b.WriteString(fgStyle.Render(row))
 		}
+
 		b.WriteString("\n")
 	}
 
 	b.WriteString("\n" + sectionRule(w, "inspector") + "\n")
+
 	if m.tasksCursor < len(tasks) {
 		t := tasks[m.tasksCursor]
 		b.WriteString("  " + dimStyle.Render("id       ") + fgStyle.Render(t.ID) + "\n")
@@ -1339,6 +1488,7 @@ func (m model) renderTasks() string {
 		b.WriteString("  " + dimStyle.Render("chat     ") + fgStyle.Render(t.ChatJID) + "\n")
 		b.WriteString("  " + dimStyle.Render("schedule ") + fgStyle.Render(t.ScheduleType+" "+t.ScheduleValue) + "\n")
 		b.WriteString("  " + dimStyle.Render("next run ") + fgStyle.Render(t.NextRun) + "\n")
+
 		if t.Prompt != "" {
 			b.WriteString("  " + dimStyle.Render("prompt   ") + fgStyle.Render(truncateWidth(t.Prompt, w-12)) + "\n")
 		}
@@ -1350,6 +1500,7 @@ func (m model) renderTasks() string {
 // renderEvents — restyled single-pane event stream.
 func (m model) renderEvents() string {
 	w := m.contentWidth()
+
 	var b strings.Builder
 
 	b.WriteString(" " + coralStyle.Render("events") + " " +
@@ -1358,21 +1509,28 @@ func (m model) renderEvents() string {
 	if m.eventsErr != nil {
 		b.WriteString("  " + errStyle.Render("stream error: "+m.eventsErr.Error()) + "\n")
 		b.WriteString("  " + dimStyle.Render("waiting to reconnect...") + "\n")
+
 		return b.String()
 	}
 
 	b.WriteString(sectionRule(w, "") + "\n")
+
 	if len(m.events) == 0 {
 		b.WriteString("  " + dimStyle.Render("no events recorded yet.") + "\n")
+
 		return b.String()
 	}
+
 	for _, e := range m.events {
 		ts := e.Timestamp
 		if len(ts) >= 19 {
 			ts = ts[11:19]
 		}
+
 		typ := strings.ToLower(e.Type)
+
 		var typStyle lipgloss.Style
+
 		switch {
 		case strings.Contains(typ, "error"), strings.Contains(typ, "fail"):
 			typStyle = errStyle
@@ -1383,6 +1541,7 @@ func (m model) renderEvents() string {
 		default:
 			typStyle = fgStyle
 		}
+
 		line := fmt.Sprintf("  %s  %s  %s  %s",
 			dimStyle.Render(ts),
 			krakenStyle.Render(padRight(truncateWidth(e.Source, 14), 14)),
@@ -1398,6 +1557,7 @@ func (m model) renderEvents() string {
 // renderChannels — stub. Shell with coral line naming the RPC we need.
 func (m model) renderChannels() string {
 	w := m.contentWidth()
+
 	var b strings.Builder
 
 	b.WriteString(" " + coralStyle.Render("channels") + " " + dimStyle.Render("· platform adapters") + "\n\n")
@@ -1407,12 +1567,14 @@ func (m model) renderChannels() string {
 	b.WriteString("  " + dimStyle.Render("—") + "\n\n")
 
 	b.WriteString("  " + stubMessageStyle.Render("needs ListChannels RPC + heartbeat metrics on Channel interface") + "\n")
+
 	return b.String()
 }
 
 // renderConfig — stub. Section rules + coral line naming the RPC.
 func (m model) renderConfig() string {
 	w := m.contentWidth()
+
 	var b strings.Builder
 
 	b.WriteString(" " + coralStyle.Render("config") + " " + dimStyle.Render("· resolved environment") + "\n\n")
@@ -1423,12 +1585,14 @@ func (m model) renderConfig() string {
 	}
 
 	b.WriteString("  " + stubMessageStyle.Render("needs GetConfig RPC returning redacted envconfig") + "\n")
+
 	return b.String()
 }
 
 // renderKeyBar is the per-screen key-hint footer above the status bar.
 func (m model) renderKeyBar() string {
 	hints := m.keyHints()
+
 	return keyBar(hints, m.width)
 }
 
@@ -1440,6 +1604,7 @@ func (m model) keyHints() [][2]string {
 		if m.sandboxDetailOpen {
 			return [][2]string{{"[esc]", "back"}, {"[r]", "refresh"}, {"[q]", "quit"}}
 		}
+
 		return [][2]string{{"[⏎]", "detail"}, {"[j/k]", "nav"}, {"[r]", "refresh"}, {"[^t]", "theme"}, {"[q]", "quit"}}
 	case tabGroups:
 		return [][2]string{{"[j/k]", "nav"}, {"[r]", "refresh"}, {"[^t]", "theme"}, {"[q]", "quit"}}
@@ -1452,6 +1617,7 @@ func (m model) keyHints() [][2]string {
 	case tabChannels, tabConfig:
 		return [][2]string{{"[1-8]", "switch"}, {"[^t]", "theme"}, {"[q]", "quit"}}
 	}
+
 	return nil
 }
 
@@ -1472,6 +1638,7 @@ func (m model) renderStatusBar() string {
 	if m.useTLS {
 		tlsCell = okStyle.Render("● TLS")
 	}
+
 	cells := []string{
 		coralBold.Render("kraclaw") + " ctl",
 		"grpc://" + m.serverAddr,
@@ -1480,6 +1647,7 @@ func (m model) renderStatusBar() string {
 		"UTC " + m.now.UTC().Format("15:04:05"),
 		"theme:" + activePalette.Name,
 	}
+
 	return statusLine(cells, m.width)
 }
 
@@ -1488,6 +1656,7 @@ func userAtHost() string {
 	if current, err := user.Current(); err == nil && current.Username != "" {
 		u = current.Username
 	}
+
 	h, err := os.Hostname()
 	if err != nil || h == "" {
 		h = "local"
@@ -1496,6 +1665,7 @@ func userAtHost() string {
 	if i := strings.IndexByte(h, '.'); i > 0 {
 		h = h[:i]
 	}
+
 	return u + "@" + h
 }
 
@@ -1505,6 +1675,7 @@ func shortTime(ts string) string {
 	if len(ts) >= 19 {
 		return ts[11:19]
 	}
+
 	return ts
 }
 
@@ -1526,6 +1697,7 @@ func yesNo(b bool) string {
 	if b {
 		return "yes"
 	}
+
 	return "no"
 }
 
@@ -1533,10 +1705,12 @@ func formatProtoTime(ts *timestamppb.Timestamp) string {
 	if ts == nil {
 		return ""
 	}
+
 	t := ts.AsTime()
 	if t.IsZero() {
 		return ""
 	}
+
 	return t.Local().Format("2006-01-02 15:04:05")
 }
 
@@ -1546,6 +1720,7 @@ func runDebugChecks(serverAddr, caCert, clientCert, clientKey, serverName string
 	}
 
 	dbg("=== Certificate file checks ===")
+
 	for _, f := range []struct{ name, path string }{
 		{"CA cert", caCert},
 		{"Client cert", clientCert},
@@ -1560,6 +1735,7 @@ func runDebugChecks(serverAddr, caCert, clientCert, clientKey, serverName string
 	}
 
 	dbg("=== CA certificate details ===")
+
 	caPEM, err := os.ReadFile(caCert)
 	if err != nil {
 		dbg("  failed to read CA cert: %v", err)
@@ -1580,6 +1756,7 @@ func runDebugChecks(serverAddr, caCert, clientCert, clientKey, serverName string
 	}
 
 	dbg("=== Client certificate details ===")
+
 	clientPEM, err := os.ReadFile(clientCert)
 	if err != nil {
 		dbg("  failed to read client cert: %v", err)
@@ -1602,31 +1779,41 @@ func runDebugChecks(serverAddr, caCert, clientCert, clientKey, serverName string
 	}
 
 	dbg("=== TCP connectivity ===")
+
 	tcpConn, err := net.DialTimeout("tcp", serverAddr, 3*time.Second)
 	if err != nil {
 		dbg("  TCP dial %s failed: %v", serverAddr, err)
 		dbg("Stopping diagnostics — server not reachable.")
+
 		return
 	}
+
 	_ = tcpConn.Close()
+
 	dbg("  TCP dial %s: OK", serverAddr)
 
 	dbg("=== TLS handshake ===")
+
 	tlsConfig, err := loadClientTLSConfig(serverAddr, caCert, clientCert, clientKey, serverName)
 	if err != nil {
 		dbg("  failed to build TLS config: %v", err)
+
 		return
 	}
+
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
+
 	tlsConn, err := tls.DialWithDialer(dialer, "tcp", serverAddr, tlsConfig)
 	if err != nil {
 		dbg("  TLS handshake failed: %v", err)
 	} else {
 		state := tlsConn.ConnectionState()
 		dbg("  TLS handshake OK (version: 0x%04x, cipher: 0x%04x)", state.Version, state.CipherSuite)
+
 		if len(state.PeerCertificates) > 0 {
 			dbg("  Server cert subject: %s", state.PeerCertificates[0].Subject)
 		}
+
 		_ = tlsConn.Close()
 	}
 
@@ -1643,6 +1830,7 @@ func main() {
 	serverName := flag.String("server-name", "kraclaw-grpc.kraclaw.svc.cluster.local", "Expected TLS server name override")
 	debug := flag.Bool("debug", false, "Run pre-flight TLS diagnostics before connecting")
 	insecure := flag.Bool("insecure", false, "Connect without TLS (for in-pod localhost use)")
+
 	flag.Parse()
 
 	if *debug {

@@ -344,7 +344,7 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 				HTTPClient:   issuer.Client(),
 				PollInterval: 5 * time.Millisecond,
 				PollTimeout:  500 * time.Millisecond,
-				Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+				Logger:       slog.New(slog.DiscardHandler),
 			})
 			if err != nil {
 				t.Fatalf("chatgpt.NewClient: %v", err)
@@ -379,7 +379,7 @@ func TestAuthService_StartChatGPTDeviceAuth_Streaming(t *testing.T) {
 					WillReturnResult(sqlmock.NewResult(0, 1))
 			}
 
-			svc := newAuthService(client, store, provider.NewRegistry(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+			svc := newAuthService(client, store, provider.NewRegistry(), slog.New(slog.DiscardHandler))
 			gclient, cleanup := startAuthGRPC(t, svc)
 			defer cleanup()
 
@@ -447,7 +447,7 @@ func TestStartChatGPTDeviceAuth_ValidationErrorsUseInvalidArgument(t *testing.T)
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			svc := newAuthService(nil, nil, provider.NewRegistry(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+			svc := newAuthService(nil, nil, provider.NewRegistry(), slog.New(slog.DiscardHandler))
 			gclient, cleanup := startAuthGRPC(t, svc)
 			defer cleanup()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -524,7 +524,7 @@ func TestStartChatGPTDeviceAuth_UpsertFailureLogsRedactedMetadata(t *testing.T) 
 		HTTPClient:   issuer.Client(),
 		PollInterval: 5 * time.Millisecond,
 		PollTimeout:  500 * time.Millisecond,
-		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:       slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -629,7 +629,7 @@ func TestStartChatGPTDeviceAuth_CredStoreErrorScrubbed(t *testing.T) {
 				HTTPClient:   issuer.Client(),
 				PollInterval: 5 * time.Millisecond,
 				PollTimeout:  500 * time.Millisecond,
-				Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+				Logger:       slog.New(slog.DiscardHandler),
 			})
 			if err != nil {
 				t.Fatalf("chatgpt.NewClient: %v", err)
@@ -656,7 +656,7 @@ func TestStartChatGPTDeviceAuth_CredStoreErrorScrubbed(t *testing.T) {
 
 			mock.ExpectExec("REPLACE INTO credentials").WillReturnError(tt.credErr)
 
-			svc := newAuthService(client, store, provider.NewRegistry(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+			svc := newAuthService(client, store, provider.NewRegistry(), slog.New(slog.DiscardHandler))
 			gclient, cleanup := startAuthGRPC(t, svc)
 			defer cleanup()
 

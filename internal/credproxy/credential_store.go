@@ -70,6 +70,7 @@ func (c *Credential) APIKey() string {
 	if c == nil {
 		return ""
 	}
+
 	return c.apiKey
 }
 
@@ -78,6 +79,7 @@ func (c *Credential) ChatGPT() *ChatGPTTokens {
 	if c == nil {
 		return nil
 	}
+
 	return c.chatGPT
 }
 
@@ -86,14 +88,17 @@ func (c *Credential) Validate() error {
 	if c.GroupJID == "" {
 		return fmt.Errorf("credential: group JID is required")
 	}
+
 	if c.Provider == "" {
 		return fmt.Errorf("credential: provider is required")
 	}
+
 	switch c.AuthMode {
 	case "", AuthModeAPIKey:
 		if c.apiKey == "" {
 			return fmt.Errorf("credential: API key is required for api_key auth mode")
 		}
+
 		if c.chatGPT != nil {
 			return fmt.Errorf("credential: ChatGPT tokens must be nil for api_key auth mode")
 		}
@@ -101,15 +106,18 @@ func (c *Credential) Validate() error {
 		if c.chatGPT == nil {
 			return fmt.Errorf("credential: ChatGPT tokens are required for chatgpt auth mode")
 		}
+
 		if c.apiKey != "" {
 			return fmt.Errorf("credential: APIKey must be empty for chatgpt auth mode")
 		}
+
 		if err := c.chatGPT.validate(); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("credential: unknown auth mode %q", c.AuthMode)
 	}
+
 	return nil
 }
 
@@ -120,14 +128,17 @@ func (c *Credential) validateForRead() error {
 	if c.GroupJID == "" {
 		return fmt.Errorf("credential: group JID is required")
 	}
+
 	if c.Provider == "" {
 		return fmt.Errorf("credential: provider is required")
 	}
+
 	switch c.AuthMode {
 	case "", AuthModeAPIKey:
 		if c.apiKey == "" {
 			return fmt.Errorf("credential: API key is required for api_key auth mode")
 		}
+
 		if c.chatGPT != nil {
 			return fmt.Errorf("credential: ChatGPT tokens must be nil for api_key auth mode")
 		}
@@ -135,15 +146,18 @@ func (c *Credential) validateForRead() error {
 		if c.chatGPT == nil {
 			return fmt.Errorf("credential: ChatGPT tokens are required for chatgpt auth mode")
 		}
+
 		if c.apiKey != "" {
 			return fmt.Errorf("credential: APIKey must be empty for chatgpt auth mode")
 		}
+
 		if err := c.chatGPT.validateStructure(); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("credential: unknown auth mode %q", c.AuthMode)
 	}
+
 	return nil
 }
 
@@ -158,6 +172,7 @@ func NewAPIKeyCredential(groupJID, provider, apiKey string) (*Credential, error)
 	if err := cred.Validate(); err != nil {
 		return nil, err
 	}
+
 	return cred, nil
 }
 
@@ -172,6 +187,7 @@ func NewChatGPTCredential(groupJID, provider string, tokens *ChatGPTTokens) (*Cr
 	if err := cred.Validate(); err != nil {
 		return nil, err
 	}
+
 	return cred, nil
 }
 
@@ -179,15 +195,19 @@ func (t *ChatGPTTokens) validateStructure() error {
 	if t.AccessToken == "" {
 		return fmt.Errorf("chatgpt tokens: access token is required")
 	}
+
 	if t.RefreshToken == "" {
 		return fmt.Errorf("chatgpt tokens: refresh token is required")
 	}
+
 	if t.AccountID == "" {
 		return fmt.Errorf("chatgpt tokens: account id is required")
 	}
+
 	if t.ExpiresAt.IsZero() {
 		return fmt.Errorf("chatgpt tokens: expires_at is required")
 	}
+
 	return nil
 }
 
@@ -195,6 +215,7 @@ func (t *ChatGPTTokens) validateFresh() error {
 	if !t.ExpiresAt.After(time.Now()) {
 		return fmt.Errorf("chatgpt tokens: expires_at %s is not in the future", t.ExpiresAt.UTC().Format(time.RFC3339))
 	}
+
 	return nil
 }
 
@@ -206,6 +227,7 @@ func (t *ChatGPTTokens) validate() error {
 	if err := t.validateStructure(); err != nil {
 		return err
 	}
+
 	return t.validateFresh()
 }
 
@@ -227,13 +249,16 @@ func NewCredentialStore(db *sql.DB, enc *Encryptor) (*CredentialStore, error) {
 	if db == nil {
 		return nil, fmt.Errorf("credential store: database connection is required")
 	}
+
 	if enc == nil {
 		return nil, fmt.Errorf("credential store: encryptor is required")
 	}
+
 	s := &CredentialStore{db: db, enc: enc}
 	if err := s.probeTimezone(); err != nil {
 		return nil, fmt.Errorf("credential store: timezone probe: %w", err)
 	}
+
 	return s, nil
 }
 
@@ -247,9 +272,11 @@ func (s *CredentialStore) probeTimezone() error {
 		// the DSN contract is documented and the probe is best-effort.
 		return nil
 	}
+
 	if loc := got.Location(); loc != time.UTC {
 		return fmt.Errorf("DB driver returned time in %q, want UTC (set loc=UTC&parseTime=true on DSN)", loc.String())
 	}
+
 	return nil
 }
 
@@ -268,15 +295,15 @@ const selectCredentialColumns = `
 // GetCredential retrieves and decrypts a credential for a group.
 func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*Credential, error) {
 	var (
-		provider     string
-		authMode     string
-		apiKeyEnc    sql.NullString
-		accessEnc    sql.NullString
-		refreshEnc   sql.NullString
-		idEnc        sql.NullString
-		accountID    sql.NullString
-		expiresAt    sql.NullTime
-		isFedRAMP    sql.NullBool
+		provider   string
+		authMode   string
+		apiKeyEnc  sql.NullString
+		accessEnc  sql.NullString
+		refreshEnc sql.NullString
+		idEnc      sql.NullString
+		accountID  sql.NullString
+		expiresAt  sql.NullTime
+		isFedRAMP  sql.NullBool
 	)
 
 	if err := s.db.QueryRowContext(ctx,
@@ -286,6 +313,7 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
+
 		return nil, fmt.Errorf("get credential: %w", err)
 	}
 
@@ -298,19 +326,23 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 	switch cred.AuthMode {
 	case "", AuthModeAPIKey:
 		cred.AuthMode = AuthModeAPIKey
+
 		if !apiKeyEnc.Valid {
 			return nil, fmt.Errorf("get credential: api_key auth mode but api_key_encrypted is NULL")
 		}
+
 		apiKey, err := s.enc.Decrypt(apiKeyEnc.String)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt api key: %w", err)
 		}
+
 		cred.apiKey = apiKey
 	case AuthModeChatGPT:
 		tokens, err := s.decryptChatGPTTokens(groupJID, accessEnc, refreshEnc, idEnc, accountID, expiresAt, isFedRAMP)
 		if err != nil {
 			return nil, err
 		}
+
 		cred.chatGPT = tokens
 	default:
 		return nil, fmt.Errorf("get credential: unknown auth mode %q", cred.AuthMode)
@@ -319,6 +351,7 @@ func (s *CredentialStore) GetCredential(ctx context.Context, groupJID string) (*
 	if err := cred.validateForRead(); err != nil {
 		return nil, fmt.Errorf("get credential: %w", err)
 	}
+
 	return cred, nil
 }
 
@@ -332,23 +365,29 @@ func (s *CredentialStore) decryptChatGPTTokens(
 	if !accessEnc.Valid {
 		return nil, fmt.Errorf("get credential for group %q: oauth access token is NULL", groupJID)
 	}
+
 	if !refreshEnc.Valid {
 		return nil, fmt.Errorf("get credential for group %q: oauth refresh token is NULL", groupJID)
 	}
+
 	if !accountID.Valid || accountID.String == "" {
 		return nil, fmt.Errorf("get credential for group %q: oauth account id is NULL", groupJID)
 	}
+
 	if !expiresAt.Valid {
 		return nil, fmt.Errorf("get credential for group %q: oauth expires_at is NULL", groupJID)
 	}
+
 	access, err := s.enc.Decrypt(accessEnc.String)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt access token for group %q: %w", groupJID, err)
 	}
+
 	refresh, err := s.enc.Decrypt(refreshEnc.String)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt refresh token for group %q: %w", groupJID, err)
 	}
+
 	var idToken string
 	if idEnc.Valid && idEnc.String != "" {
 		idToken, err = s.enc.Decrypt(idEnc.String)
@@ -375,6 +414,7 @@ func (s *CredentialStore) UpsertCredential(ctx context.Context, cred *Credential
 	if cred.AuthMode == "" {
 		return fmt.Errorf("upsert credential: auth mode is required")
 	}
+
 	if err := cred.Validate(); err != nil {
 		return err
 	}
@@ -395,6 +435,7 @@ func (s *CredentialStore) UpsertCredential(ctx context.Context, cred *Credential
         `, cred.GroupJID, cred.Provider, string(AuthModeAPIKey), apiKeyEnc); err != nil {
 			return fmt.Errorf("upsert credential: %w", err)
 		}
+
 		return nil
 	case AuthModeChatGPT:
 		return s.upsertChatGPT(ctx, cred.GroupJID, cred.Provider, cred.chatGPT)
@@ -415,6 +456,7 @@ func (s *CredentialStore) UpsertChatGPTCredential(ctx context.Context, groupJID,
 	if err := cred.Validate(); err != nil {
 		return err
 	}
+
 	return s.upsertChatGPT(ctx, groupJID, provider, tokens)
 }
 
@@ -423,16 +465,20 @@ func (s *CredentialStore) upsertChatGPT(ctx context.Context, groupJID, provider 
 	if err != nil {
 		return fmt.Errorf("encrypt access token: %w", err)
 	}
+
 	refreshEnc, err := s.enc.Encrypt(tokens.RefreshToken)
 	if err != nil {
 		return fmt.Errorf("encrypt refresh token: %w", err)
 	}
+
 	var idEnc sql.NullString
+
 	if tokens.IDToken != "" {
 		v, err := s.enc.Encrypt(tokens.IDToken)
 		if err != nil {
 			return fmt.Errorf("encrypt id token: %w", err)
 		}
+
 		idEnc = sql.NullString{String: v, Valid: true}
 	}
 	// REPLACE is load-bearing: clearing api_key_encrypted (explicit NULL below)
@@ -449,6 +495,7 @@ func (s *CredentialStore) upsertChatGPT(ctx context.Context, groupJID, provider 
 	); err != nil {
 		return fmt.Errorf("upsert chatgpt credential: %w", err)
 	}
+
 	return nil
 }
 
@@ -459,28 +506,36 @@ func (s *CredentialStore) RefreshChatGPTTokens(ctx context.Context, groupJID str
 	if groupJID == "" {
 		return fmt.Errorf("refresh chatgpt tokens: group JID is required")
 	}
+
 	if tokens == nil {
 		return fmt.Errorf("refresh chatgpt tokens: tokens bundle is required")
 	}
+
 	if err := tokens.validate(); err != nil {
 		return err
 	}
+
 	accessEnc, err := s.enc.Encrypt(tokens.AccessToken)
 	if err != nil {
 		return fmt.Errorf("encrypt access token: %w", err)
 	}
+
 	refreshEnc, err := s.enc.Encrypt(tokens.RefreshToken)
 	if err != nil {
 		return fmt.Errorf("encrypt refresh token: %w", err)
 	}
+
 	var idEnc sql.NullString
+
 	if tokens.IDToken != "" {
 		v, err := s.enc.Encrypt(tokens.IDToken)
 		if err != nil {
 			return fmt.Errorf("encrypt id token: %w", err)
 		}
+
 		idEnc = sql.NullString{String: v, Valid: true}
 	}
+
 	res, err := s.db.ExecContext(ctx, `
         UPDATE credentials SET
             oauth_access_token_encrypted = ?,
@@ -496,13 +551,16 @@ func (s *CredentialStore) RefreshChatGPTTokens(ctx context.Context, groupJID str
 	if err != nil {
 		return fmt.Errorf("refresh chatgpt tokens: %w", err)
 	}
+
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("refresh chatgpt tokens: rows affected: %w", err)
 	}
+
 	if n == 0 {
 		return fmt.Errorf("refresh chatgpt tokens for group %q: %w", groupJID, ErrNoChatGPTCredential)
 	}
+
 	return nil
 }
 
@@ -514,6 +572,6 @@ func (s *CredentialStore) DeleteCredential(ctx context.Context, groupJID string)
 	); err != nil {
 		return fmt.Errorf("delete credential: %w", err)
 	}
+
 	return nil
 }
-

@@ -67,13 +67,16 @@ func NewNATSBroker(nc *nats.Conn, logger *slog.Logger) (*NATSBroker, error) {
 	if nc == nil {
 		return nil, fmt.Errorf("nats broker: connection is required")
 	}
+
 	if logger == nil {
 		logger = slog.Default()
 	}
+
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("nats broker: jetstream: %w", err)
 	}
+
 	return &NATSBroker{
 		nc:       nc,
 		js:       js,
@@ -89,7 +92,9 @@ func (b *NATSBroker) ensureStream(ctx context.Context, group string) (string, er
 	if _, ok := b.streamCreated.Load(sanitized); ok {
 		return sanitized, nil
 	}
+
 	name := ipcStreamName(sanitized)
+
 	_, err := b.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: name,
 		Subjects: []string{
@@ -104,7 +109,9 @@ func (b *NATSBroker) ensureStream(ctx context.Context, group string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("ensure ipc stream %s: %w", name, err)
 	}
+
 	b.streamCreated.Store(sanitized, true)
+
 	return sanitized, nil
 }
 
@@ -117,6 +124,7 @@ func (b *NATSBroker) EnsureStreamForAgent(ctx context.Context, group, agentID st
 	if err != nil {
 		return fmt.Errorf("ensure stream for agent: %w", err)
 	}
+
 	streamName := ipcStreamName(sanitized)
 	if _, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
 		Durable:       "agent-" + SanitizeAgentID(agentID),
@@ -126,6 +134,7 @@ func (b *NATSBroker) EnsureStreamForAgent(ctx context.Context, group, agentID st
 	}); err != nil {
 		return fmt.Errorf("ensure agent consumer: %w", err)
 	}
+
 	return nil
 }
 
@@ -135,14 +144,17 @@ func (b *NATSBroker) PublishOutput(ctx context.Context, group, agentID string, m
 	if err != nil {
 		return fmt.Errorf("publish output: %w", err)
 	}
+
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal ipc message: %w", err)
 	}
+
 	subject := ipcOutputSubject(sanitized, agentID)
 	if _, err := b.js.Publish(ctx, subject, data); err != nil {
 		return fmt.Errorf("publish output: %w", err)
 	}
+
 	return nil
 }
 
@@ -152,14 +164,17 @@ func (b *NATSBroker) SendInput(ctx context.Context, group, agentID string, msg *
 	if err != nil {
 		return fmt.Errorf("send input: %w", err)
 	}
+
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal ipc message: %w", err)
 	}
+
 	subject := ipcInputSubject(sanitized, agentID)
 	if _, err := b.js.Publish(ctx, subject, data); err != nil {
 		return fmt.Errorf("send input: %w", err)
 	}
+
 	return nil
 }
 
@@ -173,6 +188,7 @@ func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan 
 	if err != nil {
 		return nil, nil, fmt.Errorf("subscribe output: %w", err)
 	}
+
 	streamName := ipcStreamName(sanitized)
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
 		Durable:       "kraclaw-server-" + sanitized,
@@ -185,10 +201,12 @@ func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan 
 	if err != nil {
 		return nil, nil, fmt.Errorf("create output consumer: %w", err)
 	}
+
 	ch, errCh, err := b.consume(ctx, cons, group)
 	if err != nil {
 		return nil, nil, fmt.Errorf("consume output: %w", err)
 	}
+
 	return ch, errCh, nil
 }
 
@@ -198,6 +216,7 @@ func (b *NATSBroker) ReadInput(ctx context.Context, group, agentID string) (<-ch
 	if err != nil {
 		return nil, fmt.Errorf("read input: %w", err)
 	}
+
 	streamName := ipcStreamName(sanitized)
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
 		Durable:       "agent-" + SanitizeAgentID(agentID),
@@ -210,26 +229,33 @@ func (b *NATSBroker) ReadInput(ctx context.Context, group, agentID string) (<-ch
 	if err != nil {
 		return nil, fmt.Errorf("create input consumer: %w", err)
 	}
+
 	ch, _, err := b.consume(ctx, cons, group)
 	if err != nil {
 		return nil, fmt.Errorf("consume input: %w", err)
 	}
+
 	return ch, nil
 }
 
 // DeleteStreams removes the JetStream stream for a group (covers all agents).
 func (b *NATSBroker) DeleteStreams(ctx context.Context, group string) error {
 	sanitized := sanitizeGroupID(group)
+
 	streamName := ipcStreamName(sanitized)
 	if err := b.js.DeleteStream(ctx, streamName); err != nil {
 		// Treat "stream not found" as success (idempotent delete).
 		if errors.Is(err, jetstream.ErrStreamNotFound) {
 			b.streamCreated.Delete(sanitized)
+
 			return nil
 		}
+
 		return fmt.Errorf("delete ipc stream %s: %w", streamName, err)
 	}
+
 	b.streamCreated.Delete(sanitized)
+
 	return nil
 }
 
@@ -256,9 +282,11 @@ func (b *NATSBroker) StreamExists(ctx context.Context, group string) (bool, erro
 func (b *NATSBroker) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
 	if b.closed {
 		return nil
 	}
+
 	b.closed = true
 	// Cancel all contexts first — so goroutines see ctx.Err() != nil when iter.Stop() fires.
 	for _, cleanup := range b.cleanups {
@@ -268,8 +296,10 @@ func (b *NATSBroker) Close() error {
 	for _, cleanup := range b.cleanups {
 		cleanup.iter.Stop()
 	}
+
 	b.cleanups = make(map[int]consumerCleanup)
 	close(b.closedCh)
+
 	return nil
 }
 
@@ -285,6 +315,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 	iter, err := cons.Messages()
 	if err != nil {
 		cancel()
+
 		return nil, nil, fmt.Errorf("create message iterator for group %s: %w", group, err)
 	}
 
@@ -293,8 +324,10 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 		b.mu.Unlock()
 		iter.Stop()
 		cancel()
+
 		return nil, nil, fmt.Errorf("consume: broker closed")
 	}
+
 	id := b.nextID
 	b.nextID++
 	b.cleanups[id] = consumerCleanup{cancel: cancel, iter: iter}
@@ -342,34 +375,44 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 				if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return
 				}
+
 				b.logger.Error("ipc message iterator error", "group", group, "error", err, "error_type", fmt.Sprintf("%T", err))
+
 				errCh <- err
+
 				return
 			}
 
 			var msg IPCMessage
 			if err := json.Unmarshal(jmsg.Data(), &msg); err != nil {
 				meta, _ := jmsg.Metadata()
+
 				var seq uint64
 				if meta != nil {
 					seq = meta.Sequence.Stream
 				}
+
 				b.logger.Error("unmarshal ipc message", "group", group, "sequence", seq, "error", err)
+
 				if err := jmsg.Ack(); err != nil {
 					b.logger.Error("ack malformed message", "group", group, "sequence", seq, "error", err)
 				}
+
 				continue
 			}
+
 			msg.ID = jmsg.Headers().Get(nats.MsgIdHdr)
 
 			select {
 			case ch <- &msg:
 				if err := jmsg.Ack(); err != nil {
 					meta, _ := jmsg.Metadata()
+
 					var seq uint64
 					if meta != nil {
 						seq = meta.Sequence.Stream
 					}
+
 					b.logger.Error("ack ipc message", "group", group, "sequence", seq, "error", err, "cause", "ack_failure")
 					// NAK so NATS redelivers promptly rather than waiting for AckWait
 					// expiry. The message was already sent on ch, so the current session
@@ -378,27 +421,34 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 					if nakErr := jmsg.Nak(); nakErr != nil {
 						b.logger.Error("nak after ack failure", "group", group, "sequence", seq, "error", nakErr)
 					}
+
 					return
 				}
 			case <-ctx.Done():
 				meta, _ := jmsg.Metadata()
+
 				var seq uint64
 				if meta != nil {
 					seq = meta.Sequence.Stream
 				}
+
 				if err := jmsg.Nak(); err != nil {
 					b.logger.Error("nak message on context cancel", "group", group, "sequence", seq, "error", err)
 				}
+
 				return
 			case <-b.closedCh:
 				meta, _ := jmsg.Metadata()
+
 				var seq uint64
 				if meta != nil {
 					seq = meta.Sequence.Stream
 				}
+
 				if err := jmsg.Nak(); err != nil {
 					b.logger.Error("nak message on broker close", "group", group, "sequence", seq, "error", err)
 				}
+
 				return
 			}
 		}

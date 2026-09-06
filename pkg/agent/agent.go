@@ -38,15 +38,19 @@ func LoadConfig() (*Config, error) {
 	if cfg.NATSURL == "" {
 		cfg.NATSURL = "nats://localhost:4222"
 	}
+
 	if cfg.AgentID == "" {
 		cfg.AgentID = "main"
 	}
+
 	if cfg.GroupJID == "" {
 		return nil, fmt.Errorf("KRACLAW_GROUP is required")
 	}
+
 	if cfg.Group == "" {
 		return nil, fmt.Errorf("GROUP_FOLDER is required")
 	}
+
 	return cfg, nil
 }
 
@@ -56,6 +60,7 @@ func ConnectNATS(url string) (*nats.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect nats: %w", err)
 	}
+
 	return nc, nil
 }
 
@@ -67,10 +72,12 @@ func ensureGroupDirs() error {
 	if home == "" {
 		return fmt.Errorf("HOME unset")
 	}
+
 	archives := os.Getenv("KRACLAW_AGENT_ARCHIVES_DIR")
 	if archives == "" {
 		archives = "/workspace/archives"
 	}
+
 	dirs := []string{
 		filepath.Join(home, ".claude"),
 		archives,
@@ -80,6 +87,7 @@ func ensureGroupDirs() error {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
+
 	return nil
 }
 
@@ -89,6 +97,7 @@ func ensureGroupDirs() error {
 var waitForPrepullSignal = func() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
 	<-ctx.Done()
 }
 
@@ -103,6 +112,7 @@ func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) err
 	if len(os.Args) > 1 && os.Args[1] == "--prepull" {
 		log.Info("prepull noop")
 		waitForPrepullSignal()
+
 		return nil
 	}
 
@@ -136,19 +146,23 @@ func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) err
 		// orchestrator can clean up the JetStream stream.
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutCancel()
+
 		if sendErr := ipcClient.SendOutput(shutCtx, &OutboundMessage{Type: string(ipc.IPCShutdown)}); sendErr != nil {
 			log.Warn("failed to send IPCShutdown on handler error", "error", sendErr)
 		}
+
 		return fmt.Errorf("agent handler: %w", err)
 	}
 
 	// Send IPCShutdown on graceful exit so the orchestrator cleans up the stream.
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutCancel()
+
 	if sendErr := ipcClient.SendOutput(shutCtx, &OutboundMessage{Type: string(ipc.IPCShutdown)}); sendErr != nil {
 		log.Warn("failed to send IPCShutdown on graceful exit", "error", sendErr)
 	}
 
 	log.Info("agent stopped")
+
 	return nil
 }

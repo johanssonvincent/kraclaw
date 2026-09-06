@@ -911,7 +911,6 @@ func TestGetCredential_ChatGPTNullFieldGuards(t *testing.T) {
 	}
 }
 
-
 type fakeCipher struct {
 	encryptErr error
 	decryptErr error
@@ -1143,7 +1142,6 @@ func TestCredential_Getters(t *testing.T) {
 	}
 }
 
-
 func TestAuthMode_Valid(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
@@ -1164,7 +1162,6 @@ func TestAuthMode_Valid(t *testing.T) {
 		})
 	}
 }
-
 
 func TestGetCredential_DecryptError_IncludesGroupID(t *testing.T) {
 	t.Parallel()
@@ -1197,7 +1194,6 @@ func TestGetCredential_DecryptError_IncludesGroupID(t *testing.T) {
 		t.Errorf("GetCredential err = %v, want message to include group JID %q", err, "group-xyz")
 	}
 }
-
 
 func TestUpsertChatGPTCredential_EncryptErrors(t *testing.T) {
 	t.Parallel()

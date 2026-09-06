@@ -42,9 +42,11 @@ func (c *ChannelConfig) Validate() error {
 	if c.OnMessage == nil {
 		return fmt.Errorf("OnMessage callback is required")
 	}
+
 	if c.Groups == nil {
 		return fmt.Errorf("groups callback is required")
 	}
+
 	return nil
 }
 

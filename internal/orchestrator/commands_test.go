@@ -62,8 +62,10 @@ func TestHandleSlashCommand(t *testing.T) {
 			content: "/model",
 			sender:  "alice",
 			groups: []store.Group{
-				{JID: "group1@g.us", Folder: "group1", Name: "Test",
-					ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"}},
+				{
+					JID: "group1@g.us", Folder: "group1", Name: "Test",
+					ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"},
+				},
 			},
 			wantReturn: true,
 			wantSent: func(msgs []sentMessage) bool {
@@ -168,8 +170,10 @@ func TestHandleModelCommand_SetModel(t *testing.T) {
 			name:      "set already-current model",
 			requested: "claude-sonnet-4-6",
 			groups: []store.Group{
-				{JID: "group1@g.us", Folder: "group1", Name: "Test",
-					ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"}},
+				{
+					JID: "group1@g.us", Folder: "group1", Name: "Test",
+					ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"},
+				},
 			},
 			wantText: "already set",
 		},
@@ -231,8 +235,10 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 	t.Run("models with current marker", func(t *testing.T) {
 		s := newMockStore()
 		s.groups = []store.Group{
-			{JID: "group1@g.us", Folder: "group1", Name: "Test",
-				ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"}},
+			{
+				JID: "group1@g.us", Folder: "group1", Name: "Test",
+				ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"},
+			},
 		}
 		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
@@ -271,8 +277,10 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 	t.Run("unknown provider returns error message", func(t *testing.T) {
 		s := newMockStore()
 		s.groups = []store.Group{
-			{JID: "group1@g.us", Folder: "group1", Name: "Test",
-				ContainerConfig: &store.ContainerConfig{Provider: "opanai"}},
+			{
+				JID: "group1@g.us", Folder: "group1", Name: "Test",
+				ContainerConfig: &store.ContainerConfig{Provider: "opanai"},
+			},
 		}
 		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
@@ -290,8 +298,10 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 	t.Run("models for openai provider", func(t *testing.T) {
 		s := newMockStore()
 		s.groups = []store.Group{
-			{JID: "group1@g.us", Folder: "group1", Name: "Test",
-				ContainerConfig: &store.ContainerConfig{Provider: "openai", Model: "gpt-5-codex"}},
+			{
+				JID: "group1@g.us", Folder: "group1", Name: "Test",
+				ContainerConfig: &store.ContainerConfig{Provider: "openai", Model: "gpt-5-codex"},
+			},
 		}
 		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
@@ -333,10 +343,10 @@ func TestHandleModelCommand_ProviderRegistryValidation(t *testing.T) {
 
 func TestHandleModelCommand_OpenAIDynamicValidation(t *testing.T) {
 	tests := []struct {
-		name             string
-		requested        string
+		name              string
+		requested         string
 		listDynamicModels func(context.Context, string, string) ([]provider.ModelInfo, error)
-		wantText         string
+		wantText          string
 	}{
 		{
 			name:      "accepts model from dynamic list",

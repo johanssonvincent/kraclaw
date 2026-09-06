@@ -21,17 +21,21 @@ func NewEncryptor(keyHex string) (*Encryptor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode encryption key: %w", err)
 	}
+
 	if len(key) != 32 {
 		return nil, fmt.Errorf("encryption key must be 32 bytes (64 hex chars), got %d bytes", len(key))
 	}
+
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("create cipher: %w", err)
 	}
+
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, fmt.Errorf("create GCM: %w", err)
 	}
+
 	return &Encryptor{gcm: gcm}, nil
 }
 
@@ -41,7 +45,9 @@ func (e *Encryptor) Encrypt(plaintext string) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", fmt.Errorf("generate nonce: %w", err)
 	}
+
 	sealed := e.gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+
 	return base64.StdEncoding.EncodeToString(sealed), nil
 }
 
@@ -51,14 +57,18 @@ func (e *Encryptor) Decrypt(ciphertext string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode ciphertext: %w", err)
 	}
+
 	nonceSize := e.gcm.NonceSize()
 	if len(data) < nonceSize {
 		return "", fmt.Errorf("ciphertext too short")
 	}
+
 	nonce, sealed := data[:nonceSize], data[nonceSize:]
+
 	plaintext, err := e.gcm.Open(nil, nonce, sealed, nil)
 	if err != nil {
 		return "", fmt.Errorf("decrypt: %w", err)
 	}
+
 	return string(plaintext), nil
 }

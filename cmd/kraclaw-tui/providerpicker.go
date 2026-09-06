@@ -37,14 +37,17 @@ func (m model) fetchProvidersCmd(flowID int, groupJID ...string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
 		req := &kraclawv1.ListProvidersRequest{}
 		if len(groupJID) > 0 {
 			req.GroupJid = groupJID[0]
 		}
+
 		resp, err := m.api.groups.ListProviders(ctx, req)
 		if err != nil {
 			return providersLoadedMsg{flowID: flowID, err: translateListProvidersErr(err)}
 		}
+
 		return providersLoadedMsg{flowID: flowID, providers: resp.GetProviders()}
 	}
 }
@@ -68,15 +71,18 @@ func translateListProvidersErr(err error) error {
 func buildProviderItems(providers []*kraclawv1.ProviderInfo, selectedID string) ([]creationPickerItem, int) {
 	items := make([]creationPickerItem, 0, len(providers))
 	cursor := 0
+
 	for _, p := range providers {
 		if len(p.GetModels()) == 0 {
 			continue
 		}
+
 		items = append(items, creationPickerItem{id: p.GetId(), label: p.GetDisplayName()})
 		if selectedID != "" && p.GetId() == selectedID {
 			cursor = len(items) - 1
 		}
 	}
+
 	return items, cursor
 }
 
@@ -85,6 +91,7 @@ func buildModelItems(providers []*kraclawv1.ProviderInfo, providerID string) []c
 		if p.GetId() != providerID {
 			continue
 		}
+
 		items := make([]creationPickerItem, 0, len(p.GetModels()))
 		for _, mi := range p.GetModels() {
 			items = append(items, creationPickerItem{
@@ -92,7 +99,9 @@ func buildModelItems(providers []*kraclawv1.ProviderInfo, providerID string) []c
 				label: mi.GetDisplayName(),
 			})
 		}
+
 		return items
 	}
+
 	return nil
 }

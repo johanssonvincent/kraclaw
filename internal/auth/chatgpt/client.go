@@ -86,26 +86,33 @@ func NewClient(cfg Config) (*Client, error) {
 	if c.issuer == "" {
 		c.issuer = DefaultIssuer
 	}
+
 	if !strings.HasPrefix(c.issuer, "http://") && !strings.HasPrefix(c.issuer, "https://") {
 		return nil, fmt.Errorf("chatgpt: issuer must be an http(s) URL, got %q", c.issuer)
 	}
+
 	if c.clientID == "" {
 		c.clientID = ClientID
 	}
+
 	if c.http == nil {
 		c.http = &http.Client{Timeout: 30 * time.Second}
 	}
+
 	if c.now == nil {
 		c.now = time.Now
 	}
+
 	if c.pollTimeout <= 0 {
 		c.pollTimeout = DefaultPollTimeout
 	}
+
 	if cfg.Logger == nil {
 		c.logger = slog.Default()
 	} else {
 		c.logger = cfg.Logger
 	}
+
 	return c, nil
 }
 
@@ -169,6 +176,7 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
+
 	return s[:n] + "…"
 }
 
@@ -191,8 +199,10 @@ func readCappedBody(r io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if len(body) > maxResponseBodySize {
 		return nil, ErrResponseTooLarge
 	}
+
 	return body, nil
 }

@@ -50,12 +50,15 @@ func (g *Group) Validate() error {
 	if g.JID == "" {
 		return fmt.Errorf("group JID is required")
 	}
+
 	if g.Folder == "" {
 		return fmt.Errorf("group folder is required")
 	}
+
 	if g.RequiresTrigger && g.TriggerPattern == "" {
 		return fmt.Errorf("trigger pattern required when requires_trigger is true")
 	}
+
 	return nil
 }
 
@@ -127,6 +130,7 @@ func (t *ScheduledTask) Validate() error {
 	if t.ID == "" {
 		return fmt.Errorf("task ID is required")
 	}
+
 	switch t.ScheduleType {
 	case ScheduleCron:
 		if _, err := CronParser.Parse(t.ScheduleValue); err != nil {
@@ -143,6 +147,7 @@ func (t *ScheduledTask) Validate() error {
 	default:
 		return fmt.Errorf("unknown schedule type %q", t.ScheduleType)
 	}
+
 	return nil
 }
 
@@ -280,6 +285,7 @@ func ContainerConfigJSON(cc *ContainerConfig) ([]byte, error) {
 	if cc == nil {
 		return nil, nil
 	}
+
 	return json.Marshal(cc)
 }
 
@@ -288,9 +294,11 @@ func ParseContainerConfig(data []byte) (*ContainerConfig, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
+
 	var cc ContainerConfig
 	if err := json.Unmarshal(data, &cc); err != nil {
 		return nil, err
 	}
+
 	return &cc, nil
 }

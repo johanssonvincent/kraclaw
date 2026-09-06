@@ -52,14 +52,17 @@ type authEventMsg struct {
 func (m model) startOAuthCmd(provider, groupJID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
+
 		stream, err := m.api.auth.StartChatGPTDeviceAuth(ctx, &kraclawv1.StartChatGPTDeviceAuthRequest{
 			GroupJid: groupJID,
 			Provider: provider,
 		})
 		if err != nil {
 			cancel()
+
 			return authStartedMsg{err: fmt.Errorf("start chatgpt device auth: %w", err)}
 		}
+
 		return authStartedMsg{stream: stream, cancel: cancel}
 	}
 }
@@ -73,12 +76,15 @@ func authEventLoopCmd(stream kraclawv1.AuthService_StartChatGPTDeviceAuthClient)
 		if errors.Is(err, io.EOF) {
 			return authEventMsg{}
 		}
+
 		if err != nil {
 			if st, ok := status.FromError(err); ok {
 				return authEventMsg{err: fmt.Errorf("auth stream %s: %s", st.Code(), st.Message())}
 			}
+
 			return authEventMsg{err: fmt.Errorf("auth stream recv: %w", err)}
 		}
+
 		return authEventMsg{event: ev}
 	}
 }
@@ -88,10 +94,13 @@ func authEventLoopCmd(stream kraclawv1.AuthService_StartChatGPTDeviceAuthClient)
 func (m model) handleAuthStarted(msg authStartedMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.oauth.err = msg.err
+
 		return m, nil
 	}
+
 	m.oauth.stream = msg.stream
 	m.oauth.cancel = msg.cancel
+
 	return m, authEventLoopCmd(msg.stream)
 }
 
@@ -104,15 +113,20 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 		if m.oauth.cancel != nil {
 			m.oauth.cancel()
 		}
+
 		m.oauth.err = msg.err
+
 		return m, nil
 	}
+
 	if msg.event == nil {
 		// Server closed stream without a terminal event.
 		if m.oauth.cancel != nil {
 			m.oauth.cancel()
 		}
+
 		m.oauth.err = fmt.Errorf("auth stream closed unexpectedly")
+
 		return m, nil
 	}
 
@@ -128,16 +142,19 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 			m.oauth.openURLErr = err
 			slog.Warn("OpenURL failed", "err", err)
 		}
+
 		return m, authEventLoopCmd(m.oauth.stream)
 
 	case *kraclawv1.DeviceAuthEvent_Tick_:
 		m.oauth.elapsed = int(e.Tick.GetElapsedSeconds())
+
 		return m, authEventLoopCmd(m.oauth.stream)
 
 	case *kraclawv1.DeviceAuthEvent_Success_:
 		if m.oauth.cancel != nil {
 			m.oauth.cancel()
 		}
+
 		if m.oauth.pendingGroupName != "" {
 			// new-group: OAuth must complete before OpenAI models can be fetched.
 			groupJID := m.oauth.groupJID
@@ -146,18 +163,22 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 			m.creationProvidersLoaded = false
 			m.creationPicker = creationPickerState{}
 			m.creationSelectedModelID = ""
+
 			return m, m.fetchProvidersCmd(m.creationFlowID, groupJID)
 		}
 		// re-auth: group already exists; return to chat without re-registering.
 		m.oauth = oauthState{}
 		m.chatState = chatStateChatting
+
 		return m, nil
 
 	case *kraclawv1.DeviceAuthEvent_Error_:
 		if m.oauth.cancel != nil {
 			m.oauth.cancel()
 		}
+
 		m.oauth.err = fmt.Errorf("oauth %s: %s", e.Error.GetCode(), e.Error.GetMessage())
+
 		return m, nil
 	}
 
@@ -166,7 +187,9 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 	if m.oauth.cancel != nil {
 		m.oauth.cancel()
 	}
+
 	m.oauth.err = fmt.Errorf("unknown auth event variant")
+
 	return m, nil
 }
 
@@ -177,6 +200,7 @@ func (m model) handleEscOAuth() (tea.Model, tea.Cmd) {
 	if m.oauth.cancel != nil {
 		m.oauth.cancel()
 	}
+
 	wasReauth := m.oauth.pendingGroupName == ""
 	m.oauth = oauthState{}
 	// Clear creation state unconditionally so stale context from a cancelled
@@ -187,12 +211,16 @@ func (m model) handleEscOAuth() (tea.Model, tea.Cmd) {
 	m.creationSelectedModelID = ""
 	m.creationPicker = creationPickerState{}
 	m.creationProviders = nil
+
 	m.creationProvidersLoaded = false
 	if wasReauth && m.chatGroup != nil && m.chatGroup.JID != "" {
 		m.chatState = chatStateChatting
+
 		return m, nil
 	}
+
 	m.chatState = chatStateSelectGroup
+
 	return m, nil
 }
 
@@ -208,14 +236,18 @@ func renderOAuth(s oauthState) string {
 			if s.openURLErr != nil {
 				body += "\n\n  (couldn't open browser — copy the URL above)"
 			}
+
 			return errStyle.Render(body)
 		}
+
 		return errStyle.Render(
 			fmt.Sprintf("ChatGPT auth failed: %v\n\nPress Esc to return.", s.err))
 	}
+
 	if s.userCode == "" {
 		return dimStyle.Render("starting OAuth…")
 	}
+
 	body := fmt.Sprintf(
 		"Open this URL in a browser and enter the code:\n\n  %s\n\n  code: %s\n\n  elapsed: %ds — waiting for approval…",
 		s.verificationURL, s.userCode, s.elapsed,
@@ -223,5 +255,6 @@ func renderOAuth(s oauthState) string {
 	if s.openURLErr != nil {
 		body += "\n\n  (couldn't open browser — copy the URL above)"
 	}
+
 	return fgStyle.Render(body)
 }

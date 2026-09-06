@@ -23,9 +23,12 @@ func OpenURL(url string) error {
 }
 
 func openURLFor(goos, url string, run runFn) error {
-	var name string
-	var args []string
-	var hint string
+	var (
+		name string
+		args []string
+		hint string
+	)
+
 	switch goos {
 	case "linux":
 		name, args = "xdg-open", []string{url}
@@ -39,8 +42,10 @@ func openURLFor(goos, url string, run runFn) error {
 	default:
 		return fmt.Errorf("openurl: unsupported OS %q", goos)
 	}
+
 	if err := run(name, args...); err != nil {
 		return fmt.Errorf("openurl on %s: %w (%s)", goos, err, hint)
 	}
+
 	return nil
 }

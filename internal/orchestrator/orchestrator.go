@@ -132,18 +132,23 @@ func New(
 	if cfg == nil {
 		return nil, fmt.Errorf("orchestrator: config is required")
 	}
+
 	if s == nil {
 		return nil, fmt.Errorf("orchestrator: store is required")
 	}
+
 	if q == nil {
 		return nil, fmt.Errorf("orchestrator: queue is required")
 	}
+
 	if broker == nil {
 		return nil, fmt.Errorf("orchestrator: ipc broker is required")
 	}
+
 	if reg == nil {
 		return nil, fmt.Errorf("orchestrator: channel registry is required")
 	}
+
 	if log == nil {
 		return nil, fmt.Errorf("orchestrator: logger is required")
 	}
@@ -153,10 +158,12 @@ func New(
 	if ctrl != nil {
 		sc = ctrl
 	}
+
 	var listDynamicModels func(context.Context, string, string) ([]provider.ModelInfo, error)
 	if modelLister != nil {
 		listDynamicModels = modelLister.ListModels
 	}
+
 	return &Orchestrator{
 		cfg:                    cfg,
 		store:                  s,
@@ -198,18 +205,23 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		OnChatMeta: o.onChatMeta,
 		Groups:     o.groupsList,
 	}
+
 	chs, err := o.registry.ConnectAll(ctx, chCfg)
 	if err != nil {
 		return fmt.Errorf("orchestrator: connect channels: %w", err)
 	}
+
 	if len(chs) == 0 {
 		return fmt.Errorf("orchestrator: no channels connected")
 	}
+
 	o.channels = chs
+
 	rtr, err := router.New(chs, o.store)
 	if err != nil {
 		return fmt.Errorf("orchestrator: create router: %w", err)
 	}
+
 	o.router = rtr
 	o.log.Info("channels connected", "count", len(chs))
 
@@ -218,21 +230,27 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("orchestrator: create scheduler: %w", err)
 	}
+
 	o.sched = sched
+
 	go func() {
 		for {
 			if err := o.sched.Start(ctx); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
+
 				o.log.Error("scheduler exited with error, retrying in 5s", "error", err)
+
 				select {
 				case <-time.After(5 * time.Second):
 				case <-ctx.Done():
 					return
 				}
+
 				continue
 			}
+
 			return
 		}
 	}()
@@ -256,6 +274,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		go func() {
 			ticker := time.NewTicker(10 * time.Minute)
 			defer ticker.Stop()
+
 			for {
 				select {
 				case <-ticker.C:
@@ -290,6 +309,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 
 	// 11. Block on ctx.Done().
 	<-ctx.Done()
+
 	return ctx.Err()
 }
 
@@ -302,6 +322,7 @@ func (o *Orchestrator) Stop(ctx context.Context) error {
 			o.log.Error("failed to disconnect channel", "channel", ch.Name(), "error", err)
 		}
 	}
+
 	return nil
 }
 
@@ -312,6 +333,7 @@ func (o *Orchestrator) loadState(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("get last_timestamp: %w", err)
 	}
+
 	if tsStr != "" {
 		t, err := time.Parse(time.RFC3339Nano, tsStr)
 		if err != nil {
@@ -326,6 +348,7 @@ func (o *Orchestrator) loadState(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("get last_agent_timestamp: %w", err)
 	}
+
 	if agentTsStr != "" {
 		var raw map[string]string
 		if err := json.Unmarshal([]byte(agentTsStr), &raw); err != nil {
@@ -345,6 +368,7 @@ func (o *Orchestrator) loadState(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("get last_confirmed_timestamp: %w", err)
 	}
+
 	if confirmedTsStr != "" {
 		var raw map[string]string
 		if err := json.Unmarshal([]byte(confirmedTsStr), &raw); err != nil {
@@ -370,20 +394,24 @@ func (o *Orchestrator) loadState(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list groups: %w", err)
 	}
+
 	for _, g := range groups {
 		o.registeredGroups[g.JID] = g
 
 		sess, err := o.store.GetSession(ctx, g.Folder)
 		if err != nil {
 			o.log.Warn("failed to load session", "group", g.Folder, "error", err)
+
 			continue
 		}
+
 		if sess != nil {
 			o.sessions[g.Folder] = sess.SessionID
 		}
 	}
 
 	o.log.Info("state loaded", "groups", len(o.registeredGroups))
+
 	return nil
 }
 
@@ -391,10 +419,12 @@ func (o *Orchestrator) loadState(ctx context.Context) error {
 func (o *Orchestrator) saveState(ctx context.Context) error {
 	o.mu.Lock()
 	ts := o.lastTimestamp
+
 	agentTs := make(map[string]string, len(o.lastAgentTimestamp))
 	for k, v := range o.lastAgentTimestamp {
 		agentTs[k] = v.Format(time.RFC3339Nano)
 	}
+
 	confirmedTs := make(map[string]string, len(o.lastConfirmedTimestamp))
 	for k, v := range o.lastConfirmedTimestamp {
 		confirmedTs[k] = v.Format(time.RFC3339Nano)
@@ -406,6 +436,7 @@ func (o *Orchestrator) saveState(ctx context.Context) error {
 		if err := o.store.SetState(ctx, "last_timestamp", newLastTsStr); err != nil {
 			return fmt.Errorf("save last_timestamp: %w", err)
 		}
+
 		o.prevLastTimestampStr = newLastTsStr
 	}
 
@@ -413,11 +444,13 @@ func (o *Orchestrator) saveState(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("marshal last_agent_timestamp: %w", err)
 	}
+
 	newAgentTsJSON := string(agentData)
 	if newAgentTsJSON != o.prevAgentTsJSON {
 		if err := o.store.SetState(ctx, "last_agent_timestamp", newAgentTsJSON); err != nil {
 			return fmt.Errorf("save last_agent_timestamp: %w", err)
 		}
+
 		o.prevAgentTsJSON = newAgentTsJSON
 	}
 
@@ -425,11 +458,13 @@ func (o *Orchestrator) saveState(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("marshal last_confirmed_timestamp: %w", err)
 	}
+
 	newConfirmedTsJSON := string(confirmedData)
 	if newConfirmedTsJSON != o.prevConfirmedTsJSON {
 		if err := o.store.SetState(ctx, "last_confirmed_timestamp", newConfirmedTsJSON); err != nil {
 			return fmt.Errorf("save last_confirmed_timestamp: %w", err)
 		}
+
 		o.prevConfirmedTsJSON = newConfirmedTsJSON
 	}
 
@@ -445,6 +480,7 @@ func (o *Orchestrator) saveState(ctx context.Context) error {
 func (o *Orchestrator) confirmedCursorFlusher(ctx context.Context) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
+
 	for {
 		select {
 		case <-tick.C:
@@ -462,6 +498,7 @@ func (o *Orchestrator) confirmedCursorFlusher(ctx context.Context) {
 					o.log.Error("confirmed cursor shutdown flush failed", "error", err)
 				}
 			}
+
 			return
 		}
 	}
@@ -471,10 +508,12 @@ func (o *Orchestrator) confirmedCursorFlusher(ctx context.Context) {
 func (o *Orchestrator) groupsList() []store.Group {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
 	groups := make([]store.Group, 0, len(o.registeredGroups))
 	for _, g := range o.registeredGroups {
 		groups = append(groups, g)
 	}
+
 	return groups
 }
 
@@ -490,6 +529,7 @@ func (o *Orchestrator) onInboundMessage(chatJID string, msg *channel.InboundMess
 
 	// Per-group rate limit check (PERF-01).
 	o.rateLimitersMu.Lock()
+
 	limiter, ok := o.rateLimiters[chatJID]
 	if !ok {
 		limiter = newTokenBucket(int64(o.cfg.Queue.RateLimitTokensPerSec))
@@ -499,6 +539,7 @@ func (o *Orchestrator) onInboundMessage(chatJID string, msg *channel.InboundMess
 
 	if !limiter.TryAcquire(time.Now()) {
 		o.log.Warn("message dropped: rate limit exceeded", "chat_jid", chatJID)
+
 		return
 	}
 
@@ -508,6 +549,7 @@ func (o *Orchestrator) onInboundMessage(chatJID string, msg *channel.InboundMess
 			"chat_jid", chatJID,
 			"size", len(msg.Content),
 			"max", o.cfg.Queue.MaxMessageSizeBytes)
+
 		return
 	}
 
@@ -522,6 +564,7 @@ func (o *Orchestrator) onInboundMessage(chatJID string, msg *channel.InboundMess
 	}
 	if err := o.store.StoreMessage(ctx, storeMsg); err != nil {
 		o.log.Error("failed to store message", "chat_jid", chatJID, "error", err)
+
 		return
 	}
 
@@ -535,6 +578,7 @@ func (o *Orchestrator) onInboundMessage(chatJID string, msg *channel.InboundMess
 // onChatMeta handles chat metadata updates from channels.
 func (o *Orchestrator) onChatMeta(chatJID string, timestamp time.Time, name, ch string, isGroup bool) {
 	ctx := o.ctx
+
 	chat := &store.Chat{
 		JID:             chatJID,
 		Name:            name,
@@ -550,6 +594,7 @@ func (o *Orchestrator) onChatMeta(chatJID string, timestamp time.Time, name, ch 
 // messageLoop polls MySQL for new messages and dispatches them.
 func (o *Orchestrator) messageLoop(ctx context.Context) {
 	o.log.Info("message loop started")
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
@@ -557,6 +602,7 @@ func (o *Orchestrator) messageLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			o.log.Info("message loop stopped")
+
 			return
 		case <-ticker.C:
 			o.pollMessages(ctx)
@@ -573,6 +619,7 @@ func (o *Orchestrator) refreshGroups(ctx context.Context) {
 	groups, err := o.store.ListGroups(ctx)
 	if err != nil {
 		o.log.Error("failed to refresh groups", "error", err)
+
 		return
 	}
 
@@ -596,6 +643,7 @@ func (o *Orchestrator) refreshGroups(ctx context.Context) {
 			o.log.Info("discovered new group", "jid", jid)
 		}
 	}
+
 	o.registeredGroups = newMap
 }
 
@@ -605,10 +653,12 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 	o.refreshGroups(ctx)
 
 	o.mu.Lock()
+
 	jids := make([]string, 0, len(o.registeredGroups))
 	for jid := range o.registeredGroups {
 		jids = append(jids, jid)
 	}
+
 	since := o.lastTimestamp
 	o.mu.Unlock()
 
@@ -619,8 +669,10 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 	messages, err := o.store.GetNewMessages(ctx, jids, since, o.cfg.Queue.MessageLimit)
 	if err != nil {
 		o.log.Error("failed to poll messages", "error", err)
+
 		return
 	}
+
 	if len(messages) == 0 {
 		return
 	}
@@ -629,9 +681,11 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 
 	// Advance the seen cursor.
 	newTimestamp := messages[len(messages)-1].Timestamp
+
 	o.mu.Lock()
 	o.lastTimestamp = newTimestamp
 	o.mu.Unlock()
+
 	if err := o.saveState(ctx); err != nil {
 		o.log.Error("failed to save state", "error", err)
 	}
@@ -646,6 +700,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 		o.mu.Lock()
 		group, ok := o.registeredGroups[chatJID]
 		o.mu.Unlock()
+
 		if !ok {
 			continue
 		}
@@ -655,8 +710,10 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 			triggered, err := o.hasTriggerMessage(ctx, chatJID, group, groupMsgs)
 			if err != nil {
 				o.log.Error("trigger check failed", "error", err)
+
 				continue
 			}
+
 			if !triggered {
 				continue
 			}
@@ -666,6 +723,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 		active, err := o.queue.IsActive(ctx, chatJID)
 		if err != nil {
 			o.log.Error("failed to check queue active state", "error", err)
+
 			continue
 		}
 
@@ -678,24 +736,30 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 			allPending, err := o.store.GetMessagesSince(ctx, chatJID, agentTs, o.cfg.Queue.MessageLimit)
 			if err != nil {
 				o.log.Error("failed to get pending messages", "error", err)
+
 				continue
 			}
+
 			if len(allPending) == 0 {
 				allPending = groupMsgs
 			}
 
 			formatted := o.router.FormatMessagesForAgent(allPending, o.cfg.Channels.AssistantName)
+
 			payload, err := json.Marshal(map[string]string{"messages": formatted})
 			if err != nil {
 				o.log.Error("failed to marshal message payload", "group", group.Name, "error", err)
+
 				continue
 			}
+
 			if err := o.ipc.SendInput(ctx, group.Folder, ipc.DefaultAgentID, &ipc.IPCMessage{
 				Group:   group.Folder,
 				Type:    ipc.IPCMessageText,
 				Payload: payload,
 			}); err != nil {
 				o.log.Error("failed to pipe messages to container", "group", group.Name, "error", err)
+
 				continue
 			}
 
@@ -705,6 +769,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 			o.mu.Lock()
 			o.lastAgentTimestamp[chatJID] = allPending[len(allPending)-1].Timestamp
 			o.mu.Unlock()
+
 			if err := o.saveState(ctx); err != nil {
 				o.log.Error("failed to save state", "error", err)
 			}
@@ -717,12 +782,15 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 				o.log.Info("sandbox spawn skipped: already in-flight",
 					"group", group.Name,
 					"pending_count", len(groupMsgs))
+
 				continue
 			}
+
 			go func(jid string, g store.Group, rawRelease func()) {
 				// Wrap release in a sync.Once so that the early-release call inside
 				// processGroupMessages and this deferred call are both idempotent.
 				var once sync.Once
+
 				release := func() { once.Do(rawRelease) }
 				defer release()
 				defer func() {
@@ -739,6 +807,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 						delete(o.activeSandboxes, jid)
 						// Roll back cursor so messages sent to the dead agent get re-delivered.
 						confirmed := o.lastConfirmedTimestamp[jid]
+
 						sent := o.lastAgentTimestamp[jid]
 						if confirmed.Before(sent) {
 							o.log.Info("rolling back agent cursor after panic",
@@ -746,11 +815,13 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 							o.lastAgentTimestamp[jid] = confirmed
 						}
 						o.mu.Unlock()
+
 						if wasActive {
 							if markErr := o.queue.MarkInactive(context.Background(), jid); markErr != nil {
 								o.log.Error("failed to mark group inactive after panic",
 									"group", g.Name, "error", markErr)
 							}
+
 							if saveErr := o.saveState(context.Background()); saveErr != nil {
 								o.log.Error("failed to save state after panic recovery",
 									"group", g.Name, "error", saveErr)
@@ -758,6 +829,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 						}
 					}
 				}()
+
 				if _, err := o.processGroupMessages(ctx, jid, release); err != nil {
 					o.log.Error("failed to process group messages", "group", g.Name, "error", err)
 				}
@@ -776,6 +848,7 @@ func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 	if _, loaded := o.inflightSandboxes.LoadOrStore(chatJID, struct{}{}); loaded {
 		return nil, false
 	}
+
 	return func() {
 		if _, ok := o.inflightSandboxes.LoadAndDelete(chatJID); !ok {
 			o.log.Error("BUG: sandbox slot released on non-held slot",
@@ -798,11 +871,14 @@ func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 // releaseSlot() to cover error paths that return before the early release.
 func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string, releaseSlot func()) (bool, error) {
 	o.mu.Lock()
+
 	group, ok := o.registeredGroups[chatJID]
 	if !ok {
 		o.mu.Unlock()
+
 		return false, nil
 	}
+
 	agentTs := o.lastAgentTimestamp[chatJID]
 	sessionID := o.sessions[group.Folder]
 	o.mu.Unlock()
@@ -811,6 +887,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 	if err != nil {
 		return false, fmt.Errorf("get messages since: %w", err)
 	}
+
 	if len(messages) == 0 {
 		return false, nil
 	}
@@ -821,6 +898,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		if err != nil {
 			return false, fmt.Errorf("trigger check: %w", err)
 		}
+
 		if !triggered {
 			return false, nil
 		}
@@ -846,19 +924,24 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 	if err != nil {
 		return false, fmt.Errorf("check active count: %w", err)
 	}
+
 	others := 0
+
 	o.inflightSandboxes.Range(func(k, _ any) bool {
 		if jid, ok := k.(string); ok && jid != chatJID {
 			others++
 		}
+
 		return true
 	})
+
 	if activeCount+int64(others) >= int64(o.cfg.Queue.MaxConcurrent) {
 		o.log.Info("sandbox creation deferred: MAX_CONCURRENT reached",
 			"group", group.Name,
 			"active", activeCount,
 			"inflight_others", others,
 			"max", o.cfg.Queue.MaxConcurrent)
+
 		return false, nil // Message stays queued; retried on next poll.
 	}
 
@@ -867,9 +950,11 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 	// Advance agent cursor before starting sandbox.
 	previousCursor := agentTs
 	newCursor := messages[len(messages)-1].Timestamp
+
 	o.mu.Lock()
 	o.lastAgentTimestamp[chatJID] = newCursor
 	o.mu.Unlock()
+
 	if err := o.saveState(ctx); err != nil {
 		o.log.Error("failed to save state", "error", err)
 	}
@@ -990,9 +1075,11 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 	// FastStartEnabled so the rollout path (false) preserves legacy semantics.
 	if o.cfg.K8s.FastStartEnabled {
 		ensureStart := time.Now()
+
 		if err := o.ensureStreamForAgentWithRetry(ctx, group.Folder, ipc.DefaultAgentID); err != nil {
 			return nil, fmt.Errorf("ensure stream for agent: %w", err)
 		}
+
 		metrics.ObserveSpawnPhase(metrics.PhaseEnsureStream, time.Since(ensureStart))
 	}
 
@@ -1023,6 +1110,7 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 		if cleanupErr := o.sandbox.StopSandbox(ctx, sbName); cleanupErr != nil {
 			o.log.Error("failed to stop sandbox", "group", group.Name, "job", sbName, "error", cleanupErr)
 		}
+
 		o.mu.Lock()
 		delete(o.activeSandboxes, chatJID)
 		o.mu.Unlock()
@@ -1087,6 +1175,7 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 					"group_jid", jid, "panic", r, "stack", string(debug.Stack()))
 			}
 		}()
+
 		o.watchGroupOutput(ctx, jid, ch, errCh)
 	}(chatJID, outputCh, outputErrCh)
 
@@ -1110,6 +1199,7 @@ func (o *Orchestrator) sandboxWatcher(ctx context.Context) {
 		baseBackoff = 100 * time.Millisecond
 		maxBackoff  = 30 * time.Second
 	)
+
 	backoff := baseBackoff
 
 	for {
@@ -1117,6 +1207,7 @@ func (o *Orchestrator) sandboxWatcher(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
+
 			o.log.Error("sandbox watcher failed, retrying with backoff",
 				"error", err, "backoff", backoff)
 
@@ -1150,11 +1241,13 @@ func (o *Orchestrator) runSandboxWatcher(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			o.log.Info("sandbox watcher stopped")
+
 			return nil
 		case event, ok := <-events:
 			if !ok {
 				return fmt.Errorf("sandbox watch channel closed")
 			}
+
 			o.log.Debug("sandbox event", "type", event.Type, "sandbox", event.Status.Name,
 				"state", event.Status.State)
 			o.handleSandboxEvent(ctx, event)
@@ -1189,13 +1282,17 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 	}
 
 	o.mu.Lock()
+
 	var chatJID string
+
 	for jid, g := range o.registeredGroups {
 		if g.Folder == folder {
 			chatJID = jid
+
 			break
 		}
 	}
+
 	currentSandbox := o.activeSandboxes[chatJID]
 	o.mu.Unlock()
 
@@ -1211,6 +1308,7 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 		o.log.Info("sandbox event: ignoring stale event for non-current sandbox",
 			"event_sandbox", event.Status.Name, "current_sandbox", currentSandbox,
 			"folder", folder, "jid", chatJID)
+
 		return
 	}
 
@@ -1229,8 +1327,10 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 			o.log.Error("sandbox event: best-effort MarkInactive also failed after IsActive error",
 				"folder", folder, "jid", chatJID, "error", markErr)
 		}
+
 		return
 	}
+
 	if !active {
 		// Already inactive — watchGroupOutput already handled this or group was never active.
 		return
@@ -1258,14 +1358,17 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 	o.mu.Lock()
 	group, ok := o.registeredGroups[chatJID]
 	o.mu.Unlock()
+
 	if !ok {
 		o.log.Warn("watchGroupOutput: group not found in registeredGroups, skipping", "group_jid", chatJID)
+
 		return
 	}
 
 	o.log.Debug("watching IPC output", "group", group.Name)
 
 	var deactivateOnce sync.Once
+
 	deactivate := func() {
 		deactivateOnce.Do(func() {
 			// Idempotency guard: bail out if the group was already marked inactive
@@ -1281,6 +1384,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			} else if !active {
 				o.log.Debug("deactivate: group already inactive, skipping",
 					"group", group.Name)
+
 				return
 			} else {
 				// Group is active — mark it inactive.
@@ -1295,6 +1399,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						"unless the K8s sandbox completion event fires before the process exits; "+
 						"MySQL active count will be corrected by that event or next reconcile",
 						"group", group.Name, "error", err)
+
 					return
 				}
 			}
@@ -1307,6 +1412,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			// that were piped to the dead agent but never processed get re-sent.
 			o.mu.Lock()
 			confirmed := o.lastConfirmedTimestamp[chatJID]
+
 			sent := o.lastAgentTimestamp[chatJID]
 			if confirmed.Before(sent) {
 				o.log.Info("rolling back agent cursor to last confirmed",
@@ -1316,6 +1422,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				o.lastAgentTimestamp[chatJID] = confirmed
 			}
 			o.mu.Unlock()
+
 			if err := o.saveState(ctx); err != nil {
 				o.log.Error("failed to save state after deactivation — cursor rollback is in-memory only; messages may be re-sent or lost on restart",
 					"group", group.Name, "error", err)
@@ -1327,8 +1434,10 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			o.mu.Unlock()
 			pending, err := o.store.GetMessagesSince(ctx, chatJID, agentTs, 1)
 			pendingCheckFailed := false
+
 			if err != nil {
 				o.log.Error("failed to check pending messages; triggering recovery defensively", "group", group.Name, "error", err)
+
 				pendingCheckFailed = true
 			}
 			// Also drain the NATS queue for scheduled tasks.
@@ -1336,22 +1445,31 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			// that was ACK'd and skipped. Loop a few times so that skipped malformed
 			// messages do not mask valid queued tasks.
 			const maxMalformedRetries = 5
+
 			var qMsg *queue.QueueMessage
+
 			skipped := 0
+
 			for range maxMalformedRetries {
 				msg, deqErr := o.queue.Dequeue(ctx, chatJID)
 				if deqErr != nil {
 					o.log.Error("failed to dequeue message; triggering recovery defensively",
 						"group", group.Name, "error", deqErr)
+
 					pendingCheckFailed = true
+
 					break
 				}
+
 				if msg != nil {
 					qMsg = msg
+
 					break
 				}
+
 				skipped++
 			}
+
 			if skipped == maxMalformedRetries {
 				o.log.Debug("dequeue retries exhausted: queue appears empty",
 					"group", group.Name, "retries", maxMalformedRetries)
@@ -1372,6 +1490,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 								"group", group.Name, "group_jid", chatJID, "is_task", qMsg.IsTask, "error", reqErr)
 						}
 					}
+
 					if pendingCheckFailed {
 						o.log.Error("post-deactivate recovery skipped: slot in-flight; pending-message MySQL check also failed — next poll will retry",
 							"group", group.Name)
@@ -1384,10 +1503,12 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						o.log.Info("post-deactivate: spawning defensive recovery after pending-message check failure",
 							"group", group.Name)
 					}
+
 					go func(rawRelease func(), qMsg *queue.QueueMessage) {
 						// Wrap release in a sync.Once so the early-release inside
 						// processGroupMessages and this deferred call are both idempotent.
 						var once sync.Once
+
 						release := func() { once.Do(rawRelease) }
 						defer release()
 						defer func() {
@@ -1403,6 +1524,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 								delete(o.activeSandboxes, chatJID)
 								// Roll back cursor so messages sent to the dead agent get re-delivered.
 								confirmed := o.lastConfirmedTimestamp[chatJID]
+
 								sent := o.lastAgentTimestamp[chatJID]
 								if confirmed.Before(sent) {
 									o.log.Info("rolling back agent cursor after panic",
@@ -1410,16 +1532,19 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 									o.lastAgentTimestamp[chatJID] = confirmed
 								}
 								o.mu.Unlock()
+
 								if wasActive {
 									if markErr := o.queue.MarkInactive(context.Background(), chatJID); markErr != nil {
 										o.log.Error("failed to mark group inactive after panic",
 											"group", group.Name, "error", markErr)
 									}
+
 									if saveErr := o.saveState(context.Background()); saveErr != nil {
 										o.log.Error("failed to save state after panic in post-deactivate recovery — cursor rollback is in-memory only",
 											"group", group.Name, "error", saveErr)
 									}
 								}
+
 								if qMsg != nil {
 									if reqErr := o.queue.Enqueue(context.Background(), chatJID, qMsg); reqErr != nil {
 										o.log.Error("post-deactivate: failed to re-enqueue message after panic; message lost",
@@ -1431,6 +1556,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 								}
 							}
 						}()
+
 						spawned, err := o.processGroupMessages(ctx, chatJID, release)
 						if err != nil {
 							o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
@@ -1449,6 +1575,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 									"group", group.Name, "error", reqErr, "is_task", qMsg.IsTask)
 							}
 						}
+
 						if !spawned && pendingCheckFailed {
 							o.log.Warn("post-deactivate: defensive recovery did not spawn; messages may have been lost",
 								"group", group.Name)
@@ -1482,8 +1609,10 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 	if startupTimeout <= 0 {
 		startupTimeout = 5 * time.Minute
 	}
+
 	startupDeadline := time.NewTimer(startupTimeout)
 	defer startupDeadline.Stop()
+
 	agentConnected := false // set to true on first IPC message from this agent
 
 	for {
@@ -1500,20 +1629,25 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				o.log.Error("sandbox startup timeout: agent pod never connected via IPC, deactivating group",
 					"group", group.Name, "timeout", startupTimeout)
 				deactivate()
+
 				return
 			}
 		case <-liveness.C:
 			if o.sandbox == nil {
 				continue
 			}
+
 			active, err := o.sandbox.HasActiveSandbox(ctx, group.Folder)
 			if err != nil {
 				o.log.Warn("failed to check sandbox liveness", "group", group.Name, "error", err)
+
 				continue
 			}
+
 			if !active {
 				o.log.Info("agent job disappeared, marking group inactive", "group", group.Name)
 				deactivate()
+
 				return
 			}
 		case msg, ok := <-ch:
@@ -1528,40 +1662,54 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 				default:
 				}
 				// Reconnect with exponential backoff before giving up.
-				var reconnected bool
-				var lastErr error
+				var (
+					reconnected bool
+					lastErr     error
+				)
+
 				for _, delay := range o.ipcReconnectDelays {
 					select {
 					case <-ctx.Done():
 						return
 					case <-time.After(delay):
 					}
+
 					newCh, newErrCh, err := o.ipc.SubscribeOutput(ctx, group.Folder)
 					if err == nil {
 						ch = newCh
 						errCh = newErrCh
 						reconnected = true
 						agentConnected = true // IPC recovery proves agent is live
+
 						o.log.Info("reconnected to IPC output after iterator error", "group", group.Name)
+
 						break
 					}
+
 					lastErr = err
 					o.log.Warn("IPC reconnect failed, retrying", "group", group.Name, "error", err, "delay", delay)
 				}
+
 				if !reconnected {
 					o.log.Error("IPC reconnect exhausted, deactivating group",
 						"group", group.Name,
 						"root_cause", rootCause,
 						"last_error", lastErr)
 					deactivate()
+
 					return
 				}
+
 				continue
 			}
+
 			agentConnected = true
+
 			o.recordFirstOutputPhase(chatJID)
+
 			if o.handleIPCMessage(ctx, chatJID, group, msg) {
 				deactivate()
+
 				return
 			}
 		}
@@ -1579,8 +1727,10 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 		}
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 			o.log.Error("failed to unmarshal message payload", "error", err)
+
 			return false
 		}
+
 		if err := o.router.RouteOutbound(ctx, chatJID, payload.Text); err != nil {
 			// Outbound routing failed — do NOT advance the confirmed cursor
 			// so the message remains eligible for retry on the next agent
@@ -1588,6 +1738,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 			// was not confirmed.
 			o.log.Error("failed to route outbound message; leaving cursor unadvanced for retry",
 				"group", group.Name, "error", err)
+
 			return false
 		}
 
@@ -1620,8 +1771,10 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 		}
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 			o.log.Error("failed to unmarshal session_update payload", "error", err)
+
 			return false
 		}
+
 		o.mu.Lock()
 		o.sessions[group.Folder] = payload.SessionID
 		o.mu.Unlock()
@@ -1637,14 +1790,19 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 		var task store.ScheduledTask
 		if err := json.Unmarshal(msg.Payload, &task); err != nil {
 			o.log.Error("failed to unmarshal task_create payload", "error", err)
+
 			return false
 		}
+
 		task.GroupFolder = group.Folder
+
 		task.ChatJID = chatJID
 		if err := task.Validate(); err != nil {
 			o.log.Error("task_create rejected: validation failed", "group", group.Name, "error", err)
+
 			return false
 		}
+
 		if err := o.store.CreateTask(ctx, &task); err != nil {
 			o.log.Error("failed to create task", "group", group.Name, "error", err)
 		}
@@ -1653,6 +1811,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 		var task store.ScheduledTask
 		if err := json.Unmarshal(msg.Payload, &task); err != nil {
 			o.log.Error("failed to unmarshal task_update payload", "error", err)
+
 			return false
 		}
 		// Validate group ownership — reject if agent tries to update another group's task.
@@ -1660,8 +1819,10 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 			o.log.Error("task update rejected: group mismatch",
 				"agent_group", group.Folder,
 				"task_group", task.GroupFolder)
+
 			return false
 		}
+
 		if err := o.store.UpdateTask(ctx, &task); err != nil {
 			o.log.Error("failed to update task", "group", group.Name, "error", err)
 		}
@@ -1672,6 +1833,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 		}
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 			o.log.Error("failed to unmarshal task_delete payload", "error", err)
+
 			return false
 		}
 		// Always scope delete to agent's own group — mismatched IDs result in 0 rows deleted.
@@ -1681,14 +1843,17 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 
 	case ipc.IPCShutdown:
 		o.log.Info("agent shutdown received", "group", group.Name)
+
 		if err := o.ipc.DeleteStreams(ctx, group.Folder); err != nil {
 			o.log.Error("failed to delete ipc streams on shutdown", "group", group.Name, "error", err)
 		}
+
 		return true
 
 	default:
 		o.log.Warn("unknown IPC message type", "type", msg.Type, "group", group.Name)
 	}
+
 	return false
 }
 
@@ -1701,11 +1866,13 @@ func (o *Orchestrator) hasTriggerMessage(ctx context.Context, chatJID string, gr
 			if err != nil {
 				return false, fmt.Errorf("allowlist check: %w", err)
 			}
+
 			if m.IsFromMe || allowed {
 				return true, nil
 			}
 		}
 	}
+
 	return false, nil
 }
 
@@ -1719,6 +1886,7 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 		IsTask:    true,
 		TaskID:    task.ID,
 	}
+
 	return o.queue.Enqueue(ctx, task.ChatJID, qMsg)
 }
 
@@ -1732,13 +1900,16 @@ func (o *Orchestrator) reconcileActiveSet(ctx context.Context) {
 	activeJIDs, err := o.queue.ActiveJIDs(ctx)
 	if err != nil {
 		o.log.Error("reconcile active set: failed to list active JIDs", "error", err)
+
 		return
 	}
+
 	if len(activeJIDs) == 0 {
 		return
 	}
 
 	var removed int
+
 	for _, jid := range activeJIDs {
 		// Determine the group folder from the registered groups map.
 		o.mu.Lock()
@@ -1752,8 +1923,10 @@ func (o *Orchestrator) reconcileActiveSet(ctx context.Context) {
 					"jid", jid, "error", err)
 			} else {
 				o.log.Info("reconcile active set: removed stale JID (group not registered)", "jid", jid)
+
 				removed++
 			}
+
 			continue
 		}
 
@@ -1765,6 +1938,7 @@ func (o *Orchestrator) reconcileActiveSet(ctx context.Context) {
 			} else {
 				removed++
 			}
+
 			continue
 		}
 
@@ -1772,8 +1946,10 @@ func (o *Orchestrator) reconcileActiveSet(ctx context.Context) {
 		if err != nil {
 			o.log.Warn("reconcile active set: failed to check sandbox liveness, skipping",
 				"jid", jid, "folder", group.Folder, "error", err)
+
 			continue
 		}
+
 		if !hasActive {
 			if err := o.queue.MarkInactive(ctx, jid); err != nil {
 				o.log.Error("reconcile active set: failed to mark inactive",
@@ -1781,6 +1957,7 @@ func (o *Orchestrator) reconcileActiveSet(ctx context.Context) {
 			} else {
 				o.log.Info("reconcile active set: removed stale JID (no running sandbox)",
 					"jid", jid, "folder", group.Folder)
+
 				removed++
 			}
 		}
@@ -1794,10 +1971,12 @@ func (o *Orchestrator) reconcileActiveSet(ctx context.Context) {
 // recoverPendingMessages checks each group for unprocessed messages on startup.
 func (o *Orchestrator) recoverPendingMessages(ctx context.Context) {
 	o.mu.Lock()
+
 	groups := make(map[string]store.Group, len(o.registeredGroups))
 	for k, v := range o.registeredGroups {
 		groups[k] = v
 	}
+
 	agentTimestamps := make(map[string]time.Time, len(o.lastAgentTimestamp))
 	for k, v := range o.lastAgentTimestamp {
 		agentTimestamps[k] = v
@@ -1806,13 +1985,17 @@ func (o *Orchestrator) recoverPendingMessages(ctx context.Context) {
 
 	for chatJID, group := range groups {
 		agentTs := agentTimestamps[chatJID]
+
 		pending, err := o.store.GetMessagesSince(ctx, chatJID, agentTs, 1)
 		if err != nil {
 			o.log.Error("recovery: failed to check pending", "group", group.Name, "error", err)
+
 			continue
 		}
+
 		if len(pending) > 0 {
 			o.log.Info("recovery: found unprocessed messages", "group", group.Name, "count", len(pending))
+
 			qMsg := &queue.QueueMessage{
 				GroupJID:  chatJID,
 				Content:   "recovery",
@@ -1831,7 +2014,9 @@ func (o *Orchestrator) recoverPendingMessages(ctx context.Context) {
 // config) still surface after the bounded retry window.
 func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group, agentID string) error {
 	var lastErr error
+
 	backoff := 100 * time.Millisecond
+
 	for attempt := 1; attempt <= 3; attempt++ {
 		if attempt > 1 {
 			// Add jitter (up to backoff/2) to de-correlate retries across agents
@@ -1843,14 +2028,19 @@ func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group,
 			case <-ctx.Done():
 				return fmt.Errorf("ensure stream for agent: %w", ctx.Err())
 			}
+
 			backoff *= 2
 		}
+
 		if err := o.ipc.EnsureStreamForAgent(ctx, group, agentID); err != nil {
 			lastErr = err
+
 			continue
 		}
+
 		return nil
 	}
+
 	return fmt.Errorf("ensure stream for agent failed after retries: %w", lastErr)
 }
 
@@ -1877,15 +2067,19 @@ func (o *Orchestrator) releaseOrphanedStreams(ctx context.Context, group store.G
 	// completes cleanup; otherwise a cancelled ctx would abort both the active-sandbox
 	// check and DeleteStreams, leaking the pre-created stream.
 	cleanupCtx := context.WithoutCancel(ctx)
+
 	has, hasErr := o.sandbox.HasActiveSandbox(cleanupCtx, group.Folder)
 	if hasErr != nil {
 		o.log.Error("failed to check active sandbox during IPC stream rollback; leaking stream",
 			"group", group.Name, "reason", reason, "error", hasErr)
+
 		return
 	}
+
 	if has {
 		return
 	}
+
 	if delErr := o.ipc.DeleteStreams(cleanupCtx, group.Folder); delErr != nil {
 		o.log.Error("failed to delete IPC streams after spawn failure",
 			"group", group.Name, "reason", reason, "error", delErr)
@@ -1993,13 +2187,16 @@ func (o *Orchestrator) reconcileIPCStreams(ctx context.Context) {
 // delete-on-observe makes this a one-shot per spawn cycle.
 func (o *Orchestrator) recordFirstOutputPhase(chatJID string) {
 	o.spawnStartMu.Lock()
+
 	start, ok := o.spawnStart[chatJID]
 	if ok {
 		delete(o.spawnStart, chatJID)
 	}
 	o.spawnStartMu.Unlock()
+
 	if !ok {
 		return
 	}
+
 	metrics.ObserveSpawnPhase(metrics.PhaseFirstOutput, time.Since(start))
 }

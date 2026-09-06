@@ -41,6 +41,7 @@ func init() {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		panic(fmt.Sprintf("failed to add client-go scheme: %v", err))
 	}
+
 	if err := agentsandboxv1alpha1.AddToScheme(scheme); err != nil {
 		panic(fmt.Sprintf("failed to add agent-sandbox scheme: %v", err))
 	}
@@ -48,6 +49,7 @@ func init() {
 
 func main() {
 	startedAt := time.Now().UTC()
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
@@ -61,6 +63,7 @@ func main() {
 	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
+
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
@@ -79,6 +82,7 @@ func main() {
 			log.Warn("mysql store close", "error", err)
 		}
 	}()
+
 	log.Info("connected to MySQL, migrations complete")
 
 	// Connect NATS
@@ -92,6 +96,7 @@ func main() {
 			log.Error("nats drain", "error", err)
 		}
 	}()
+
 	log.Info("connected to NATS")
 
 	ipcBroker, err := ipc.NewNATSBroker(nc, log)
@@ -122,6 +127,7 @@ func main() {
 		ctrlClient  client.WithWatch
 		sandboxCtrl *sandbox.Controller
 	)
+
 	kubeConfig, k8sClient, err = connectKubernetes(cfg.K8s)
 	if err != nil {
 		log.Warn("failed to connect to Kubernetes; sandbox admin APIs will be degraded", "error", err)
@@ -134,14 +140,18 @@ func main() {
 			if cfg.K8s.AgentImageAnthropic != "" {
 				agentImages[provider.ProviderAnthropic] = cfg.K8s.AgentImageAnthropic
 			}
+
 			if cfg.K8s.AgentImageOpenAI != "" {
 				agentImages[provider.ProviderOpenAI] = cfg.K8s.AgentImageOpenAI
 			}
+
 			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, agentImages, cfg.NATS.URL, cfg.K8s.SandboxProxyURL, cfg.K8s.FastStartEnabled)
 			if err != nil {
 				log.Error("failed to create sandbox controller", "error", err)
+
 				return
 			}
+
 			log.Info("connected to Kubernetes", "namespace", cfg.K8s.Namespace)
 		}
 	}
@@ -153,6 +163,7 @@ func main() {
 		resolver    credproxy.CredentialResolver
 		modelLister *credproxy.ModelLister
 	)
+
 	needsMultiProvider := cfg.Proxy.CredentialEncryptionKey != "" || cfg.Proxy.OpenAIAPIKey != ""
 	if needsMultiProvider {
 		if cfg.Proxy.CredentialEncryptionKey != "" {
@@ -161,15 +172,18 @@ func main() {
 				log.Error("failed to create credential encryptor", "error", err)
 				os.Exit(1)
 			}
+
 			credStore, err = credproxy.NewCredentialStore(mysqlStore.DB(), enc)
 			if err != nil {
 				log.Error("failed to create credential store", "error", err)
 				os.Exit(1)
 			}
+
 			resolver = credproxy.NewDefaultResolver(credStore, cfg.Proxy)
 		} else {
 			resolver = credproxy.NewDefaultResolver(nil, cfg.Proxy)
 		}
+
 		modelLister = credproxy.NewModelLister(resolver)
 	}
 
@@ -180,14 +194,17 @@ func main() {
 	// The factory returns the pre-created instance so server and orchestrator share state.
 	channel.DefaultRegistry.Register("tui", func(cfg channel.ChannelConfig) (channel.Channel, error) {
 		tuiChannel.SetConfig(cfg)
+
 		return tuiChannel, nil
 	})
 
 	orch, err := orchestrator.New(cfg, mysqlStore, natsQueue, ipcBroker, sandboxCtrl, channel.DefaultRegistry, log, modelLister)
 	if err != nil {
 		log.Error("failed to create orchestrator", "error", err)
+
 		return
 	}
+
 	orchErr := make(chan error, 1)
 	go func() {
 		orchErr <- orch.Start(ctx)
@@ -220,6 +237,7 @@ func main() {
 			log.Error("failed to create multi-provider credential proxy", "error", err)
 			os.Exit(1)
 		}
+
 		log.Info("credential proxy configured with multi-provider support")
 	} else {
 		proxy, err = credproxy.New(cfg.Proxy)
@@ -228,6 +246,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
 	proxyErr := make(chan error, 1)
 	go func() {
 		proxyErr <- proxy.Start(ctx)
@@ -326,9 +345,11 @@ func main() {
 	defer shutdownCancel()
 
 	srv.Stop(shutdownCtx)
+
 	if err := orch.Stop(shutdownCtx); err != nil {
 		log.Error("orchestrator shutdown error", "error", err)
 	}
+
 	if err := proxy.Stop(shutdownCtx); err != nil {
 		log.Error("proxy shutdown error", "error", err)
 	}
@@ -338,6 +359,7 @@ func main() {
 
 func setupLogger(cfg config.LoggingConfig) *slog.Logger {
 	var handler slog.Handler
+
 	opts := &slog.HandlerOptions{}
 
 	switch cfg.Level {
@@ -375,10 +397,13 @@ func connectNATS(cfg config.NATSConfig, log *slog.Logger) (*natsgo.Conn, error) 
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
+
 	if err := nc.Flush(); err != nil {
 		nc.Close()
+
 		return nil, fmt.Errorf("flush: %w", err)
 	}
+
 	return nc, nil
 }
 
@@ -397,12 +422,15 @@ func connectKubernetes(cfg config.K8sConfig) (*rest.Config, kubernetes.Interface
 		)
 		kubeConfig, err = clientConfig.ClientConfig()
 	}
+
 	if err != nil {
 		return nil, nil, err
 	}
+
 	clientset, err := kubernetes.NewForConfig(kubeConfig)
 	if err != nil {
 		return nil, nil, err
 	}
+
 	return kubeConfig, clientset, nil
 }

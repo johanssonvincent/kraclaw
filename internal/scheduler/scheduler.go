@@ -48,9 +48,11 @@ func New(s store.TaskStore, executor TaskExecutor, pollInterval time.Duration) (
 	if s == nil {
 		return nil, fmt.Errorf("scheduler: task store is required")
 	}
+
 	if executor == nil {
 		return nil, fmt.Errorf("scheduler: executor is required")
 	}
+
 	return &Scheduler{
 		store:        s,
 		executor:     executor,
@@ -73,6 +75,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			s.log.Info("scheduler stopped")
+
 			return ctx.Err()
 		case <-ticker.C:
 		}
@@ -83,6 +86,7 @@ func (s *Scheduler) poll(ctx context.Context) {
 	tasks, err := s.store.GetDueTasks(ctx)
 	if err != nil {
 		s.log.Error("failed to get due tasks", "error", err)
+
 		return
 	}
 
@@ -95,14 +99,18 @@ func (s *Scheduler) poll(ctx context.Context) {
 		wg.Add(1)
 		go func(t store.ScheduledTask) {
 			defer wg.Done()
+
 			if err := s.semaphore.Acquire(ctx, 1); err != nil {
 				s.log.Error("semaphore acquire cancelled", "task_id", t.ID, "error", err)
+
 				return
 			}
 			defer s.semaphore.Release(1)
+
 			s.runTask(ctx, t)
 		}(task)
 	}
+
 	wg.Wait()
 }
 
@@ -111,6 +119,7 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 	defer cancel()
 
 	start := time.Now()
+
 	s.log.Info("running task", "task_id", task.ID, "group", task.GroupFolder)
 
 	nextRun, err := s.computeNextRun(&task)
@@ -146,6 +155,7 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 		if pauseErr := s.store.UpdateTask(ctx, &task); pauseErr != nil {
 			s.log.Error("failed to pause task", "task_id", task.ID, "error", pauseErr)
 		}
+
 		return
 	}
 
@@ -153,11 +163,14 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 
 	duration := time.Since(start)
 	status := store.RunSuccess
+
 	var errStr *string
+
 	if err != nil {
 		status = store.RunError
 		e := err.Error()
 		errStr = &e
+
 		s.log.Error("task failed", "task_id", task.ID, "error", err, "duration", duration)
 	} else {
 		s.log.Info("task completed", "task_id", task.ID, "duration", duration)
@@ -197,6 +210,7 @@ func (s *Scheduler) computeNextRun(task *store.ScheduledTask) (*time.Time, error
 		if err != nil {
 			return nil, fmt.Errorf("parse cron expression: %w", err)
 		}
+
 		next := sched.Next(now)
 
 		return &next, nil
@@ -234,6 +248,7 @@ func (s *Scheduler) computeNextRun(task *store.ScheduledTask) (*time.Time, error
 		if task.LastRun != nil {
 			return nil, nil
 		}
+
 		t, err := time.Parse(time.RFC3339, task.ScheduleValue)
 		if err != nil {
 			return nil, fmt.Errorf("parse once schedule: %w", err)

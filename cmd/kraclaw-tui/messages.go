@@ -16,19 +16,24 @@ type chatMessage struct {
 // markdown for agent replies. Lines starting with "» " are treated as
 // tool-use sub-lines and rendered dim to match the design.
 func (m model) formatChatMessages() string {
-	var b strings.Builder
-	var prevSender string
+	var (
+		b          strings.Builder
+		prevSender string
+	)
 	for i, msg := range m.chatMessages {
 		if msg.sender != prevSender {
 			if i > 0 {
 				b.WriteString("\n")
 			}
+
 			b.WriteString("  " + renderSenderLabel(msg.sender) + "\n")
 		}
+
 		body := msg.content
 		if msg.sender == "agent" {
 			body = renderMarkdown(m.mdRenderer, body)
 		}
+
 		for _, line := range strings.Split(body, "\n") {
 			if strings.HasPrefix(line, "» ") {
 				b.WriteString("    " + dimStyle.Render(line) + "\n")
@@ -38,6 +43,7 @@ func (m model) formatChatMessages() string {
 				b.WriteString("    " + line + "\n")
 			}
 		}
+
 		prevSender = msg.sender
 	}
 
@@ -59,9 +65,11 @@ func renderMarkdown(r *glamour.TermRenderer, content string) string {
 	if r == nil {
 		return content
 	}
+
 	rendered, err := r.Render(content)
 	if err != nil {
 		return content
 	}
+
 	return strings.TrimRight(rendered, "\n")
 }

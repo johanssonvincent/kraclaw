@@ -72,9 +72,11 @@ func (e *RefreshError) Error() string {
 	if e.kind == RefreshErrorPermanent {
 		kind = "permanent"
 	}
+
 	if e.cause != nil {
 		return fmt.Sprintf("chatgpt: refresh failed (kind=%s, status=%d, reason=%s): %v", kind, e.status, e.reason, e.cause)
 	}
+
 	return fmt.Sprintf("chatgpt: refresh failed (kind=%s, status=%d, reason=%s): %s", kind, e.status, e.reason, truncate(e.body, 200))
 }
 
@@ -96,6 +98,7 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, fmt.Errorf("chatgpt: refresh token is empty")
 	}
+
 	body, err := json.Marshal(struct {
 		ClientID     string `json:"client_id"`
 		GrantType    string `json:"grant_type"`
@@ -104,7 +107,9 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: marshal refresh request: %w", err)
 	}
+
 	endpoint := c.issuer + "/oauth/token"
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: build refresh request: %w", err)
@@ -133,11 +138,13 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 				slog.Int("status", resp.StatusCode),
 				slog.String("body_preview", truncate(string(respBody), 200)))
 		}
+
 		permanent := (resp.StatusCode == http.StatusUnauthorized && parsed) ||
 			isPermanentBadRequest(resp.StatusCode, respBody, reason, parsed)
 		if permanent {
 			return nil, newPermanentRefresh(resp.StatusCode, string(respBody), reason)
 		}
+
 		return nil, newTransientRefresh(resp.StatusCode, string(respBody), nil)
 	}
 
@@ -147,6 +154,7 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 			slog.Int("status", resp.StatusCode),
 			slog.String("body_preview", truncate(string(respBody), 200)),
 			slog.String("error", err.Error()))
+
 		return nil, newTransientRefresh(resp.StatusCode, "", fmt.Errorf("decode refresh response: %w", err))
 	}
 
@@ -155,12 +163,15 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	if parsed.RefreshToken == "" {
 		parsed.RefreshToken = refreshToken
 	}
+
 	if parsed.AccessToken == "" {
 		c.logger.Warn("chatgpt: refresh 2xx response missing access_token",
 			slog.Int("status", resp.StatusCode),
 			slog.String("body_preview", truncate(string(respBody), 200)))
+
 		return nil, newTransientRefresh(resp.StatusCode, "", fmt.Errorf("refresh response missing access_token"))
 	}
+
 	tokens := &Tokens{
 		AccessToken:  parsed.AccessToken,
 		RefreshToken: parsed.RefreshToken,
@@ -172,14 +183,18 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 			c.logger.Warn("chatgpt: refresh returned malformed id_token",
 				slog.Int("status", resp.StatusCode),
 				slog.String("error", err.Error()))
+
 			return nil, newTransientRefresh(resp.StatusCode, "", fmt.Errorf("parse refreshed id_token: %w", err))
 		}
+
 		tokens.IDClaims = claims
 		tokens.ExpiresAt = claims.ExpiresAt
 	}
+
 	if tokens.ExpiresAt.IsZero() && parsed.ExpiresIn > 0 {
 		tokens.ExpiresAt = c.now().Add(time.Second * time.Duration(parsed.ExpiresIn))
 	}
+
 	return tokens, nil
 }
 
@@ -196,6 +211,7 @@ func classifyRefreshFailure(body []byte) (RefreshFailureReason, bool) {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return RefreshFailureUnknown, false
 	}
+
 	parsedAny := parsed.Error != "" || parsed.ErrorCode != "" || parsed.ErrorDescription != ""
 	for _, candidate := range []string{parsed.ErrorCode, parsed.Error, parsed.ErrorDescription} {
 		switch strings.ToLower(strings.TrimSpace(candidate)) {
@@ -207,6 +223,7 @@ func classifyRefreshFailure(body []byte) (RefreshFailureReason, bool) {
 			return RefreshFailureRevoked, parsedAny
 		}
 	}
+
 	return RefreshFailureUnknown, parsedAny
 }
 
@@ -217,12 +234,16 @@ func isPermanentBadRequest(status int, body []byte, reason RefreshFailureReason,
 	if status != http.StatusBadRequest || !parsed {
 		return false
 	}
+
 	if reason != RefreshFailureUnknown {
 		return true
 	}
+
 	var body2 struct {
 		Error string `json:"error"`
 	}
+
 	_ = json.Unmarshal(body, &body2)
+
 	return strings.EqualFold(strings.TrimSpace(body2.Error), "invalid_grant")
 }

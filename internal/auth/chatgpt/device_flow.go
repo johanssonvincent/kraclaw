@@ -76,22 +76,28 @@ func (i *intervalString) UnmarshalJSON(b []byte) error {
 		secs float64
 		err  error
 	)
+
 	if b[0] == '"' {
 		var s string
 		if err = json.Unmarshal(b, &s); err != nil {
 			return err
 		}
+
 		if s == "" {
 			return nil
 		}
+
 		secs, err = strconv.ParseFloat(s, 64)
 	} else {
 		err = json.Unmarshal(b, &secs)
 	}
+
 	if err != nil {
 		return fmt.Errorf("chatgpt: parse interval: %w", err)
 	}
+
 	*i = intervalString(time.Duration(secs * float64(time.Second)))
+
 	return nil
 }
 
@@ -117,11 +123,14 @@ func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: marshal device-code request: %w", err)
 	}
+
 	endpoint := c.issuer + "/api/accounts/deviceauth/usercode"
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: build device-code request: %w", err)
 	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
@@ -135,14 +144,17 @@ func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: read device-code response: %w", err)
 	}
+
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("chatgpt: device-code login is not enabled by the auth server (status 404)")
 	}
+
 	if resp.StatusCode/100 != 2 {
 		c.logger.Warn("chatgpt: device-code request returned non-2xx",
 			slog.Int("status", resp.StatusCode),
 			slog.String("url", endpoint),
 			slog.String("body_preview", truncate(string(respBody), 200)))
+
 		return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 	}
 
@@ -150,6 +162,7 @@ func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("chatgpt: decode device-code response: %w", err)
 	}
+
 	dc := &DeviceCode{
 		deviceAuthID:    parsed.DeviceAuthID,
 		UserCode:        firstNonEmpty(parsed.UserCode, parsed.UserCodeAlt),
@@ -163,11 +176,14 @@ func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 			slog.Bool("device_auth_id_empty", dc.deviceAuthID == ""),
 			slog.Bool("user_code_empty", dc.UserCode == ""),
 			slog.String("body_preview", truncate(string(respBody), 200)))
+
 		return nil, fmt.Errorf("chatgpt: device-code response missing device_auth_id or user_code")
 	}
+
 	if dc.Interval <= 0 {
 		dc.Interval = DefaultPollInterval
 	}
+
 	return dc, nil
 }
 
@@ -180,6 +196,7 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 	if dc == nil || dc.deviceAuthID == "" || dc.UserCode == "" {
 		return nil, fmt.Errorf("chatgpt: device code is empty")
 	}
+
 	body, err := json.Marshal(struct {
 		DeviceAuthID string `json:"device_auth_id"`
 		UserCode     string `json:"user_code"`
@@ -187,11 +204,14 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: marshal poll request: %w", err)
 	}
+
 	endpoint := c.issuer + "/api/accounts/deviceauth/token"
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: build poll request: %w", err)
 	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
@@ -211,14 +231,17 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 		if err := json.Unmarshal(respBody, &parsed); err != nil {
 			return nil, fmt.Errorf("chatgpt: decode poll success response: %w", err)
 		}
+
 		if parsed.AuthorizationCode == "" || parsed.CodeVerifier == "" {
 			return nil, fmt.Errorf("chatgpt: poll success response missing authorization_code or code_verifier")
 		}
+
 		return &AuthorizationCode{
 			Code:         parsed.AuthorizationCode,
 			CodeVerifier: parsed.CodeVerifier,
 		}, nil
 	}
+
 	if code, parseErr := pollPendingCode(resp.StatusCode, respBody); code != "" {
 		switch code {
 		case "authorization_pending", "deviceauth_authorization_pending", "deviceauth_authorization_unknown", "authorization_unknown":
@@ -231,6 +254,7 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 			slog.Int("status", resp.StatusCode),
 			slog.String("err", parseErr.Error()))
 	}
+
 	if terminalErr, parseErr := pollTerminalCode(resp.StatusCode, respBody); terminalErr != nil {
 		return nil, terminalErr
 	} else if parseErr != nil {
@@ -238,10 +262,12 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 			slog.Int("status", resp.StatusCode),
 			slog.String("err", parseErr.Error()))
 	}
+
 	c.logger.Warn("chatgpt: poll returned non-pending non-success status",
 		slog.Int("status", resp.StatusCode),
 		slog.String("url", endpoint),
 		slog.String("body_preview", truncate(string(respBody), 200)))
+
 	return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 }
 
@@ -256,11 +282,13 @@ func pollTerminalCode(status int, body []byte) (error, error) {
 	if !pollErrorStatus(status) {
 		return nil, nil
 	}
+
 	code, parseErr := pollErrorCode(body)
 	switch code {
 	case "access_denied", "expired_token":
 		return ErrAccessDenied, nil
 	}
+
 	return nil, parseErr
 }
 
@@ -274,11 +302,13 @@ func pollPendingCode(status int, body []byte) (string, error) {
 	if !pollErrorStatus(status) {
 		return "", nil
 	}
+
 	code, parseErr := pollErrorCode(body)
 	switch code {
 	case "authorization_pending", "deviceauth_authorization_pending", "slow_down", "deviceauth_authorization_unknown", "authorization_unknown":
 		return code, nil
 	}
+
 	return "", parseErr
 }
 
@@ -295,6 +325,7 @@ func pollErrorCode(body []byte) (string, error) {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", err
 	}
+
 	if len(parsed.Error) == 0 || string(parsed.Error) == "null" {
 		return normalizePollErrorCode(firstNonEmpty(parsed.Code, parsed.ErrorCode)), nil
 	}
@@ -311,6 +342,7 @@ func pollErrorCode(body []byte) (string, error) {
 	if err := json.Unmarshal(parsed.Error, &nested); err != nil {
 		return "", err
 	}
+
 	return normalizePollErrorCode(firstNonEmpty(nested.Code, nested.ErrorCode, parsed.Code, parsed.ErrorCode)), nil
 }
 
@@ -326,13 +358,16 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 	if dc == nil {
 		return nil, fmt.Errorf("chatgpt: device code is nil")
 	}
+
 	interval := c.pollOverride
 	if interval <= 0 {
 		interval = dc.Interval
 	}
+
 	if interval <= 0 {
 		interval = DefaultPollInterval
 	}
+
 	pollCtx, cancel := context.WithTimeout(ctx, c.pollTimeout)
 	defer cancel()
 
@@ -350,9 +385,11 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+
 			if errors.Is(pollCtx.Err(), context.DeadlineExceeded) {
 				return nil, ErrDeviceAuthTimeout
 			}
+
 			return nil, err
 		}
 
@@ -372,12 +409,15 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+
 			return nil, ctx.Err()
 		case <-pollCtx.Done():
 			timer.Stop()
+
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+
 			return nil, ErrDeviceAuthTimeout
 		case <-timer.C:
 		}
@@ -391,6 +431,7 @@ func (c *Client) ExchangeCode(ctx context.Context, code *AuthorizationCode) (*To
 	if code == nil || code.Code == "" || code.CodeVerifier == "" {
 		return nil, fmt.Errorf("chatgpt: authorization code is empty")
 	}
+
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code.Code},
@@ -399,10 +440,12 @@ func (c *Client) ExchangeCode(ctx context.Context, code *AuthorizationCode) (*To
 		"code_verifier": {code.CodeVerifier},
 	}
 	endpoint := c.issuer + "/oauth/token"
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte(form.Encode())))
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: build token-exchange request: %w", err)
 	}
+
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
@@ -416,6 +459,7 @@ func (c *Client) ExchangeCode(ctx context.Context, code *AuthorizationCode) (*To
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: read token-exchange response: %w", err)
 	}
+
 	if resp.StatusCode/100 != 2 {
 		if terminalErr, parseErr := pollTerminalCode(resp.StatusCode, respBody); terminalErr != nil {
 			return nil, terminalErr
@@ -424,10 +468,12 @@ func (c *Client) ExchangeCode(ctx context.Context, code *AuthorizationCode) (*To
 				slog.Int("status", resp.StatusCode),
 				slog.String("err", parseErr.Error()))
 		}
+
 		c.logger.Warn("chatgpt: token-exchange returned non-2xx",
 			slog.Int("status", resp.StatusCode),
 			slog.String("url", endpoint),
 			slog.String("body_preview", truncate(string(respBody), 200)))
+
 		return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 	}
 
@@ -435,6 +481,7 @@ func (c *Client) ExchangeCode(ctx context.Context, code *AuthorizationCode) (*To
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("chatgpt: decode token-exchange response: %w", err)
 	}
+
 	return c.tokensFromResponse(&parsed)
 }
 
@@ -442,16 +489,20 @@ func (c *Client) tokensFromResponse(parsed *tokenResponse) (*Tokens, error) {
 	if parsed.AccessToken == "" {
 		return nil, fmt.Errorf("chatgpt: token response missing access_token")
 	}
+
 	if parsed.RefreshToken == "" {
 		return nil, fmt.Errorf("chatgpt: token response missing refresh_token")
 	}
+
 	if parsed.IDToken == "" {
 		return nil, fmt.Errorf("chatgpt: token response missing id_token")
 	}
+
 	claims, err := ParseIDToken(parsed.IDToken)
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: parse id_token from token response: %w", err)
 	}
+
 	tokens := &Tokens{
 		AccessToken:  parsed.AccessToken,
 		RefreshToken: parsed.RefreshToken,
@@ -462,6 +513,7 @@ func (c *Client) tokensFromResponse(parsed *tokenResponse) (*Tokens, error) {
 	if tokens.ExpiresAt.IsZero() && parsed.ExpiresIn > 0 {
 		tokens.ExpiresAt = c.now().Add(time.Duration(parsed.ExpiresIn) * time.Second)
 	}
+
 	return tokens, nil
 }
 
@@ -471,5 +523,6 @@ func firstNonEmpty(values ...string) string {
 			return v
 		}
 	}
+
 	return ""
 }

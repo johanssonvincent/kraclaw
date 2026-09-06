@@ -39,6 +39,7 @@ const (
 // duplication.
 func SanitizeGroupID(groupJID string) string {
 	h := sha256.Sum256([]byte(groupJID))
+
 	return hex.EncodeToString(h[:16])
 }
 
@@ -55,6 +56,7 @@ func SanitizeAgentID(agentID string) string {
 	if len(safe) > 32 {
 		safe = safe[:32]
 	}
+
 	return safe
 }
 

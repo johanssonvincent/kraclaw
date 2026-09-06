@@ -18,8 +18,8 @@ func TestOpenURL_DispatchesPerOS(t *testing.T) {
 		runErr          error
 		wantErrContains string
 	}{
-		"linux uses xdg-open":           {goos: "linux", url: "https://example.com", wantName: "xdg-open", wantArgs: []string{"https://example.com"}},
-		"darwin uses open":              {goos: "darwin", url: "https://example.com", wantName: "open", wantArgs: []string{"https://example.com"}},
+		"linux uses xdg-open":            {goos: "linux", url: "https://example.com", wantName: "xdg-open", wantArgs: []string{"https://example.com"}},
+		"darwin uses open":               {goos: "darwin", url: "https://example.com", wantName: "open", wantArgs: []string{"https://example.com"}},
 		"windows uses cmd /c start \"\"": {goos: "windows", url: "https://example.com", wantName: "cmd", wantArgs: []string{"/c", "start", "", "https://example.com"}},
 		"linux missing xdg-open includes hint": {
 			goos:            "linux",

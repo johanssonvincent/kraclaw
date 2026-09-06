@@ -74,6 +74,7 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 				}
 
 				var evType string
+
 				switch event.Type {
 				case watch.Added:
 					evType = "added"
@@ -81,6 +82,7 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 					evType = "updated"
 				case watch.Deleted:
 					evType = "deleted"
+
 					delete(seen, sandbox.Name)
 				default:
 					continue
@@ -125,6 +127,7 @@ func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]ma
 	if seen[sb.Name] == nil {
 		seen[sb.Name] = map[string]bool{}
 	}
+
 	created := sb.CreationTimestamp.Time
 	if sb.CreationTimestamp.IsZero() {
 		// Without a creation time every phase duration is measured from the zero
@@ -132,13 +135,17 @@ func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]ma
 		// guard. Skip the whole object rather than pollute the distribution.
 		log.Warn("skipping cold-start phase samples: sandbox has zero CreationTimestamp",
 			"sandbox", sb.Name)
+
 		return
 	}
+
 	for _, cond := range sb.Status.Conditions {
 		if cond.Status != metav1.ConditionTrue {
 			continue
 		}
+
 		var phase metrics.SpawnPhase
+
 		switch cond.Type {
 		case "PodScheduled":
 			phase = metrics.PhasePodScheduled
@@ -147,22 +154,29 @@ func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]ma
 		default:
 			continue
 		}
+
 		key := string(phase)
 		if seen[sb.Name][key] {
 			continue
 		}
+
 		if cond.LastTransitionTime.IsZero() {
 			log.Warn("skipping cold-start phase sample with zero LastTransitionTime",
 				"sandbox", sb.Name, "phase", key)
+
 			continue
 		}
+
 		d := cond.LastTransitionTime.Sub(created)
 		if d < 0 {
 			log.Warn("skipping cold-start phase sample with negative duration",
 				"sandbox", sb.Name, "phase", key, "duration", d)
+
 			continue
 		}
+
 		seen[sb.Name][key] = true
+
 		metrics.ObserveSpawnPhase(phase, d)
 	}
 }

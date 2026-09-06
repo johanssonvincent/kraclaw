@@ -89,20 +89,24 @@ func (c *codexClient) streamResponse(ctx context.Context, model string, history 
 	if err != nil {
 		return "", fmt.Errorf("create codex request: %w", err)
 	}
+
 	setCodexHeaders(req, c.groupJID, c.sessionID, c.threadID, c.installationID)
 
 	client := c.httpClient
 	if client == nil {
 		client = http.DefaultClient
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("post codex response: %w", err)
 	}
+
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+
 		return "", fmt.Errorf("openai upstream returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
@@ -110,6 +114,7 @@ func (c *codexClient) streamResponse(ctx context.Context, model string, history 
 	if err != nil {
 		return "", fmt.Errorf("parse codex stream: %w", err)
 	}
+
 	return textOut, nil
 }
 
@@ -118,9 +123,11 @@ func buildCodexResponsesRequest(model string, history []conversationTurn, text s
 	for _, turn := range history {
 		input = append(input, codexMessage(turn.role, turn.text))
 	}
+
 	input = append(input, codexMessage("user", text))
 
 	reasoning := reasoningForModel(model)
+
 	include := []string{}
 	if reasoning != nil {
 		include = append(include, "reasoning.encrypted_content")
@@ -151,6 +158,7 @@ func reasoningForModel(model string) *codexReasoning {
 	if model == "" {
 		return nil
 	}
+
 	lower := strings.ToLower(model)
 	switch {
 	case strings.HasPrefix(lower, "gpt-5"),
@@ -168,6 +176,7 @@ func codexMessage(role string, text string) codexInputItem {
 	if role == "assistant" {
 		contentType = "output_text"
 	}
+
 	return codexInputItem{
 		Type: "message",
 		Role: role,
@@ -194,18 +203,24 @@ func setCodexHeaders(req *http.Request, groupJID, sessionID, threadID, installat
 func parseSSEText(r io.Reader) (string, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	var dataLines []string
-	var out strings.Builder
+
+	var (
+		dataLines []string
+		out       strings.Builder
+	)
 
 	flush := func() (bool, error) {
 		if len(dataLines) == 0 {
 			return false, nil
 		}
+
 		data := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
+
 		if strings.TrimSpace(data) == "[DONE]" {
 			return true, nil
 		}
+
 		var event struct {
 			Type  string `json:"type"`
 			Delta string `json:"delta"`
@@ -213,10 +228,12 @@ func parseSSEText(r io.Reader) (string, error) {
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			return false, err
 		}
+
 		switch event.Type {
 		case "response.output_text.delta", "response.text.delta":
 			out.WriteString(event.Delta)
 		}
+
 		return false, nil
 	}
 
@@ -227,20 +244,27 @@ func parseSSEText(r io.Reader) (string, error) {
 			if done || err != nil {
 				return out.String(), err
 			}
+
 			continue
 		}
+
 		if strings.HasPrefix(line, ":") {
 			continue
 		}
+
 		field, value, ok := strings.Cut(line, ":")
 		if !ok || field != "data" {
 			continue
 		}
+
 		dataLines = append(dataLines, strings.TrimPrefix(value, " "))
 	}
+
 	if err := scanner.Err(); err != nil {
 		return out.String(), err
 	}
+
 	_, err := flush()
+
 	return out.String(), err
 }

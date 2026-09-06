@@ -130,6 +130,7 @@ func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequ
 	k8sConnected := s.pingKubernetes(ctx)
 
 	activeSandboxes := int32(0)
+
 	if s.sandbox != nil {
 		if sandboxes, err := s.sandbox.ListSandboxes(ctx); err == nil {
 			for _, sb := range sandboxes {
@@ -143,6 +144,7 @@ func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequ
 	}
 
 	activeTasks := int32(0)
+
 	if s.store != nil {
 		if tasks, err := s.store.ListTasks(ctx); err == nil {
 			for _, task := range tasks {
@@ -156,6 +158,7 @@ func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequ
 	}
 
 	connectedChannels := int32(0)
+
 	for _, ch := range s.channels {
 		if ch.IsConnected() {
 			connectedChannels++
@@ -195,11 +198,13 @@ func (s *adminService) StreamEvents(req *kraclawv1.StreamEventsRequest, stream k
 			if !ok {
 				return nil
 			}
+
 			if len(filters) > 0 {
 				if _, ok := filters[evt.Type]; !ok {
 					continue
 				}
 			}
+
 			if err := stream.Send(evt); err != nil {
 				return err
 			}
@@ -253,6 +258,7 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 	if req.Jid == "" {
 		return nil, status.Error(codes.InvalidArgument, "jid is required")
 	}
+
 	if req.Folder == "" {
 		return nil, status.Error(codes.InvalidArgument, "folder is required")
 	}
@@ -275,6 +281,7 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid container config: %v", err)
 		}
+
 		group.ContainerConfig = cc
 	}
 
@@ -286,6 +293,7 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 
 	if err := s.store.UpsertGroup(ctx, &group); err != nil {
 		s.log.Error("failed to upsert group", "jid", req.Jid, "error", err)
+
 		return nil, status.Error(codes.Internal, "failed to register group")
 	}
 
@@ -306,6 +314,7 @@ func (s *groupService) validateModel(ctx context.Context, groupJID string, provi
 	if model == "" || providerID != provider.ProviderOpenAI || s.models == nil {
 		return s.providers.ValidateModel(providerID, model)
 	}
+
 	models, err := s.models.ListModels(ctx, groupJID, providerID)
 	if err != nil {
 		s.log.Warn("failed to validate model dynamically; using static registry fallback",
@@ -313,13 +322,16 @@ func (s *groupService) validateModel(ctx context.Context, groupJID string, provi
 			"group_jid", groupJID,
 			"model", model,
 			"error", err)
+
 		return s.providers.ValidateModel(providerID, model)
 	}
+
 	for _, m := range models {
 		if m.ID == model {
 			return nil
 		}
 	}
+
 	return fmt.Errorf("model %q is not valid for provider %q", model, providerID)
 }
 
@@ -329,6 +341,7 @@ func modelListContains(models []provider.ModelInfo, id string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -336,10 +349,13 @@ func (s *groupService) ListProviders(ctx context.Context, req *kraclawv1.ListPro
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
+
 	if s.providers == nil {
 		return nil, status.Error(codes.Unavailable, "provider registry not configured")
 	}
+
 	ids := s.providers.Providers()
+
 	resp := &kraclawv1.ListProvidersResponse{
 		Providers: make([]*kraclawv1.ProviderInfo, 0, len(ids)),
 	}
@@ -347,9 +363,12 @@ func (s *groupService) ListProviders(ctx context.Context, req *kraclawv1.ListPro
 		p, ok := s.providers.Get(id)
 		if !ok {
 			s.log.Warn("provider listed but not retrievable; skipping", "provider_id", id)
+
 			continue
 		}
+
 		models := p.Models
+
 		defaultModel := p.DefaultModel
 		if req.GetGroupJid() != "" && p.ID == provider.ProviderOpenAI && s.models != nil {
 			dynamicModels, err := s.models.ListModels(ctx, req.GetGroupJid(), p.ID)
@@ -379,8 +398,10 @@ func (s *groupService) ListProviders(ctx context.Context, req *kraclawv1.ListPro
 				DisplayName: m.DisplayName,
 			})
 		}
+
 		resp.Providers = append(resp.Providers, pi)
 	}
+
 	return resp, nil
 }
 
@@ -398,6 +419,7 @@ func (s *taskService) ListTasks(ctx context.Context, req *kraclawv1.ListTasksReq
 	} else {
 		tasks, err = s.store.ListTasks(ctx)
 	}
+
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list tasks: %v", err)
 	}
@@ -429,6 +451,7 @@ func (s *taskService) CreateTask(ctx context.Context, req *kraclawv1.CreateTaskR
 	if s.store == nil {
 		return nil, status.Error(codes.Unavailable, "task store not configured")
 	}
+
 	if req.GroupFolder == "" {
 		return nil, status.Error(codes.InvalidArgument, "group_folder is required")
 	}
@@ -447,8 +470,10 @@ func (s *taskService) CreateTask(ctx context.Context, req *kraclawv1.CreateTaskR
 	if err := task.Validate(); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid task: %v", err)
 	}
+
 	if err := s.store.CreateTask(ctx, &task); err != nil {
 		s.log.Error("failed to create task", "group_folder", req.GroupFolder, "error", err)
+
 		return nil, status.Errorf(codes.Internal, "create task: %v", err)
 	}
 
@@ -459,9 +484,11 @@ func (s *taskService) UpdateTask(ctx context.Context, req *kraclawv1.UpdateTaskR
 	if s.store == nil {
 		return nil, status.Error(codes.Unavailable, "task store not configured")
 	}
+
 	if req.Id == "" {
 		return nil, status.Error(codes.InvalidArgument, "task id is required")
 	}
+
 	if req.GroupFolder == "" {
 		return nil, status.Error(codes.InvalidArgument, "group_folder is required")
 	}
@@ -480,12 +507,15 @@ func (s *taskService) UpdateTask(ctx context.Context, req *kraclawv1.UpdateTaskR
 	if req.Prompt != "" {
 		existing.Prompt = req.Prompt
 	}
+
 	if req.ScheduleType != "" {
 		existing.ScheduleType = store.ScheduleType(req.ScheduleType)
 	}
+
 	if req.ScheduleValue != "" {
 		existing.ScheduleValue = req.ScheduleValue
 	}
+
 	if req.ContextMode != "" {
 		existing.ContextMode = store.ContextMode(req.ContextMode)
 	}
@@ -493,8 +523,10 @@ func (s *taskService) UpdateTask(ctx context.Context, req *kraclawv1.UpdateTaskR
 	if err := existing.Validate(); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid task: %v", err)
 	}
+
 	if err := s.store.UpdateTask(ctx, existing); err != nil {
 		s.log.Error("failed to update task", "id", req.Id, "error", err)
+
 		return nil, status.Errorf(codes.Internal, "update task: %v", err)
 	}
 
@@ -534,10 +566,12 @@ func (s *sandboxService) ListSandboxes(ctx context.Context, _ *kraclawv1.ListSan
 	for _, sb := range sandboxes {
 		groupJID := ""
 		sessionID := ""
+
 		if s.store != nil {
 			if group, err := s.store.GetGroupByFolder(ctx, sb.Group); err == nil && group != nil {
 				groupJID = group.JID
 			}
+
 			if session, err := s.store.GetSession(ctx, sb.Group); err == nil && session != nil {
 				sessionID = session.SessionID
 			}
@@ -584,6 +618,7 @@ func (s *sandboxService) CreateSandbox(ctx context.Context, req *kraclawv1.Creat
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "marshal prompt: %v", err)
 		}
+
 		msg := &ipc.IPCMessage{
 			Group:   req.GroupFolder,
 			Type:    ipc.IPCMessageText,
@@ -605,6 +640,7 @@ func (s *sandboxService) CreateSandbox(ctx context.Context, req *kraclawv1.Creat
 			SessionId:   req.SessionId,
 		},
 	}
+
 	return resp, nil
 }
 
@@ -612,6 +648,7 @@ func (s *sandboxService) PipeSandboxInput(ctx context.Context, req *kraclawv1.Pi
 	if s.ipc == nil {
 		return nil, status.Error(codes.Unavailable, "IPC broker not configured")
 	}
+
 	if req.Text == "" {
 		return nil, status.Error(codes.InvalidArgument, "text is required")
 	}
@@ -620,6 +657,7 @@ func (s *sandboxService) PipeSandboxInput(ctx context.Context, req *kraclawv1.Pi
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "marshal text: %v", err)
 	}
+
 	msg := &ipc.IPCMessage{
 		Group:   req.GroupFolder,
 		Type:    ipc.IPCMessageText,
@@ -650,6 +688,7 @@ func (s *sandboxService) StreamSandboxOutput(req *kraclawv1.StreamOutputRequest,
 			if !ok {
 				return nil
 			}
+
 			out := &kraclawv1.SandboxOutput{
 				Type: string(msg.Type),
 			}
@@ -669,6 +708,7 @@ func (s *sandboxService) StreamSandboxOutput(req *kraclawv1.StreamOutputRequest,
 			default:
 				out.Content = string(msg.Payload)
 			}
+
 			if err := stream.Send(out); err != nil {
 				return err
 			}
@@ -680,8 +720,10 @@ func (s *adminService) pingMySQL(ctx context.Context) bool {
 	if s.db == nil {
 		return false
 	}
+
 	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+
 	return s.db.PingContext(pingCtx) == nil
 }
 
@@ -689,7 +731,9 @@ func (s *adminService) pingKubernetes(ctx context.Context) bool {
 	if s.k8s == nil {
 		return false
 	}
+
 	_, err := s.k8s.Discovery().ServerVersion()
+
 	return err == nil
 }
 
@@ -703,6 +747,7 @@ func metricValue(name string) float64 {
 		if family.GetName() != name {
 			continue
 		}
+
 		return metricFamilyValue(family)
 	}
 
@@ -711,6 +756,7 @@ func metricValue(name string) float64 {
 
 func metricFamilyValue(family *dto.MetricFamily) float64 {
 	total := 0.0
+
 	for _, metric := range family.GetMetric() {
 		switch family.GetType() {
 		case dto.MetricType_COUNTER:
@@ -721,6 +767,7 @@ func metricFamilyValue(family *dto.MetricFamily) float64 {
 			total += metric.GetUntyped().GetValue()
 		}
 	}
+
 	return total
 }
 
@@ -728,6 +775,7 @@ func toProtoTimestamp(t time.Time) *timestamppb.Timestamp {
 	if t.IsZero() {
 		return nil
 	}
+
 	return timestamppb.New(t)
 }
 
@@ -735,6 +783,7 @@ func toProtoTimestampPtr(t *time.Time) *timestamppb.Timestamp {
 	if t == nil || t.IsZero() {
 		return nil
 	}
+
 	return timestamppb.New(*t)
 }
 
@@ -742,6 +791,7 @@ func stringPtrValue(value *string) string {
 	if value == nil {
 		return ""
 	}
+
 	return *value
 }
 

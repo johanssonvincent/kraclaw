@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/johanssonvincent/kraclaw/internal/provider"
+	"github.com/johanssonvincent/kraclaw/internal/store"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,9 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
-
-	"github.com/johanssonvincent/kraclaw/internal/provider"
-	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
 func newTestController() *Controller {
@@ -219,7 +219,8 @@ func TestCreateSandbox_ContextCancelledDuringBackoff(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from context cancellation")
 	}
-	if err != context.Canceled {
+
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 }

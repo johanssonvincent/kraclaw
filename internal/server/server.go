@@ -49,9 +49,11 @@ func (c *AuthConfig) Validate() error {
 	if c == nil {
 		return nil
 	}
+
 	if c.ChatGPT == nil || c.Credentials == nil {
 		return ErrAuthConfigIncomplete
 	}
+
 	return nil
 }
 
@@ -101,6 +103,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+
 	if cfg.StartedAt.IsZero() {
 		cfg.StartedAt = time.Now().UTC()
 	}
@@ -124,6 +127,7 @@ func New(cfg Config) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
 	}
 
@@ -147,6 +151,7 @@ func New(cfg Config) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler())
 	mux.HandleFunc("/readyz", readyzHandler(cfg.DB))
+
 	if cfg.MetricsPath != "" {
 		mux.Handle(cfg.MetricsPath, promhttp.Handler())
 	}
@@ -190,14 +195,17 @@ func (s *Server) Start(ctx context.Context) error {
 		lis, err := net.Listen("tcp", s.grpcAddr)
 		if err != nil {
 			errCh <- fmt.Errorf("gRPC listen: %w", err)
+
 			return
 		}
+
 		lis = &allowlistListener{
 			Listener: lis,
 			allowed:  s.allowedCIDRs,
 			log:      s.log,
 		}
 		s.log.Info("gRPC server listening", "addr", s.grpcAddr)
+
 		if err := s.grpcServer.Serve(lis); err != nil {
 			errCh <- fmt.Errorf("gRPC serve: %w", err)
 		}
@@ -206,6 +214,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start REST gateway
 	go func() {
 		s.log.Info("REST gateway listening", "addr", s.restAddr)
+
 		if err := s.restServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("REST serve: %w", err)
 		}
@@ -224,6 +233,7 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) Stop(ctx context.Context) {
 	s.log.Info("shutting down servers")
 	s.grpcServer.GracefulStop()
+
 	if err := s.restServer.Shutdown(ctx); err != nil {
 		s.log.Error("REST server shutdown error", "error", err)
 	}
@@ -239,6 +249,7 @@ func (s *Server) watchSandboxEvents(ctx context.Context) {
 			Source:    "sandbox",
 			Message:   fmt.Sprintf("failed to watch sandbox events: %v", err),
 		})
+
 		return
 	}
 
@@ -250,6 +261,7 @@ func (s *Server) watchSandboxEvents(ctx context.Context) {
 			if !ok {
 				return
 			}
+
 			s.events.publish(sandboxEventToProto(evt))
 		}
 	}
@@ -270,6 +282,7 @@ func readyzHandler(db *sql.DB) http.HandlerFunc {
 		// Check MySQL
 		if err := db.PingContext(ctx); err != nil {
 			http.Error(w, fmt.Sprintf("mysql: %v", err), http.StatusServiceUnavailable)
+
 			return
 		}
 

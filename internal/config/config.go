@@ -124,9 +124,11 @@ func Load() (*Config, error) {
 	if err := envconfig.Process("", &cfg); err != nil {
 		return nil, fmt.Errorf("failed to load configuration: %w", err)
 	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+
 	return &cfg, nil
 }
 
@@ -141,34 +143,44 @@ func (c *Config) Validate() error {
 	if !hasAnthropic && c.Proxy.OpenAIAPIKey != "" && c.Proxy.CredentialEncryptionKey == "" {
 		return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY is required when only OpenAI credentials are configured (legacy proxy only supports Anthropic)")
 	}
+
 	if !c.Server.GRPCInsecure && (c.Server.GRPCTLSCertFile == "" || c.Server.GRPCTLSKeyFile == "" || c.Server.GRPCTLSClientCAFile == "") {
 		return fmt.Errorf("GRPC_TLS_CERT_FILE, GRPC_TLS_KEY_FILE, and GRPC_TLS_CLIENT_CA_FILE must all be set (or set GRPC_INSECURE=true)")
 	}
+
 	if c.Server.GRPCAllowedCIDRs == "" {
 		return fmt.Errorf("GRPC_ALLOWED_CIDRS must not be empty")
 	}
+
 	if _, err := time.LoadLocation(c.Channels.Timezone); err != nil {
 		return fmt.Errorf("invalid timezone %q: %w", c.Channels.Timezone, err)
 	}
+
 	if c.Queue.MaxConcurrent <= 0 {
 		return fmt.Errorf("MAX_CONCURRENT must be positive, got %d", c.Queue.MaxConcurrent)
 	}
+
 	if c.K8s.AgentImageAnthropic == "" && c.K8s.AgentImageOpenAI == "" {
 		return fmt.Errorf("at least one agent image must be set (AGENT_IMAGE_ANTHROPIC or AGENT_IMAGE_OPENAI)")
 	}
+
 	if c.Proxy.AnthropicAPIKey != "" && c.K8s.AgentImageAnthropic == "" {
 		return fmt.Errorf("AGENT_IMAGE_ANTHROPIC is required when ANTHROPIC_API_KEY is configured (legacy AGENT_IMAGE fallback is not supported with NATS)")
 	}
+
 	if c.Proxy.OpenAIAPIKey != "" && c.K8s.AgentImageOpenAI == "" {
 		return fmt.Errorf("AGENT_IMAGE_OPENAI is required when OPENAI_API_KEY is configured")
 	}
+
 	if c.Proxy.CredentialEncryptionKey != "" {
 		if len(c.Proxy.CredentialEncryptionKey) != 64 {
 			return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY must be 64 hex characters (32 bytes), got %d characters", len(c.Proxy.CredentialEncryptionKey))
 		}
+
 		if _, err := hex.DecodeString(c.Proxy.CredentialEncryptionKey); err != nil {
 			return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY must be valid hex: %w", err)
 		}
 	}
+
 	return nil
 }

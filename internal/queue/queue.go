@@ -23,6 +23,7 @@ func NewQueueMessage(groupJID, content string) (*QueueMessage, error) {
 	if groupJID == "" {
 		return nil, fmt.Errorf("queue message: GroupJID must not be empty")
 	}
+
 	return &QueueMessage{GroupJID: groupJID, Content: content}, nil
 }
 
