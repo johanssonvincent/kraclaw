@@ -102,6 +102,7 @@ func TestRunMigrations_SourceContract(t *testing.T) {
 
 	for _, want := range []string{
 		"goose.NewProvider(goose.DialectMySQL",
+		"lock.NewMySQLTableLocker",
 		"provider.Up(ctx)",
 		"seedLegacyMigrations",
 		"dirty migration state detected",

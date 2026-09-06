@@ -14,6 +14,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/migrations"
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/database"
+	"github.com/pressly/goose/v3/lock"
 )
 
 // MySQLStore implements the Store interface using MySQL.
@@ -119,6 +120,20 @@ func runMigrations(ctx context.Context, dsn string) error {
 	defer func() {
 		if cerr := db.Close(); cerr != nil {
 			slog.Warn("close migration db", "error", cerr)
+		}
+	}()
+
+	migrationLocker, err := lock.NewMySQLTableLocker()
+	if err != nil {
+		return fmt.Errorf("create migration locker: %w", err)
+	}
+
+	if err := migrationLocker.Lock(ctx, db); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() {
+		if uerr := migrationLocker.Unlock(context.WithoutCancel(ctx), db); uerr != nil {
+			slog.Warn("release migration lock", "error", uerr)
 		}
 	}()
 
