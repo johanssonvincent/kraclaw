@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,10 +13,10 @@ import (
 )
 
 const (
-	gooseVersionTable   = "goose_db_version"
-	legacyVersionTable  = "schema_migrations"
-	latestMigrationName = "20260831000001"
-	totalMigrations     = 7
+	gooseVersionTable      = "goose_db_version"
+	legacyVersionTable     = "schema_migrations"
+	latestMigrationVersion = int64(20260831000001)
+	totalMigrations        = 7
 )
 
 func createTestDatabase(t *testing.T, env *integrationEnv, name string) string {
@@ -59,7 +60,7 @@ func gooseVersionRows(t *testing.T, dsn string) (count int, maxVersion int64) {
 	}
 	defer func() { _ = db.Close() }()
 
-	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM "+gooseVersionTable).Scan(&count); err != nil {
+	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM "+gooseVersionTable+" WHERE version_id > 0").Scan(&count); err != nil {
 		t.Fatalf("count goose versions: %v", err)
 	}
 
@@ -84,7 +85,7 @@ func execOnDatabase(t *testing.T, dsn, query string) {
 	}
 }
 
-func TestMigrationFreshDatabase(t *testing.T) {
+func TestIntegrationMigrationFreshDatabase(t *testing.T) {
 	env := requireIntegrationEnv(t)
 	dsn := createTestDatabase(t, env, "kraclaw_mig_fresh")
 
@@ -92,11 +93,11 @@ func TestMigrationFreshDatabase(t *testing.T) {
 
 	count, maxVersion := gooseVersionRows(t, dsn)
 	if count != totalMigrations {
-		t.Errorf("goose_db_version rows = %d, want %d", count, totalMigrations)
+		t.Errorf("goose migration rows = %d, want %d", count, totalMigrations)
 	}
 
-	if want := int64(20260831000001); maxVersion != want {
-		t.Errorf("max version = %d, want %d", maxVersion, want)
+	if maxVersion != latestMigrationVersion {
+		t.Errorf("max version = %d, want %d", maxVersion, latestMigrationVersion)
 	}
 
 	db, err := sql.Open("mysql", dsn)
@@ -104,6 +105,15 @@ func TestMigrationFreshDatabase(t *testing.T) {
 		t.Fatalf("open schema check db: %v", err)
 	}
 	defer func() { _ = db.Close() }()
+
+	var zeroRows int
+	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM "+gooseVersionTable+" WHERE version_id = 0").Scan(&zeroRows); err != nil {
+		t.Fatalf("count goose zero rows: %v", err)
+	}
+
+	if zeroRows != 1 {
+		t.Errorf("goose zero version rows = %d, want 1", zeroRows)
+	}
 
 	for _, table := range []string{"groups", "messages", "scheduled_tasks", "credentials"} {
 		var exists bool
@@ -117,7 +127,7 @@ func TestMigrationFreshDatabase(t *testing.T) {
 	}
 }
 
-func TestMigrationLegacySeed(t *testing.T) {
+func TestIntegrationMigrationLegacySeed(t *testing.T) {
 	env := requireIntegrationEnv(t)
 	dsn := createTestDatabase(t, env, "kraclaw_mig_seed")
 
@@ -125,17 +135,17 @@ func TestMigrationLegacySeed(t *testing.T) {
 
 	execOnDatabase(t, dsn, "DROP TABLE "+gooseVersionTable)
 	execOnDatabase(t, dsn, "CREATE TABLE "+legacyVersionTable+" (version bigint NOT NULL, dirty tinyint(1) NOT NULL)")
-	execOnDatabase(t, dsn, "INSERT INTO "+legacyVersionTable+" (version, dirty) VALUES (20260831000001, 0)")
+	execOnDatabase(t, dsn, "INSERT INTO "+legacyVersionTable+" (version, dirty) VALUES ("+strconv.FormatInt(latestMigrationVersion, 10)+", 0)")
 
 	migrateDatabase(t, dsn)
 
 	count, maxVersion := gooseVersionRows(t, dsn)
 	if count != totalMigrations {
-		t.Errorf("seeded goose_db_version rows = %d, want %d", count, totalMigrations)
+		t.Errorf("seeded goose migration rows = %d, want %d", count, totalMigrations)
 	}
 
-	if want := int64(20260831000001); maxVersion != want {
-		t.Errorf("seeded max version = %d, want %d", maxVersion, want)
+	if maxVersion != latestMigrationVersion {
+		t.Errorf("seeded max version = %d, want %d", maxVersion, latestMigrationVersion)
 	}
 
 	db, err := sql.Open("mysql", dsn)
@@ -154,7 +164,7 @@ func TestMigrationLegacySeed(t *testing.T) {
 	}
 }
 
-func TestMigrationLegacyDirtyFailsFast(t *testing.T) {
+func TestIntegrationMigrationLegacyDirtyFailsFast(t *testing.T) {
 	env := requireIntegrationEnv(t)
 	dsn := createTestDatabase(t, env, "kraclaw_mig_dirty")
 
@@ -162,7 +172,7 @@ func TestMigrationLegacyDirtyFailsFast(t *testing.T) {
 
 	execOnDatabase(t, dsn, "DROP TABLE "+gooseVersionTable)
 	execOnDatabase(t, dsn, "CREATE TABLE "+legacyVersionTable+" (version bigint NOT NULL, dirty tinyint(1) NOT NULL)")
-	execOnDatabase(t, dsn, "INSERT INTO "+legacyVersionTable+" (version, dirty) VALUES (20260831000001, 1)")
+	execOnDatabase(t, dsn, "INSERT INTO "+legacyVersionTable+" (version, dirty) VALUES ("+strconv.FormatInt(latestMigrationVersion, 10)+", 1)")
 
 	s, err := store.NewMySQLStore(context.Background(), dsn, 2, 2, time.Minute)
 	if err == nil {
@@ -176,7 +186,7 @@ func TestMigrationLegacyDirtyFailsFast(t *testing.T) {
 	}
 }
 
-func TestMigrationIdempotent(t *testing.T) {
+func TestIntegrationMigrationIdempotent(t *testing.T) {
 	env := requireIntegrationEnv(t)
 	dsn := createTestDatabase(t, env, "kraclaw_mig_idempotent")
 
@@ -185,6 +195,6 @@ func TestMigrationIdempotent(t *testing.T) {
 
 	count, _ := gooseVersionRows(t, dsn)
 	if count != totalMigrations {
-		t.Errorf("goose_db_version rows after second run = %d, want %d", count, totalMigrations)
+		t.Errorf("goose migration rows after second run = %d, want %d", count, totalMigrations)
 	}
 }
