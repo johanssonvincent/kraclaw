@@ -2,6 +2,14 @@ name: Lint
 
 on:
   workflow_call:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   golangci-lint:
@@ -22,8 +30,35 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         with:
-          version: v2.11.3
+          version: v2.13.2
           args: --timeout=5m
 
       - name: Verify production agent images are digest-pinned
         run: make check-image-digests
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+  buf-lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Run buf checks
+        uses: bufbuild/buf-action@8c6a16e16f12ba20b6470afa9c2ba9b5ba8c97c3 # v1.5.0
+        with:
+          lint: true
+          format: true
+          breaking: true
+          push: false
+          pr_comment: false

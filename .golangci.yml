@@ -1,0 +1,27 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - forbidigo
+    - loggercheck
+    - misspell
+    - nlreturn
+    - sloglint
+    - wsl_v5
+  settings:
+    forbidigo:
+      forbid-patterns:
+        - pattern: ^fmt\.Print
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - forbidigo
+          - wsl_v5
+          - nlreturn
+
+formatters:
+  enable:
+    - gofumpt

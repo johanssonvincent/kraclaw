@@ -1,4 +1,4 @@
-.PHONY: help build build-tui build-agent-openai build-agent-anthropic run test clean docker-build docker-push proto lint fmt tidy deps check-image-digests
+.PHONY: help build build-tui build-agent-openai build-agent-anthropic run test clean docker-build docker-push proto proto-lint lint fmt tidy deps check-image-digests
 
 # Variables
 APP_NAME := kraclaw
@@ -61,6 +61,11 @@ docker-push: ## Push Docker image to registry
 proto: ## Generate protobuf Go code
 	@echo "Generating protobuf code..."
 	@buf generate
+
+proto-lint: ## Run buf lint and format checks
+	@echo "Running proto checks..."
+	@buf lint
+	@buf format --diff --exit-code
 
 lint: ## Run golangci-lint
 	@echo "Running linters..."

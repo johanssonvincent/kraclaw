@@ -2,6 +2,14 @@ name: Integration Tests
 
 on:
   workflow_call:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: test-integration-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-integration:
