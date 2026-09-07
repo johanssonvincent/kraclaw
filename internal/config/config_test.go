@@ -288,7 +288,7 @@ func TestLoad(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clear all relevant env vars
+			unsetNATSEnv(t)
 			envKeys := []string{
 				"MYSQL_DSN", "AGENT_IMAGE", "GRPC_ADDR", "REST_ADDR",
 				"GRPC_TLS_CERT_FILE", "GRPC_TLS_KEY_FILE", "GRPC_TLS_CLIENT_CA_FILE",
