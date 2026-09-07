@@ -11,7 +11,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.46.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/go-sql-driver/mysql v1.10.0
-	github.com/go-telegram/bot v1.20.0
+	github.com/go-telegram/bot v1.25.0
 	github.com/google/uuid v1.6.0
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/moby/moby/api v1.56.0
