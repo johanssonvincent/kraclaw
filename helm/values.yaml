@@ -50,6 +50,9 @@ mysql:
 # NATS
 nats:
   url: "nats://nats.nats.svc.cluster.local:4222"  # NATS_URL
+  # existingSecret: name of a pre-created Secret with keys NATS_USER and NATS_PASSWORD.
+  # Required in clusters where the NATS server enforces auth; empty disables all auth wiring.
+  existingSecret: ""
 
 # NOTE: PVC names below assume release name "kraclaw". If using a different release name,
 # override k8s.sessionsPvc, k8s.groupsPvc, k8s.dataPvc, and sandbox.sessionsPvc, sandbox.groupsPvc,

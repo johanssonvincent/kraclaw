@@ -17,6 +17,9 @@ data:
   GRPC_REFLECTION_ENABLED: {{ .Values.server.grpcReflectionEnabled | quote }}
   # NATS
   NATS_URL: {{ .Values.nats.url | quote }}
+  {{- if .Values.nats.existingSecret }}
+  NATS_AUTH_SECRET: {{ .Values.nats.existingSecret | quote }}
+  {{- end }}
   # Kubernetes / sandbox
   K8S_NAMESPACE: {{ .Release.Namespace | quote }}
   {{- if .Values.k8s.agentImageAnthropic }}

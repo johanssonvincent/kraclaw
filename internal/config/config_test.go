@@ -322,3 +322,14 @@ func TestLoad(t *testing.T) {
 		})
 	}
 }
+
+func unsetNATSEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"NATS_URL", "NATS_USER", "NATS_PASSWORD", "NATS_AUTH_SECRET"} {
+		key := key
+		if old, had := os.LookupEnv(key); had {
+			t.Cleanup(func() { _ = os.Setenv(key, old) })
+		}
+		_ = os.Unsetenv(key)
+	}
+}

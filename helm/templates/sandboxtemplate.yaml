@@ -58,6 +58,18 @@ spec:
               value: "placeholder"
             - name: NATS_URL
               value: {{ .Values.sandbox.natsUrl | quote }}
+            {{- if .Values.nats.existingSecret }}
+            - name: NATS_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nats.existingSecret }}
+                  key: NATS_USER
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nats.existingSecret }}
+                  key: NATS_PASSWORD
+            {{- end }}
             - name: ANTHROPIC_BASE_URL
               value: {{ .Values.sandbox.proxyUrl | quote }}
             - name: HOME

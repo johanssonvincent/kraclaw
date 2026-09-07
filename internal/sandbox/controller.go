@@ -45,6 +45,7 @@ type Controller struct {
 	agentImages      map[string]string // provider -> image
 	natsURL          string
 	proxyURL         string
+	natsAuthSecret   string
 	fastStartEnabled bool
 	log              *slog.Logger
 }
@@ -104,7 +105,7 @@ func New(
 	config *rest.Config,
 	namespace string,
 	agentImages map[string]string,
-	natsURL, proxyURL string,
+	natsURL, proxyURL, natsAuthSecret string,
 	fastStartEnabled bool,
 ) (*Controller, error) {
 	if clientset == nil {
@@ -123,6 +124,7 @@ func New(
 		agentImages:      agentImages,
 		natsURL:          natsURL,
 		proxyURL:         proxyURL,
+		natsAuthSecret:   natsAuthSecret,
 		fastStartEnabled: fastStartEnabled,
 		log:              slog.Default().With("component", "sandbox"),
 	}, nil
@@ -353,6 +355,29 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		{Name: "KRACLAW_PROXY_URL", Value: c.proxyURL},
 		{Name: "KRACLAW_PROVIDER", Value: providerID},
 		{Name: "KRACLAW_GROUP", Value: cfg.GroupJID},
+	}
+
+	if c.natsAuthSecret != "" {
+		envVars = append(envVars,
+			corev1.EnvVar{
+				Name: "NATS_USER",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: c.natsAuthSecret},
+						Key:                  "NATS_USER",
+					},
+				},
+			},
+			corev1.EnvVar{
+				Name: "NATS_PASSWORD",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: c.natsAuthSecret},
+						Key:                  "NATS_PASSWORD",
+					},
+				},
+			},
+		)
 	}
 
 	// Determine HOME path for session mount.

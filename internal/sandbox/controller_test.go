@@ -31,7 +31,7 @@ func newTestController() *Controller {
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", true)
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "", true)
 	if err != nil {
 		panic("newTestController: " + err.Error())
 	}
@@ -125,7 +125,7 @@ func newTestControllerWithCreateInterceptor(funcs interceptor.Funcs) *Controller
 		Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", true)
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "", true)
 	if err != nil {
 		panic("newTestControllerWithCreateInterceptor: " + err.Error())
 	}
@@ -522,7 +522,7 @@ func TestCleanupOrphans_IsNotFoundSkipped(t *testing.T) {
 		failName:  "kraclaw-agent-gone-aaa111",
 	}
 
-	ctrl, err := New(fake.NewClientset(), wrappedClient, nil, "test-ns", nil, "nats://localhost:4222", "http://localhost:3001", true)
+	ctrl, err := New(fake.NewClientset(), wrappedClient, nil, "test-ns", nil, "nats://localhost:4222", "http://localhost:3001", "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -959,7 +959,7 @@ func newTestControllerWithFastStart(t *testing.T, fastStart bool) *Controller {
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", fastStart)
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "", fastStart)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1005,6 +1005,132 @@ func TestBuildSandbox_FastStartInitContainerGating(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCreateSandbox_NATSAuthSecretEnv tests NATS auth secret environment injection.
+func TestCreateSandbox_NATSAuthSecretEnv(t *testing.T) {
+	t.Run("auth secret injects cred refs", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = clientgoscheme.AddToScheme(scheme)
+		_ = agentsandboxv1alpha1.AddToScheme(scheme)
+		ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
+		agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
+
+		ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "nats-auth-test", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		status, err := ctrl.CreateSandbox(context.Background(), SandboxConfig{
+			GroupFolder:   "test-group",
+			GroupJID:      "123@g.us",
+			IsMain:        true,
+			Timeout:       5 * time.Minute,
+			AssistantName: "Kraclaw",
+		})
+		if err != nil {
+			t.Fatalf("CreateSandbox: %v", err)
+		}
+
+		// Fetch the Sandbox via ctrl.ctrlClient
+		sandbox := &agentsandboxv1alpha1.Sandbox{}
+		err = ctrl.ctrlClient.Get(context.Background(), client.ObjectKey{Namespace: "test-ns", Name: status.Name}, sandbox)
+		if err != nil {
+			t.Fatalf("sandbox not found: %v", err)
+		}
+
+		// Iterate containers[0].Env and check NATS_USER and NATS_PASSWORD
+		containers := sandbox.Spec.PodTemplate.Spec.Containers
+		if len(containers) == 0 {
+			t.Fatal("no containers in pod spec")
+		}
+
+		envVars := containers[0].Env
+		natsUserFound := false
+		natsPasswordFound := false
+
+		for _, env := range envVars {
+			if env.Name == "NATS_USER" {
+				if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
+					t.Fatalf("NATS_USER should have a ValueFrom.SecretKeyRef")
+				}
+				if env.ValueFrom.SecretKeyRef.Name != "nats-auth-test" {
+					t.Fatalf("NATS_USER SecretKeyRef.Name = %q, want %q", env.ValueFrom.SecretKeyRef.Name, "nats-auth-test")
+				}
+				if env.ValueFrom.SecretKeyRef.Key != "NATS_USER" {
+					t.Fatalf("NATS_USER SecretKeyRef.Key = %q, want %q", env.ValueFrom.SecretKeyRef.Key, "NATS_USER")
+				}
+				natsUserFound = true
+			}
+			if env.Name == "NATS_PASSWORD" {
+				if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
+					t.Fatalf("NATS_PASSWORD should have a ValueFrom.SecretKeyRef")
+				}
+				if env.ValueFrom.SecretKeyRef.Name != "nats-auth-test" {
+					t.Fatalf("NATS_PASSWORD SecretKeyRef.Name = %q, want %q", env.ValueFrom.SecretKeyRef.Name, "nats-auth-test")
+				}
+				if env.ValueFrom.SecretKeyRef.Key != "NATS_PASSWORD" {
+					t.Fatalf("NATS_PASSWORD SecretKeyRef.Key = %q, want %q", env.ValueFrom.SecretKeyRef.Key, "NATS_PASSWORD")
+				}
+				natsPasswordFound = true
+			}
+		}
+
+		if !natsUserFound {
+			t.Error("NATS_USER env var not found in container")
+		}
+		if !natsPasswordFound {
+			t.Error("NATS_PASSWORD env var not found in container")
+		}
+	})
+
+	t.Run("no auth secret omits cred envs", func(t *testing.T) {
+		// Test 2: no auth secret omits cred envs
+		ctrl := newTestController()
+		status, err := ctrl.CreateSandbox(context.Background(), SandboxConfig{
+			GroupFolder:   "test-group",
+			GroupJID:      "123@g.us",
+			IsMain:        true,
+			Timeout:       5 * time.Minute,
+			AssistantName: "Kraclaw",
+		})
+		if err != nil {
+			t.Fatalf("CreateSandbox: %v", err)
+		}
+
+		// Fetch the Sandbox via ctrl.ctrlClient
+		sandbox2 := &agentsandboxv1alpha1.Sandbox{}
+		err = ctrl.ctrlClient.Get(context.Background(), client.ObjectKey{Namespace: "test-ns", Name: status.Name}, sandbox2)
+		if err != nil {
+			t.Fatalf("sandbox not found: %v", err)
+		}
+
+		// Iterate env and assert NO "NATS_USER" and NO "NATS_PASSWORD" entries exist
+		containers2 := sandbox2.Spec.PodTemplate.Spec.Containers
+		if len(containers2) == 0 {
+			t.Fatal("no containers in pod spec")
+		}
+
+		envVars2 := containers2[0].Env
+		natsUserFound2 := false
+		natsPasswordFound2 := false
+
+		for _, env := range envVars2 {
+			if env.Name == "NATS_USER" {
+				natsUserFound2 = true
+			}
+			if env.Name == "NATS_PASSWORD" {
+				natsPasswordFound2 = true
+			}
+		}
+
+		if natsUserFound2 {
+			t.Error("NATS_USER env var found when it should be omitted")
+		}
+		if natsPasswordFound2 {
+			t.Error("NATS_PASSWORD env var found when it should be omitted")
+		}
+	})
 }
 
 func TestBuildSandbox_AgentImagePullPolicy(t *testing.T) {

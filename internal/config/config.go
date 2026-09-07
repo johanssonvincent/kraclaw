@@ -42,7 +42,10 @@ type MySQLConfig struct {
 }
 
 type NATSConfig struct {
-	URL string `envconfig:"NATS_URL" default:"nats://localhost:4222"`
+	URL        string `envconfig:"NATS_URL" default:"nats://localhost:4222"`
+	User       string `envconfig:"NATS_USER"`
+	Password   string `envconfig:"NATS_PASSWORD"`
+	AuthSecret string `envconfig:"NATS_AUTH_SECRET"`
 }
 
 type K8sConfig struct {
