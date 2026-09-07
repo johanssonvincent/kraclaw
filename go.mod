@@ -19,7 +19,7 @@ require (
 	github.com/nats-io/nats.go v1.52.0
 	github.com/ory/dockertest/v4 v4.0.0
 	github.com/pressly/goose/v3 v3.28.0
-	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_golang v1.24.0
 	github.com/prometheus/client_model v0.6.2
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/sync v0.22.0
@@ -29,7 +29,7 @@ require (
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
 	sigs.k8s.io/agent-sandbox v0.4.6
-	sigs.k8s.io/controller-runtime v0.24.0
+	sigs.k8s.io/controller-runtime v0.25.0
 )
 
 require (
@@ -104,7 +104,8 @@ require (
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
-	github.com/prometheus/common v0.67.5 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/prometheus/common v0.70.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sethvargo/go-retry v0.4.0 // indirect
