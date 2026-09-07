@@ -68,6 +68,10 @@ spec:
                 name: {{ .Values.credproxy.secretName }}
             - secretRef:
                 name: {{ .Values.mysql.secretName }}
+            {{- if .Values.nats.existingSecret }}
+            - secretRef:
+                name: {{ .Values.nats.existingSecret }}
+            {{- end }}
             {{- if .Values.channels.discordSecretName }}
             - secretRef:
                 name: {{ .Values.channels.discordSecretName }}

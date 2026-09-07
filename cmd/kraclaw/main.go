@@ -145,7 +145,7 @@ func main() {
 				agentImages[provider.ProviderOpenAI] = cfg.K8s.AgentImageOpenAI
 			}
 
-			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, agentImages, cfg.NATS.URL, cfg.K8s.SandboxProxyURL, cfg.K8s.FastStartEnabled)
+			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, agentImages, cfg.NATS.URL, cfg.K8s.SandboxProxyURL, cfg.NATS.AuthSecret, cfg.K8s.FastStartEnabled)
 			if err != nil {
 				log.Error("failed to create sandbox controller", "error", err)
 
@@ -393,6 +393,7 @@ func connectNATS(cfg config.NATSConfig, log *slog.Logger) (*natsgo.Conn, error) 
 		natsgo.ClosedHandler(func(_ *natsgo.Conn) {
 			log.Error("nats connection permanently closed")
 		}),
+		natsgo.UserInfo(cfg.User, cfg.Password),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)

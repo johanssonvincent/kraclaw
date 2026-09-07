@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	natserver "github.com/nats-io/nats-server/v2/server"
 )
 
 func TestLoadConfig_RequiresGroup(t *testing.T) {
@@ -88,9 +90,9 @@ func TestLoadConfig_AllFields(t *testing.T) {
 
 func TestEnsureGroupDirs(t *testing.T) {
 	cases := map[string]struct {
-		homeEnv string // "" = set to t.TempDir(); "__UNSET__" = unset
+		homeEnv string
 		setup   func(t *testing.T, home string)
-		wantErr string // substring; empty = no error
+		wantErr string
 	}{
 		"happy_path": {
 			homeEnv: "",
@@ -113,7 +115,7 @@ func TestEnsureGroupDirs(t *testing.T) {
 	for name, tt := range cases {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
-			archives := t.TempDir() // stand-in for /workspace/archives
+			archives := t.TempDir()
 			if tt.homeEnv == "__UNSET__" {
 				t.Setenv("HOME", "")
 			} else {
@@ -143,8 +145,6 @@ func TestEnsureGroupDirs(t *testing.T) {
 }
 
 func TestRun_PrepullArg_ReturnsOnSignal(t *testing.T) {
-	// Drive Run() with --prepull and a test-controlled signal context. The
-	// function must return nil without calling LoadConfig (no required env vars set).
 	oldArgs := os.Args
 	t.Cleanup(func() { os.Args = oldArgs })
 	os.Args = []string{"agent", "--prepull"}
@@ -172,5 +172,60 @@ func TestRun_PrepullArg_ReturnsOnSignal(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run() did not return after prepull wait was released")
+	}
+}
+
+func startTestNATSServerWithAuth(t *testing.T) string {
+	t.Helper()
+	opts := &natserver.Options{
+		Host:     "127.0.0.1",
+		Port:     -1,
+		Username: "agentuser",
+		Password: "agentpass",
+	}
+	s, err := natserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("new nats server: %v", err)
+	}
+	go s.Start()
+	if !s.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats server not ready")
+	}
+	t.Cleanup(s.Shutdown)
+	return s.ClientURL()
+}
+
+func TestConnectNATS(t *testing.T) {
+	url := startTestNATSServerWithAuth(t)
+	cases := []struct {
+		name    string
+		user    string
+		pass    string
+		wantErr bool
+	}{
+		{"correct credentials connect", "agentuser", "agentpass", false},
+		{"wrong password fails", "agentuser", "nope", true},
+		{"missing credentials fail", "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			nc, err := ConnectNATS(url, tc.user, tc.pass)
+			if tc.wantErr {
+				if err == nil {
+					if nc != nil {
+						nc.Close()
+					}
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ConnectNATS: %v", err)
+			}
+			if nc == nil {
+				t.Fatal("expected non-nil connection")
+			}
+			nc.Close()
+		})
 	}
 }
