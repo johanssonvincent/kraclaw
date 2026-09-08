@@ -31,9 +31,10 @@ kubeconfig
 *.kubeconfig
 
 # Claude Code
-.claude/worktrees/
+.claude/
 
 # Internal planning artifacts
 .planning/
+.gsd/
 docs/superpowers/
 docs/diagrams/
