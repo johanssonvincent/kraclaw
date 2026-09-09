@@ -99,7 +99,10 @@ func (s *Scheduler) poll(ctx context.Context) {
 		wg.Add(1)
 		go func(t store.ScheduledTask) {
 			defer wg.Done()
-
+			// If ctx is cancelled while waiting for a slot, Acquire returns an
+			// error and runTask is skipped. The task row is left untouched
+			// (LastRun/NextRun unchanged), so GetDueTasks will re-surface it on
+			// the next poll tick provided NextRun is still in the past.
 			if err := s.semaphore.Acquire(ctx, 1); err != nil {
 				s.log.Error("semaphore acquire cancelled", "task_id", t.ID, "error", err)
 

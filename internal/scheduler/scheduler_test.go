@@ -16,7 +16,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
-// mockTaskStore implements store.TaskStore for testing poll concurrency.
+// mockTaskStore implements store.TaskStore for testing poll concurrency and runTask.
 type mockTaskStore struct {
 	tasks []store.ScheduledTask
 
@@ -63,6 +63,8 @@ func (m *mockTaskStore) UpdateTask(ctx context.Context, t *store.ScheduledTask) 
 }
 func (m *mockTaskStore) DeleteTask(context.Context, string, string) error { return nil }
 func (m *mockTaskStore) GetDueTasks(ctx context.Context) ([]store.ScheduledTask, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.tasks, nil
 }
 
