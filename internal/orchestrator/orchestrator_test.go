@@ -263,6 +263,7 @@ func (m *mockQueue) Enqueue(_ context.Context, _ string, msg *queue.QueueMessage
 	m.enqueueMsg = msg
 	return m.enqueueErr
 }
+
 func (m *mockQueue) Dequeue(_ context.Context, _ string) (*queue.QueueMessage, error) {
 	return nil, nil
 }

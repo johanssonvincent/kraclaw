@@ -506,10 +506,13 @@ func (o *Orchestrator) flushConfirmedCursor(ctx context.Context) error {
 	if !o.confirmedCursorDirty.Swap(false) {
 		return nil
 	}
+
 	if err := o.saveState(ctx); err != nil {
 		o.confirmedCursorDirty.Store(true)
+
 		return err
 	}
+
 	return nil
 }
 
@@ -1932,7 +1935,7 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 				"enqueue_error", err,
 				"cleanup_error", delErr,
 			)
-			return fmt.Errorf("execute scheduled task: enqueue: %w; compensating delete also failed: %v", err, delErr)
+			return fmt.Errorf("execute scheduled task: enqueue: %w (compensating delete also failed: %v)", err, delErr)
 		}
 		return fmt.Errorf("execute scheduled task: %w", err)
 	}
