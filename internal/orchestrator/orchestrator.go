@@ -1935,6 +1935,7 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 				"enqueue_error", err,
 				"cleanup_error", delErr,
 			)
+
 			return fmt.Errorf("execute scheduled task: enqueue: %w; compensating delete also failed: %w", err, delErr)
 		}
 
