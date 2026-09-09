@@ -198,6 +198,18 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 	}
 
 	task.LastResult = &outcome
+	// Once-task semantics win over retry: the run is already claimed as
+	// completed, and re-firing a once-task on a timer would violate its
+	// contract. For recurring tasks, compensate the advance-first claim by
+	// pulling the task back into the due set after a short backoff so the
+	// failure is retried; Status stays active and LastResult records the
+	// error.
+	if err != nil && task.ScheduleType != store.ScheduleOnce {
+		retryAt := time.Now().Add(1 * time.Minute)
+		task.NextRun = &retryAt
+		task.Status = store.TaskActive
+	}
+
 	if updateErr := s.store.UpdateTask(ctx, &task); updateErr != nil {
 		s.log.Error("failed to record task outcome", "task_id", task.ID, "error", updateErr)
 	}

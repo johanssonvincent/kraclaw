@@ -654,6 +654,84 @@ func TestSchedulerPauseOnPermanent(t *testing.T) {
 	}
 }
 
+func TestExecutorErrorReschedulesTask(t *testing.T) {
+	past := time.Now().Add(-5 * time.Minute)
+	ms := &mockTaskStore{
+		tasks: []store.ScheduledTask{{
+			ID:            "t1",
+			ScheduleType:  store.ScheduleCron,
+			ScheduleValue: "*/5 * * * *",
+			NextRun:       &past,
+			Status:        store.TaskActive,
+		}},
+	}
+	executor := func(_ context.Context, task store.ScheduledTask) error {
+		ms.record("executor")
+
+		return errors.New("agent crashed")
+	}
+
+	sched, err := New(ms, executor, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sched.poll(context.Background())
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	// The task must stay active and become due again promptly, despite the
+	// advance-first claim that already moved NextRun forward.
+	last := ms.updateCalls[len(ms.updateCalls)-1]
+	if last.Status != store.TaskActive {
+		t.Errorf("final Status = %q, want %q", last.Status, store.TaskActive)
+	}
+
+	if last.NextRun == nil || !last.NextRun.Before(time.Now().Add(2*time.Minute)) {
+		t.Errorf("final NextRun = %v, want within ~2 minutes (retry soon)", last.NextRun)
+	}
+}
+
+func TestExecutorErrorOnceTaskNotRetried(t *testing.T) {
+	past := time.Now().Add(-5 * time.Minute)
+	ms := &mockTaskStore{
+		tasks: []store.ScheduledTask{{
+			ID:            "t1",
+			ScheduleType:  store.ScheduleOnce,
+			ScheduleValue: past.Add(-time.Minute).Format(time.RFC3339),
+			Status:        store.TaskActive,
+		}},
+	}
+	executor := func(_ context.Context, task store.ScheduledTask) error {
+		ms.record("executor")
+
+		return errors.New("agent crashed")
+	}
+
+	sched, err := New(ms, executor, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sched.poll(context.Background())
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	// Once-task semantics win over retry: the run is already claimed as
+	// completed, and re-firing a once-task on a timer would violate its
+	// contract. The failure lives in LastResult and the run log.
+	last := ms.updateCalls[len(ms.updateCalls)-1]
+	if last.Status != store.TaskCompleted {
+		t.Errorf("final Status = %q, want %q", last.Status, store.TaskCompleted)
+	}
+
+	if last.NextRun != nil {
+		t.Errorf("final NextRun = %v, want nil", last.NextRun)
+	}
+}
+
 func TestPerRunContextIsolation(t *testing.T) {
 	dueOnce := func(id string) store.ScheduledTask {
 		return store.ScheduledTask{
