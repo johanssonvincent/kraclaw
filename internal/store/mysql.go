@@ -436,6 +436,7 @@ func (s *MySQLStore) DeleteMessage(ctx context.Context, id, chatJID string) erro
 	); err != nil {
 		return fmt.Errorf("delete message: %w", err)
 	}
+
 	return nil
 }
 
