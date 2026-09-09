@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -18,13 +19,43 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/johanssonvincent/kraclaw/internal/auth/chatgpt"
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/channel/tui"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
 )
+
+// ErrAuthConfigIncomplete signals that AuthConfig has only one of
+// ChatGPT/Credentials set. Both must be present (or both nil) so the
+// AuthService is either fully wired or absent — no silent half-config.
+var ErrAuthConfigIncomplete = errors.New("server: AuthConfig requires both ChatGPT and Credentials")
+
+// AuthConfig groups the dependencies the AuthService needs. nil disables
+// the AuthService entirely; non-nil with any field nil is a startup error.
+type AuthConfig struct {
+	ChatGPT     *chatgpt.Client
+	Credentials *credproxy.CredentialStore
+	Providers   *provider.Registry // optional; falls back to NewRegistry()
+}
+
+// Validate returns nil when AuthConfig is either nil (disabled) or fully
+// populated. Half-set returns ErrAuthConfigIncomplete.
+func (c *AuthConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+
+	if c.ChatGPT == nil || c.Credentials == nil {
+		return ErrAuthConfigIncomplete
+	}
+
+	return nil
+}
 
 // Server manages the gRPC server and REST gateway.
 type Server struct {
@@ -60,6 +91,11 @@ type Config struct {
 	TUIChannel            *tui.TUI
 	Channels              []channel.Channel
 	Log                   *slog.Logger
+	ModelLister           *credproxy.ModelLister
+
+	// Auth wires the optional AuthService. nil disables auth-flow RPCs.
+	// Non-nil with either ChatGPT or Credentials unset is a startup error.
+	Auth *AuthConfig
 }
 
 // New creates a new Server.
@@ -67,6 +103,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+
 	if cfg.StartedAt.IsZero() {
 		cfg.StartedAt = time.Now().UTC()
 	}
@@ -90,6 +127,7 @@ func New(cfg Config) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
 	}
 
@@ -105,12 +143,15 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	events := newEventHub(cfg.Log)
-	registerAPIServices(grpcSrv, cfg, events)
+	if err := registerAPIServices(grpcSrv, cfg, events); err != nil {
+		return nil, fmt.Errorf("register API services: %w", err)
+	}
 
 	// REST gateway with health and metrics
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler())
 	mux.HandleFunc("/readyz", readyzHandler(cfg.DB))
+
 	if cfg.MetricsPath != "" {
 		mux.Handle(cfg.MetricsPath, promhttp.Handler())
 	}
@@ -154,14 +195,17 @@ func (s *Server) Start(ctx context.Context) error {
 		lis, err := net.Listen("tcp", s.grpcAddr)
 		if err != nil {
 			errCh <- fmt.Errorf("gRPC listen: %w", err)
+
 			return
 		}
+
 		lis = &allowlistListener{
 			Listener: lis,
 			allowed:  s.allowedCIDRs,
 			log:      s.log,
 		}
 		s.log.Info("gRPC server listening", "addr", s.grpcAddr)
+
 		if err := s.grpcServer.Serve(lis); err != nil {
 			errCh <- fmt.Errorf("gRPC serve: %w", err)
 		}
@@ -170,6 +214,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start REST gateway
 	go func() {
 		s.log.Info("REST gateway listening", "addr", s.restAddr)
+
 		if err := s.restServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("REST serve: %w", err)
 		}
@@ -188,6 +233,7 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) Stop(ctx context.Context) {
 	s.log.Info("shutting down servers")
 	s.grpcServer.GracefulStop()
+
 	if err := s.restServer.Shutdown(ctx); err != nil {
 		s.log.Error("REST server shutdown error", "error", err)
 	}
@@ -203,6 +249,7 @@ func (s *Server) watchSandboxEvents(ctx context.Context) {
 			Source:    "sandbox",
 			Message:   fmt.Sprintf("failed to watch sandbox events: %v", err),
 		})
+
 		return
 	}
 
@@ -214,6 +261,7 @@ func (s *Server) watchSandboxEvents(ctx context.Context) {
 			if !ok {
 				return
 			}
+
 			s.events.publish(sandboxEventToProto(evt))
 		}
 	}
@@ -234,6 +282,7 @@ func readyzHandler(db *sql.DB) http.HandlerFunc {
 		// Check MySQL
 		if err := db.PingContext(ctx); err != nil {
 			http.Error(w, fmt.Sprintf("mysql: %v", err), http.StatusServiceUnavailable)
+
 			return
 		}
 

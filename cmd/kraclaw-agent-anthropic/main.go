@@ -26,10 +26,12 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 	if model == "" {
 		model = "claude-sonnet-4-6"
 	}
+
 	proxyURL := os.Getenv("KRACLAW_PROXY_URL")
 	if proxyURL == "" {
 		return fmt.Errorf("KRACLAW_PROXY_URL is required")
 	}
+
 	groupJID := os.Getenv("KRACLAW_GROUP")
 	if groupJID == "" {
 		return fmt.Errorf("KRACLAW_GROUP is required")
@@ -69,6 +71,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 				text, err := extractMessageText(msg.Payload)
 				if err != nil {
 					log.Warn("failed to extract message text", "error", err)
+
 					continue
 				}
 
@@ -83,6 +86,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 				})
 
 				var buf strings.Builder
+
 				for stream.Next() {
 					event := stream.Current()
 					switch delta := event.AsAny().(type) {
@@ -92,20 +96,25 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 						}
 					}
 				}
+
 				fullResponse := buf.String()
+
 				if err := stream.Err(); err != nil {
 					log.Error("anthropic stream error", "error", err)
+
 					if sendErr := ipc.SendOutput(ctx, &agent.OutboundMessage{
 						Type: "message",
 						Text: "I encountered an error processing your message. Please try again.",
 					}); sendErr != nil {
 						log.Error("failed to send error message", "error", sendErr)
 					}
+
 					continue
 				}
 
 				if fullResponse == "" {
 					log.Warn("anthropic returned empty response", "model", model)
+
 					fullResponse = "I received an empty response from the model. Please try again."
 				}
 
@@ -114,6 +123,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					Text: fullResponse,
 				}); err != nil {
 					log.Error("failed to send response, discarding from history", "error", err)
+
 					continue
 				}
 				// Only append to history after successful send.
@@ -135,6 +145,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 			case "shutdown":
 				log.Info("shutdown signal received")
+
 				return nil
 
 			default:
@@ -152,11 +163,14 @@ func extractMessageText(payload json.RawMessage) (string, error) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return "", err
 	}
+
 	if p.Messages != "" {
 		return p.Messages, nil
 	}
+
 	if p.Text != "" {
 		return p.Text, nil
 	}
+
 	return "", fmt.Errorf("no text content in payload")
 }

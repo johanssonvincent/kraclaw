@@ -53,10 +53,12 @@ jobs:
 
   build:
     needs: [test-unit, test-integration, lint]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      pull-requests: write
 
     steps:
       - name: Checkout repository
@@ -76,15 +78,14 @@ jobs:
           echo "base=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            echo "pr_tag=${BASE_VERSION}-pr${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "pr_tag=${BASE_VERSION}-PR-${PR_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Container registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -92,7 +93,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -105,12 +106,28 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Comment image tag on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        with:
+          header: kraclaw-image
+          message: |
+            **Image built** — `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.pr_tag }}`
+
+            Pull with:
+            ```
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.pr_tag }}
+            ```
+
+            Digest: `${{ steps.build.outputs.digest }}`

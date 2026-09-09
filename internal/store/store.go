@@ -14,6 +14,11 @@ import (
 // not exist in the database.
 var ErrGroupNotFound = errors.New("group not found")
 
+// CronParser is the single parser for every schedule string in the codebase —
+// validation and next-run computation must share it or they can drift into
+// accepting different schedules.
+var CronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+
 // ContainerConfig holds per-group container settings.
 type ContainerConfig struct {
 	AdditionalMounts []AdditionalMount `json:"additionalMounts,omitempty"`
@@ -45,12 +50,15 @@ func (g *Group) Validate() error {
 	if g.JID == "" {
 		return fmt.Errorf("group JID is required")
 	}
+
 	if g.Folder == "" {
 		return fmt.Errorf("group folder is required")
 	}
+
 	if g.RequiresTrigger && g.TriggerPattern == "" {
 		return fmt.Errorf("trigger pattern required when requires_trigger is true")
 	}
+
 	return nil
 }
 
@@ -122,10 +130,10 @@ func (t *ScheduledTask) Validate() error {
 	if t.ID == "" {
 		return fmt.Errorf("task ID is required")
 	}
+
 	switch t.ScheduleType {
 	case ScheduleCron:
-		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		if _, err := parser.Parse(t.ScheduleValue); err != nil {
+		if _, err := CronParser.Parse(t.ScheduleValue); err != nil {
 			return fmt.Errorf("invalid cron expression %q: %w", t.ScheduleValue, err)
 		}
 	case ScheduleInterval:
@@ -139,6 +147,7 @@ func (t *ScheduledTask) Validate() error {
 	default:
 		return fmt.Errorf("unknown schedule type %q", t.ScheduleType)
 	}
+
 	return nil
 }
 
@@ -279,6 +288,7 @@ func ContainerConfigJSON(cc *ContainerConfig) ([]byte, error) {
 	if cc == nil {
 		return nil, nil
 	}
+
 	return json.Marshal(cc)
 }
 
@@ -287,9 +297,11 @@ func ParseContainerConfig(data []byte) (*ContainerConfig, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
+
 	var cc ContainerConfig
 	if err := json.Unmarshal(data, &cc); err != nil {
 		return nil, err
 	}
+
 	return &cc, nil
 }

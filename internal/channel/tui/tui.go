@@ -46,6 +46,7 @@ func (t *TUI) Connect(_ context.Context) error {
 func (t *TUI) IsConnected() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
 	return t.connected
 }
 
@@ -65,6 +66,7 @@ func (t *TUI) Disconnect(_ context.Context) error {
 		for _, ch := range chans {
 			close(ch)
 		}
+
 		delete(t.subs, jid)
 	}
 
@@ -118,9 +120,11 @@ func (t *TUI) HandleInbound(jid, sender, senderName, content string) error {
 	}
 
 	onMessage(jid, msg)
+
 	if onChatMeta != nil {
 		onChatMeta(jid, time.Now(), jid, "tui", false)
 	}
+
 	return nil
 }
 
@@ -145,10 +149,12 @@ func (t *TUI) Subscribe(jid string) (<-chan string, func()) {
 
 		chans := t.subs[jid]
 		found := false
+
 		for i, c := range chans {
 			if c == ch {
 				t.subs[jid] = append(chans[:i], chans[i+1:]...)
 				found = true
+
 				break
 			}
 		}
@@ -158,6 +164,7 @@ func (t *TUI) Subscribe(jid string) (<-chan string, func()) {
 		if found {
 			close(ch)
 		}
+
 		closed = true
 	}
 
@@ -169,5 +176,6 @@ func (t *TUI) Subscribe(jid string) (<-chan string, func()) {
 func (t *TUI) SetConfig(cfg channel.ChannelConfig) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
 	t.cfg = cfg
 }

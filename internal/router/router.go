@@ -22,6 +22,7 @@ func New(channels []channel.Channel, s store.Store) (*Router, error) {
 	if s == nil {
 		return nil, fmt.Errorf("router: store is required")
 	}
+
 	return &Router{
 		channels: channels,
 		store:    s,
@@ -41,6 +42,7 @@ func (r *Router) RouteOutbound(ctx context.Context, chatJID string, text string)
 			return ch.SendMessage(ctx, chatJID, stripped)
 		}
 	}
+
 	return fmt.Errorf("no channel for JID: %s", chatJID)
 }
 
@@ -49,6 +51,7 @@ func (r *Router) MatchesTrigger(content string, pattern string) bool {
 	if pattern == "" {
 		return true
 	}
+
 	return strings.HasPrefix(strings.ToLower(content), strings.ToLower(pattern))
 }
 
@@ -60,18 +63,22 @@ func (r *Router) FormatMessagesForAgent(messages []store.Message, assistantName 
 
 	var b strings.Builder
 	b.WriteString("<messages>\n")
+
 	for _, m := range messages {
 		name := m.SenderName
 		if m.IsBotMessage {
 			name = assistantName
 		}
+
 		fmt.Fprintf(&b, "<message sender=%q timestamp=%q>%s</message>\n",
 			escapeXML(name),
 			m.Timestamp.Format("2006-01-02T15:04:05"),
 			escapeXML(m.Content),
 		)
 	}
+
 	b.WriteString("</messages>")
+
 	return b.String()
 }
 
@@ -80,6 +87,7 @@ func escapeXML(s string) string {
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	s = strings.ReplaceAll(s, "\"", "&quot;")
+
 	return s
 }
 
@@ -89,11 +97,14 @@ func stripInternalTags(text string) string {
 		if start == -1 {
 			break
 		}
+
 		end := strings.Index(text, "</internal>")
 		if end == -1 {
 			break
 		}
+
 		text = text[:start] + text[end+len("</internal>"):]
 	}
+
 	return strings.TrimSpace(text)
 }

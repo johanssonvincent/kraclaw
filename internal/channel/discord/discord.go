@@ -21,6 +21,7 @@ func init() {
 		if token == "" {
 			return nil, nil
 		}
+
 		return New(token, cfg), nil
 	})
 }
@@ -70,6 +71,7 @@ func (d *Discord) Connect(ctx context.Context) error {
 	d.mu.Unlock()
 
 	d.log.Info("connected to Discord")
+
 	return nil
 }
 
@@ -99,10 +101,12 @@ func (d *Discord) handleMessage(_ *discordgo.Session, m *discordgo.MessageCreate
 
 	if d.cfg.OnChatMeta != nil {
 		channelName := ""
+
 		ch, err := d.session.Channel(m.ChannelID)
 		if err == nil {
 			channelName = ch.Name
 		}
+
 		d.cfg.OnChatMeta(chatJID, time.Now(), channelName, "discord", isGroup)
 	}
 }
@@ -117,10 +121,12 @@ func (d *Discord) SendMessage(_ context.Context, jid string, text string) error 
 	}
 
 	channelID := strings.TrimPrefix(jid, jidPrefix)
+
 	_, err := session.ChannelMessageSend(channelID, text)
 	if err != nil {
 		return fmt.Errorf("send discord message: %w", err)
 	}
+
 	return nil
 }
 
@@ -138,12 +144,14 @@ func (d *Discord) SetTyping(_ context.Context, jid string, typing bool) error {
 	}
 
 	channelID := strings.TrimPrefix(jid, jidPrefix)
+
 	return session.ChannelTyping(channelID)
 }
 
 func (d *Discord) IsConnected() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+
 	return d.connected
 }
 
@@ -167,5 +175,6 @@ func (d *Discord) Disconnect(_ context.Context) error {
 
 	d.connected = false
 	d.log.Info("disconnected from Discord")
+
 	return nil
 }

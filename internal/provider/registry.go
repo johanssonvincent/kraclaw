@@ -8,6 +8,25 @@ const (
 	ProviderOpenAI    = "openai"
 )
 
+// AuthMode names how clients of a provider authenticate. Values must match
+// internal/credproxy.AuthMode strings — that package owns the canonical set.
+type AuthMode string
+
+const (
+	AuthModeAPIKey  AuthMode = "api_key"
+	AuthModeChatGPT AuthMode = "chatgpt"
+)
+
+// Valid reports whether m is one of the known auth modes. Empty is invalid.
+func (m AuthMode) Valid() bool {
+	switch m {
+	case AuthModeAPIKey, AuthModeChatGPT:
+		return true
+	default:
+		return false
+	}
+}
+
 // ModelInfo describes a single model offered by a provider.
 type ModelInfo struct {
 	ID          string
@@ -20,6 +39,7 @@ type ProviderInfo struct {
 	DisplayName  string
 	Models       []ModelInfo
 	DefaultModel string
+	AuthMode     AuthMode
 }
 
 // Registry holds all known providers and their models.
@@ -35,6 +55,7 @@ func NewRegistry() *Registry {
 		ID:           ProviderAnthropic,
 		DisplayName:  "Anthropic",
 		DefaultModel: "claude-sonnet-4-6",
+		AuthMode:     AuthModeAPIKey,
 		Models: []ModelInfo{
 			{ID: "claude-opus-4-6", DisplayName: "Claude Opus 4.6"},
 			{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6"},
@@ -50,23 +71,46 @@ func NewRegistry() *Registry {
 	r.providers[ProviderOpenAI] = ProviderInfo{
 		ID:           ProviderOpenAI,
 		DisplayName:  "OpenAI",
-		DefaultModel: "gpt-5.4",
+		DefaultModel: "gpt-5.5",
+		AuthMode:     AuthModeChatGPT,
 		Models: []ModelInfo{
+			{ID: "gpt-5.5", DisplayName: "GPT-5.5"},
 			{ID: "gpt-5.4", DisplayName: "GPT-5.4"},
 			{ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini"},
-			{ID: "gpt-5.4-nano", DisplayName: "GPT-5.4 Nano"},
-			{ID: "gpt-5.4-pro", DisplayName: "GPT-5.4 Pro"},
 			{ID: "gpt-5.3-codex", DisplayName: "GPT-5.3 Codex"},
-			{ID: "o3-mini", DisplayName: "o3-mini"},
+			{ID: "gpt-5.3-codex-spark", DisplayName: "GPT-5.3 Codex Spark"},
+			{ID: "gpt-5.2-codex", DisplayName: "GPT-5.2 Codex"},
+			{ID: "gpt-5.2", DisplayName: "GPT-5.2"},
+			{ID: "gpt-5.1-codex-max", DisplayName: "GPT-5.1 Codex Max"},
+			{ID: "gpt-5.1", DisplayName: "GPT-5.1"},
+			{ID: "gpt-5-codex", DisplayName: "GPT-5 Codex"},
+			{ID: "gpt-5-codex-mini", DisplayName: "GPT-5 Codex Mini"},
 		},
 	}
 
 	return r
 }
 
+// NewRegistryForTest creates a registry from an explicit map, intended for tests
+// that need control over which providers are registered (including an empty set).
+func NewRegistryForTest(providers map[string]ProviderInfo) *Registry {
+	if providers == nil {
+		providers = make(map[string]ProviderInfo)
+	}
+
+	for id, p := range providers {
+		if !p.AuthMode.Valid() {
+			panic(fmt.Sprintf("provider.NewRegistryForTest: provider %q has invalid AuthMode %q", id, p.AuthMode))
+		}
+	}
+
+	return &Registry{providers: providers}
+}
+
 // Get returns a provider by ID.
 func (r *Registry) Get(id string) (ProviderInfo, bool) {
 	p, ok := r.providers[id]
+
 	return p, ok
 }
 
@@ -81,14 +125,17 @@ func (r *Registry) ValidateModel(providerID, model string) error {
 	if !ok {
 		return fmt.Errorf("unknown provider %q", providerID)
 	}
+
 	if model == "" {
 		return nil
 	}
+
 	for _, m := range p.Models {
 		if m.ID == model {
 			return nil
 		}
 	}
+
 	return fmt.Errorf("model %q is not valid for provider %q", model, providerID)
 }
 
@@ -98,8 +145,10 @@ func (r *Registry) Models(providerID string) []ModelInfo {
 	if !ok {
 		return nil
 	}
+
 	out := make([]ModelInfo, len(p.Models))
 	copy(out, p.Models)
+
 	return out
 }
 
@@ -109,5 +158,6 @@ func (r *Registry) Providers() []string {
 	for id := range r.providers {
 		ids = append(ids, id)
 	}
+
 	return ids
 }

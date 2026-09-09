@@ -17,6 +17,8 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/config"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/metrics"
+	"github.com/johanssonvincent/kraclaw/internal/metrics/metricstest"
 	"github.com/johanssonvincent/kraclaw/internal/queue"
 	"github.com/johanssonvincent/kraclaw/internal/router"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
@@ -37,9 +39,9 @@ type mockStore struct {
 	storeMessageCalledWith *store.Message
 	storeMessageErr        error
 
-	deleteMessageCalled bool
-	deleteMessageArgs   struct{ ID, ChatJID string }
-	deleteMessageErr    error
+	deleteMessageCalled  bool
+	deleteMessageArgs    struct{ ID, ChatJID string }
+	deleteMessageErr     error
 	upsertSessionErr     error
 	deleteSessionErr     error
 	allowlist            map[string][]store.SenderAllowlistEntry
@@ -48,8 +50,8 @@ type mockStore struct {
 
 	updateTaskCalled     bool
 	deleteTaskCalledWith [2]string // [id, groupFolder]
-	setStateCalls []string // records keys passed to SetState for counting
-	setStateErr   error   // if non-nil, SetState returns this error
+	setStateCalls        []string  // records keys passed to SetState for counting
+	setStateErr          error     // if non-nil, SetState returns this error
 }
 
 func newMockStore() *mockStore {
@@ -264,6 +266,7 @@ func (m *mockQueue) Enqueue(_ context.Context, _ string, msg *queue.QueueMessage
 func (m *mockQueue) Dequeue(_ context.Context, _ string) (*queue.QueueMessage, error) {
 	return nil, nil
 }
+
 func (m *mockQueue) Peek(_ context.Context, _ string) (*queue.QueueMessage, error) { return nil, nil }
 func (m *mockQueue) Len(_ context.Context, _ string) (int64, error)                { return 0, nil }
 func (m *mockQueue) MarkActive(_ context.Context, groupJID string) error {
@@ -273,6 +276,7 @@ func (m *mockQueue) MarkActive(_ context.Context, groupJID string) error {
 	m.active[groupJID] = true
 	return nil
 }
+
 func (m *mockQueue) MarkInactive(_ context.Context, groupJID string) error {
 	if m.markInactiveErr != nil {
 		return m.markInactiveErr
@@ -280,6 +284,7 @@ func (m *mockQueue) MarkInactive(_ context.Context, groupJID string) error {
 	delete(m.active, groupJID)
 	return nil
 }
+
 func (m *mockQueue) IsActive(_ context.Context, groupJID string) (bool, error) {
 	if m.isActiveErr != nil {
 		return false, m.isActiveErr
@@ -307,12 +312,20 @@ type mockIPCBroker struct {
 	deleteStreamsGroup  string
 	sendInputFn         func(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error
 	subscribeOutputFn   func(ctx context.Context, group string) (<-chan *ipc.IPCMessage, <-chan error, error)
+
+	ensureStreamForAgentCalls []struct{ group, agentID string }
+	ensureStreamForAgentErrs  []error // queue of errors; consumed in order. nil entry = success.
+	ensureStreamForAgentErr   error   // fallback if errs queue empty
+	streams                   map[string]bool
+	callOrderMu               sync.Mutex
+	callOrder                 []string // appended on EnsureStreamForAgent + DeleteStreams
 }
 
-func (m *mockIPCBroker) PublishOutput(_ context.Context, _ string, _ string, msg *ipc.IPCMessage) error {
+func (m *mockIPCBroker) PublishOutput(_ context.Context, _, _ string, msg *ipc.IPCMessage) error {
 	m.published = append(m.published, msg)
 	return nil
 }
+
 func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *ipc.IPCMessage, <-chan error, error) {
 	m.subscribeCount++
 	if m.subscribeOutputFn != nil {
@@ -330,6 +343,7 @@ func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-ch
 	ch := make(chan *ipc.IPCMessage)
 	return ch, make(chan error), nil
 }
+
 func (m *mockIPCBroker) SendInput(ctx context.Context, group, agentID string, msg *ipc.IPCMessage) error {
 	if m.sendInputFn != nil {
 		return m.sendInputFn(ctx, group, agentID, msg)
@@ -337,14 +351,48 @@ func (m *mockIPCBroker) SendInput(ctx context.Context, group, agentID string, ms
 	m.inputSent = append(m.inputSent, msg)
 	return nil
 }
-func (m *mockIPCBroker) ReadInput(_ context.Context, _ string, _ string) (<-chan *ipc.IPCMessage, error) {
+
+func (m *mockIPCBroker) ReadInput(_ context.Context, _, _ string) (<-chan *ipc.IPCMessage, error) {
 	ch := make(chan *ipc.IPCMessage)
 	return ch, nil
 }
+
+func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, group, agentID string) error {
+	m.callOrderMu.Lock()
+	defer m.callOrderMu.Unlock()
+	m.ensureStreamForAgentCalls = append(m.ensureStreamForAgentCalls, struct{ group, agentID string }{group, agentID})
+	m.callOrder = append(m.callOrder, "EnsureStreamForAgent")
+	if m.streams == nil {
+		m.streams = make(map[string]bool)
+	}
+
+	m.streams[group] = true
+	if len(m.ensureStreamForAgentErrs) > 0 {
+		err := m.ensureStreamForAgentErrs[0]
+		m.ensureStreamForAgentErrs = m.ensureStreamForAgentErrs[1:]
+		return err
+	}
+	return m.ensureStreamForAgentErr
+}
 func (m *mockIPCBroker) Close() error { return nil }
+func (m *mockIPCBroker) StreamExists(_ context.Context, group string) (bool, error) {
+	m.callOrderMu.Lock()
+	defer m.callOrderMu.Unlock()
+
+	return m.streams[group], nil
+}
+
 func (m *mockIPCBroker) DeleteStreams(_ context.Context, group string) error {
+	m.callOrderMu.Lock()
 	m.deleteStreamsCalled++
 	m.deleteStreamsGroup = group
+	m.callOrder = append(m.callOrder, "DeleteStreams")
+	if m.streams == nil {
+		m.streams = make(map[string]bool)
+	}
+
+	delete(m.streams, group)
+	m.callOrderMu.Unlock()
 	return nil
 }
 
@@ -368,7 +416,8 @@ func (m *mockChannel) IsConnected() bool                                   { ret
 func (m *mockChannel) Disconnect(_ context.Context) error                  { m.connected = false; return nil }
 func (m *mockChannel) SetTyping(_ context.Context, _ string, _ bool) error { return nil }
 func (m *mockChannel) OwnsJID(jid string) bool                             { return m.ownsJIDs[jid] }
-func (m *mockChannel) SendMessage(_ context.Context, jid string, text string) error {
+
+func (m *mockChannel) SendMessage(_ context.Context, jid, text string) error {
 	m.sent = append(m.sent, sentMessage{jid: jid, text: text})
 	return nil
 }
@@ -389,7 +438,7 @@ func newTestOrchestrator(s *mockStore, q *mockQueue, b *mockIPCBroker) *Orchestr
 	log := slog.Default()
 	reg := channel.NewRegistry()
 
-	o, err := New(cfg, s, q, b, nil, reg, log)
+	o, err := New(cfg, s, q, b, nil, reg, log, nil)
 	if err != nil {
 		panic("newTestOrchestrator: " + err.Error())
 	}
@@ -757,21 +806,29 @@ type mockSandboxControllerWithTracking struct {
 	createCalled atomic.Bool
 	createErr    error
 	stopCalled   atomic.Bool
+	onCreate     func() // called inside CreateSandbox before the early-return
+	hasActive    bool   // returned by HasActiveSandbox; defaults to false
+	hasActiveErr error  // returned by HasActiveSandbox; defaults to nil
 }
 
 func (m *mockSandboxControllerWithTracking) CreateSandbox(_ context.Context, _ sandbox.SandboxConfig) (*sandbox.SandboxStatus, error) {
 	m.createCalled.Store(true)
+	if m.onCreate != nil {
+		m.onCreate()
+	}
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
 	return &sandbox.SandboxStatus{Name: "test-sandbox", State: sandbox.StatePending}, nil
 }
+
 func (m *mockSandboxControllerWithTracking) StopSandbox(_ context.Context, _ string) error {
 	m.stopCalled.Store(true)
 	return nil
 }
+
 func (m *mockSandboxControllerWithTracking) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
-	return false, nil
+	return m.hasActive, m.hasActiveErr
 }
 func (m *mockSandboxControllerWithTracking) CleanupOrphans(_ context.Context) error { return nil }
 func (m *mockSandboxControllerWithTracking) WatchSandboxes(_ context.Context) (<-chan sandbox.SandboxEvent, error) {
@@ -795,7 +852,7 @@ func TestMaxConcurrent_AtLimit_SkipsCreateSandbox(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, log)
+	o, err := New(cfg, s, mq, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -846,7 +903,7 @@ func TestMaxConcurrent_BelowLimit_ProceedsToCreateSandbox(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, log)
+	o, err := New(cfg, s, mq, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -896,7 +953,7 @@ func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, log)
+	o, err := New(cfg, s, mq, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -933,7 +990,7 @@ func TestClaimSandboxSlot_LoserReturnsNilFalse(t *testing.T) {
 		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
-	o, err := New(cfg, s, q, &mockIPCBroker{}, nil, channel.NewRegistry(), slog.Default())
+	o, err := New(cfg, s, q, &mockIPCBroker{}, nil, channel.NewRegistry(), slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -995,7 +1052,7 @@ func TestMaxConcurrent_InflightSlotsCountedInAdmission(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, log)
+	o, err := New(cfg, s, mq, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -1053,7 +1110,7 @@ func TestProcessGroupMessages_SendInputFailure_TeardownAndErrors(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, q, b, nil, reg, log)
+	o, err := New(cfg, s, q, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -1108,7 +1165,7 @@ func TestProcessGroupMessages_MarkActiveFailure_StopsSandbox(t *testing.T) {
 	}
 	log := slog.Default()
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, q, b, nil, reg, log)
+	o, err := New(cfg, s, q, b, nil, reg, log, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -1400,7 +1457,7 @@ func TestProcessGroupMessages_MarshalInitialInputFailure_ReturnsEarly(t *testing
 		Queue:     config.QueueConfig{IdleTimeout: 30 * time.Minute, MaxConcurrent: 5},
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
-	o, err := New(cfg, s, mq, b, nil, channel.NewRegistry(), slog.Default())
+	o, err := New(cfg, s, mq, b, nil, channel.NewRegistry(), slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -1790,10 +1847,12 @@ func (m *mockSandboxController) StopSandbox(_ context.Context, _ string) error {
 func (m *mockSandboxController) HasActiveSandbox(_ context.Context, _ string) (bool, error) {
 	return m.hasActive, m.hasErr
 }
+
 func (m *mockSandboxController) CleanupOrphans(_ context.Context) error {
 	m.cleanupOrphansCalled.Add(1)
 	return nil
 }
+
 func (m *mockSandboxController) WatchSandboxes(_ context.Context) (<-chan sandbox.SandboxEvent, error) {
 	ch := make(chan sandbox.SandboxEvent)
 	// Return an open channel that never sends — tests don't exercise the watcher loop.
@@ -1811,7 +1870,7 @@ func newTestOrchestratorWithSandbox(s *mockStore, q *mockQueue, b *mockIPCBroker
 	log := slog.Default()
 	reg := channel.NewRegistry()
 
-	o, err := New(cfg, s, q, b, nil, reg, log)
+	o, err := New(cfg, s, q, b, nil, reg, log, nil)
 	if err != nil {
 		panic("newTestOrchestratorWithSandbox: " + err.Error())
 	}
@@ -2251,7 +2310,7 @@ func TestStart_CleanupOrphansOnStartup(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 
-	o, err := New(cfg, s, q, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, q, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2286,7 +2345,7 @@ func TestStart_CleanupOrphansSkippedWhenNilSandbox(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 
-	o, err := New(cfg, s, q, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, q, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2328,7 +2387,7 @@ func TestReconcileActiveSet_RemovesStaleJIDs(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2377,7 +2436,7 @@ func TestReconcileActiveSet_RemovesUnregisteredJIDs(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2404,7 +2463,7 @@ func TestReconcileActiveSet_EmptySet_NoOp(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2435,7 +2494,7 @@ func TestHandleSandboxEvent_CompletedSandbox_MarksGroupInactive(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2475,7 +2534,7 @@ func TestHandleSandboxEvent_DeletedSandbox_MarksGroupInactive(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2515,7 +2574,7 @@ func TestHandleSandboxEvent_RunningUpdate_NoChange(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2553,7 +2612,7 @@ func TestHandleSandboxEvent_UnknownFolder_NoOp(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2591,7 +2650,7 @@ func TestHandleSandboxEvent_StaleSandboxDeletion_PreservesActiveState(t *testing
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2635,7 +2694,7 @@ func TestHandleSandboxEvent_CurrentSandboxDeletion_MarksInactive(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -2914,7 +2973,7 @@ func TestHandleSandboxEvent_UntrackedSandbox_StillMarksInactive(t *testing.T) {
 		Scheduler: config.SchedulerConfig{PollInterval: 60 * time.Second},
 	}
 	reg := channel.NewRegistry()
-	o, err := New(cfg, s, mq, b, nil, reg, slog.Default())
+	o, err := New(cfg, s, mq, b, nil, reg, slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -3257,4 +3316,626 @@ func waitSlotReleased(t *testing.T, o *Orchestrator, chatJID string, timeout tim
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Errorf("timed out waiting for in-flight slot to be released for %q", chatJID)
+}
+
+// --- EnsureStreamForAgent pre-call tests ---
+
+func TestSpawnAgent_CallsEnsureStreamBeforeCreateSandbox(t *testing.T) {
+	t.Parallel()
+	s := newMockStore()
+	mq := &mockQueue{active: make(map[string]bool)}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{
+		onCreate: func() {
+			b.callOrderMu.Lock()
+			b.callOrder = append(b.callOrder, "CreateSandbox")
+			b.callOrderMu.Unlock()
+		},
+	}
+
+	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+	o.cfg.K8s.FastStartEnabled = true
+	o.cfg.Queue.MaxConcurrent = 10
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("claim slot")
+	}
+	defer release()
+
+	if _, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {}); err != nil {
+		t.Fatalf("processGroupMessages: %v", err)
+	}
+	if got := len(b.ensureStreamForAgentCalls); got != 1 {
+		t.Errorf("EnsureStreamForAgent calls = %d, want 1", got)
+	}
+	if got := b.ensureStreamForAgentCalls[0]; got.group != "test-group" || got.agentID != ipc.DefaultAgentID {
+		t.Errorf("EnsureStreamForAgent args = %+v, want {group: test-group, agentID: main}", got)
+	}
+	if !sb.createCalled.Load() {
+		t.Error("CreateSandbox not called")
+	}
+	// Ordering check.
+	b.callOrderMu.Lock()
+	order := append([]string(nil), b.callOrder...)
+	b.callOrderMu.Unlock()
+	foundEnsure, foundCreate := -1, -1
+	for i, op := range order {
+		if op == "EnsureStreamForAgent" && foundEnsure == -1 {
+			foundEnsure = i
+		}
+		if op == "CreateSandbox" && foundCreate == -1 {
+			foundCreate = i
+		}
+	}
+	if foundEnsure == -1 || foundCreate == -1 || foundEnsure >= foundCreate {
+		t.Errorf("EnsureStreamForAgent must precede CreateSandbox; got order = %v", order)
+	}
+}
+
+func TestSpawnAgent_FailurePaths(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		ensureStreamForAgentErr  error
+		ensureStreamForAgentErrs []error
+		createErr                error
+		hasActiveErr             error
+		seedCursor               bool
+		wantErr                  bool
+		wantErrContains          string
+		wantEnsureStreamCalls    int
+		wantCreateCalled         bool
+		wantDeleteStreams        int
+	}{
+		"ensure stream fails no sandbox created": {
+			ensureStreamForAgentErr: errors.New("boom"),
+			seedCursor:              true,
+			wantErr:                 true,
+			wantErrContains:         "ensure stream for agent",
+			wantEnsureStreamCalls:   3,
+			wantDeleteStreams:       1,
+		},
+		"create sandbox fails deletes streams": {
+			createErr:             errors.New("api timeout"),
+			wantErr:               true,
+			wantEnsureStreamCalls: 1,
+			wantCreateCalled:      true,
+			wantDeleteStreams:     1,
+		},
+		"create sandbox fails active sandbox error skips delete": {
+			createErr:             errors.New("api timeout"),
+			hasActiveErr:          errors.New("kube api down"),
+			wantErr:               true,
+			wantEnsureStreamCalls: 1,
+			wantCreateCalled:      true,
+			wantDeleteStreams:     0,
+		},
+		"ensure stream transient failure retries then creates sandbox": {
+			ensureStreamForAgentErrs: []error{errors.New("temporary"), nil},
+			wantEnsureStreamCalls:    2,
+			wantCreateCalled:         true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newMockStore()
+			mq := &mockQueue{active: make(map[string]bool)}
+			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+			b := &mockIPCBroker{ensureStreamForAgentErr: tt.ensureStreamForAgentErr, ensureStreamForAgentErrs: tt.ensureStreamForAgentErrs}
+			sb := &mockSandboxControllerWithTracking{createErr: tt.createErr, hasActiveErr: tt.hasActiveErr}
+
+			o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+			o.cfg.K8s.FastStartEnabled = true
+			o.cfg.Queue.MaxConcurrent = 10
+			rtr, _ := router.New([]channel.Channel{ch}, s)
+			o.router = rtr
+			o.auth = auth.New(s)
+
+			var preSpawnCursor time.Time
+			if tt.seedCursor {
+				preSpawnCursor = time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+				o.lastAgentTimestamp["group1@g.us"] = preSpawnCursor
+				s.messages["group1@g.us"] = []store.Message{
+					{ChatJID: "group1@g.us", Content: "hello", Timestamp: preSpawnCursor.Add(time.Hour), Sender: "alice"},
+				}
+			} else {
+				s.messages["group1@g.us"] = []store.Message{
+					{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+				}
+			}
+
+			o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+
+			release, ok := o.claimSandboxSlot("group1@g.us")
+			if !ok {
+				t.Fatal("claim slot")
+			}
+			defer release()
+
+			_, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {})
+			if (err != nil) != tt.wantErr {
+				t.Errorf("processGroupMessages err = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			if tt.wantErrContains != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrContains)) {
+				t.Errorf("processGroupMessages err = %v, want substring %q", err, tt.wantErrContains)
+			}
+
+			if got := len(b.ensureStreamForAgentCalls); got != tt.wantEnsureStreamCalls {
+				t.Errorf("EnsureStreamForAgent calls = %d, want %d", got, tt.wantEnsureStreamCalls)
+			}
+
+			if got := sb.createCalled.Load(); got != tt.wantCreateCalled {
+				t.Errorf("CreateSandbox called = %v, want %v", got, tt.wantCreateCalled)
+			}
+
+			if got := b.deleteStreamsCalled; got != tt.wantDeleteStreams {
+				t.Errorf("DeleteStreams calls = %d, want %d", got, tt.wantDeleteStreams)
+			}
+
+			if tt.seedCursor {
+				o.mu.Lock()
+				gotCursor := o.lastAgentTimestamp["group1@g.us"]
+				o.mu.Unlock()
+
+				if !gotCursor.Equal(preSpawnCursor) {
+					t.Errorf("cursor after spawn failure = %v, want rolled back to %v", gotCursor, preSpawnCursor)
+				}
+			}
+		})
+	}
+}
+
+// TestSpawnAgent_FastStartDisabled_LegacyPath covers the FastStartEnabled=false
+// rollout path at the orchestrator level: the stream is NOT pre-created, so the
+// happy path never calls EnsureStreamForAgent and the CreateSandbox failure path
+// never attempts the pre-created-stream DeleteStreams rollback.
+func TestSpawnAgent_FastStartDisabled_LegacyPath(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		createErr             error
+		wantErr               bool
+		wantEnsureStreamCalls int
+		wantDeleteStreams     int
+		wantCreateCalled      bool
+	}{
+		"happy path skips EnsureStreamForAgent": {
+			wantCreateCalled: true,
+		},
+		"CreateSandbox failure skips pre-created-stream rollback": {
+			createErr:         errors.New("api timeout"),
+			wantErr:           true,
+			wantDeleteStreams: 0,
+			wantCreateCalled:  true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s := newMockStore()
+			mq := &mockQueue{active: make(map[string]bool)}
+			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+			b := &mockIPCBroker{}
+			sb := &mockSandboxControllerWithTracking{createErr: tt.createErr}
+
+			o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+			o.cfg.K8s.FastStartEnabled = false
+			o.cfg.Queue.MaxConcurrent = 10
+			rtr, _ := router.New([]channel.Channel{ch}, s)
+			o.router = rtr
+			o.auth = auth.New(s)
+
+			o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+			s.messages["group1@g.us"] = []store.Message{
+				{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+			}
+
+			release, ok := o.claimSandboxSlot("group1@g.us")
+			if !ok {
+				t.Fatal("claim slot")
+			}
+			defer release()
+
+			_, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {})
+			if (err != nil) != tt.wantErr {
+				t.Errorf("processGroupMessages err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got := len(b.ensureStreamForAgentCalls); got != tt.wantEnsureStreamCalls {
+				t.Errorf("EnsureStreamForAgent calls = %d, want %d (legacy path must not pre-create)", got, tt.wantEnsureStreamCalls)
+			}
+			if got := b.deleteStreamsCalled; got != tt.wantDeleteStreams {
+				t.Errorf("DeleteStreams calls = %d, want %d", got, tt.wantDeleteStreams)
+			}
+			if got := sb.createCalled.Load(); got != tt.wantCreateCalled {
+				t.Errorf("CreateSandbox called = %v, want %v", got, tt.wantCreateCalled)
+			}
+		})
+	}
+}
+
+func TestReconcileIPCStreams(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		streamExists bool
+		queueActive  bool
+		isActiveErr  error
+		hasActive    bool
+		hasActiveErr error
+		inflight     bool
+		wantDeletes  int
+	}{
+		"reclaims orphaned stream": {
+			streamExists: true,
+			wantDeletes:  1,
+		},
+		"skips group with active sandbox": {
+			streamExists: true,
+			hasActive:    true,
+			wantDeletes:  0,
+		},
+		"skips group with in-flight spawn claim": {
+			streamExists: true,
+			inflight:     true,
+			wantDeletes:  0,
+		},
+		"skips group with active queue": {
+			streamExists: true,
+			queueActive:  true,
+			wantDeletes:  0,
+		},
+		"skips when queue check errors": {
+			streamExists: true,
+			isActiveErr:  errors.New("db down"),
+			wantDeletes:  0,
+		},
+		"skips when active-sandbox check errors": {
+			streamExists: true,
+			hasActiveErr: errors.New("kube api down"),
+			wantDeletes:  0,
+		},
+		"skips when stream absent": {
+			wantDeletes: 0,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newMockStore()
+			mq := &mockQueue{active: make(map[string]bool)}
+			b := &mockIPCBroker{}
+			sb := &mockSandboxControllerWithTracking{hasActive: tt.hasActive, hasActiveErr: tt.hasActiveErr}
+			o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+			o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+
+			if tt.queueActive {
+				mq.active["group1@g.us"] = true
+			}
+
+			if tt.isActiveErr != nil {
+				mq.isActiveErr = tt.isActiveErr
+			}
+
+			if tt.streamExists {
+				if err := b.EnsureStreamForAgent(context.Background(), "test-group", ipc.DefaultAgentID); err != nil {
+					t.Fatalf("seed stream: %v", err)
+				}
+			}
+
+			if tt.inflight {
+				o.inflightSandboxes.Store("group1@g.us", struct{}{})
+				defer o.inflightSandboxes.Delete("group1@g.us")
+			}
+
+			o.reconcileIPCStreams(context.Background())
+
+			if got := b.deleteStreamsCalled; got != tt.wantDeletes {
+				t.Errorf("DeleteStreams calls = %d, want %d", got, tt.wantDeletes)
+			}
+
+			if tt.streamExists && !tt.inflight && !tt.queueActive && !tt.hasActive && tt.hasActiveErr == nil && tt.isActiveErr == nil {
+				if b.streams["test-group"] {
+					t.Error("stream still present after reclamation")
+				}
+			}
+		})
+	}
+}
+
+func TestReconcileIPCStreams_MultipleGroups(t *testing.T) {
+	t.Parallel()
+
+	s := newMockStore()
+	mq := &mockQueue{active: make(map[string]bool)}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{}
+	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+	o.registeredGroups["orphan@g.us"] = store.Group{JID: "orphan@g.us", Folder: "orphan", IsMain: true}
+	o.registeredGroups["live@g.us"] = store.Group{JID: "live@g.us", Folder: "live", IsMain: true}
+	mq.active["live@g.us"] = true
+
+	for _, folder := range []string{"orphan", "live"} {
+		if err := b.EnsureStreamForAgent(context.Background(), folder, ipc.DefaultAgentID); err != nil {
+			t.Fatalf("seed stream %s: %v", folder, err)
+		}
+	}
+
+	o.reconcileIPCStreams(context.Background())
+
+	if got := b.deleteStreamsCalled; got != 1 {
+		t.Errorf("DeleteStreams calls = %d, want 1", got)
+	}
+
+	if got := b.deleteStreamsGroup; got != "orphan" {
+		t.Errorf("DeleteStreams group = %q, want %q", got, "orphan")
+	}
+}
+
+func TestRecordFirstOutputPhase(t *testing.T) {
+	s := newMockStore()
+	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
+
+	// No seed: must be a no-op.
+	o.recordFirstOutputPhase("absent@g.us")
+
+	// Seed and observe.
+	o.spawnStartMu.Lock()
+	o.spawnStart["seeded@g.us"] = time.Now().Add(-100 * time.Millisecond)
+	o.spawnStartMu.Unlock()
+
+	before := metricstest.PhaseSampleCount(t, string(metrics.PhaseFirstOutput))
+	o.recordFirstOutputPhase("seeded@g.us")
+
+	// A seeded observation must record exactly one first_output histogram sample.
+	if got := metricstest.PhaseSampleCount(t, string(metrics.PhaseFirstOutput)) - before; got != 1 {
+		t.Errorf("recordFirstOutputPhase(seeded) sample-count delta = %d, want 1", got)
+	}
+
+	o.spawnStartMu.Lock()
+	_, stillPresent := o.spawnStart["seeded@g.us"]
+	o.spawnStartMu.Unlock()
+	if stillPresent {
+		t.Errorf("spawnStart entry should be deleted after observation")
+	}
+
+	// Idempotent: second call is a no-op (entry already deleted).
+	o.recordFirstOutputPhase("seeded@g.us")
+}
+
+func TestSpawnAgent_SeedsSpawnStartBeforeCreateSandbox(t *testing.T) {
+	t.Parallel()
+	s := newMockStore()
+	mq := &mockQueue{active: make(map[string]bool)}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	b := &mockIPCBroker{}
+	sb := &mockSandboxControllerWithTracking{}
+
+	o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+	o.cfg.K8s.FastStartEnabled = true
+	o.cfg.Queue.MaxConcurrent = 10
+	rtr, _ := router.New([]channel.Channel{ch}, s)
+	o.router = rtr
+	o.auth = auth.New(s)
+
+	o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+	s.messages["group1@g.us"] = []store.Message{
+		{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+	}
+
+	release, ok := o.claimSandboxSlot("group1@g.us")
+	if !ok {
+		t.Fatal("claim slot")
+	}
+	defer release()
+
+	if _, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {}); err != nil {
+		t.Fatalf("processGroupMessages: %v", err)
+	}
+
+	o.spawnStartMu.Lock()
+	_, present := o.spawnStart["group1@g.us"]
+	o.spawnStartMu.Unlock()
+	if !present {
+		t.Errorf("spawnStart entry not seeded for chatJID after CreateSandbox")
+	}
+}
+
+// TestSpawnAgent_FailurePaths_ClearSpawnStart verifies that every spawn-failure
+// path after the spawnStart timer is seeded removes the spawnStart entry, and
+// that the MarkActive failure path performs the same HasActiveSandbox-gated
+// IPC stream cleanup as the CreateSandbox failure path (closing the leak the
+// fast-start pre-creation introduced). The happy path leaves spawnStart seeded
+// (it is removed on first output, not here).
+func TestSpawnAgent_FailurePaths_ClearSpawnStart(t *testing.T) {
+	t.Parallel()
+	failingSubscribe := func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, <-chan error, error) {
+		return nil, nil, errors.New("subscribe boom")
+	}
+	failingSend := func(_ context.Context, _, _ string, _ *ipc.IPCMessage) error {
+		return errors.New("send boom")
+	}
+
+	tests := map[string]struct {
+		fastStart             bool
+		createErr             error
+		markActiveErr         error
+		hasActive             bool
+		hasActiveErr          error
+		subscribeOutputFn     func(context.Context, string) (<-chan *ipc.IPCMessage, <-chan error, error)
+		sendInputFn           func(context.Context, string, string, *ipc.IPCMessage) error
+		wantErrSubstr         string
+		wantDeleteStreams     int
+		wantSpawnStartPresent bool
+	}{
+		"CreateSandbox failure clears spawnStart": {
+			fastStart:             true,
+			createErr:             errors.New("api timeout"),
+			hasActive:             false,
+			wantErrSubstr:         "create sandbox",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+		"MarkActive failure with no active sandbox deletes stream and clears spawnStart": {
+			fastStart:             true,
+			markActiveErr:         errors.New("nats down"),
+			hasActive:             false,
+			wantErrSubstr:         "mark active",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+		// The MarkActive path deletes the stream UNCONDITIONALLY (it does not use
+		// the HasActiveSandbox-gated releaseOrphanedStreams helper). StopSandbox
+		// deletes the CR asynchronously, so HasActiveSandbox would still observe
+		// this very sandbox as active and incorrectly skip the delete (TOCTOU).
+		// hasActive=true here represents that stale observation; the stream must
+		// still be deleted.
+		"MarkActive failure deletes stream even when HasActiveSandbox reports active (TOCTOU)": {
+			fastStart:             true,
+			markActiveErr:         errors.New("nats down"),
+			hasActive:             true,
+			wantErrSubstr:         "mark active",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+		"MarkActive failure deletes stream even when HasActiveSandbox errors": {
+			fastStart:             true,
+			markActiveErr:         errors.New("nats down"),
+			hasActiveErr:          errors.New("kube api down"),
+			wantErrSubstr:         "mark active",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+		"SubscribeOutput failure clears spawnStart": {
+			fastStart:             true,
+			subscribeOutputFn:     failingSubscribe,
+			wantErrSubstr:         "subscribe output",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+		"SendInput failure clears spawnStart": {
+			fastStart:             true,
+			sendInputFn:           failingSend,
+			wantErrSubstr:         "send initial input",
+			wantDeleteStreams:     1,
+			wantSpawnStartPresent: false,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s := newMockStore()
+			mq := &mockQueue{active: make(map[string]bool), markActiveErr: tt.markActiveErr}
+			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+			b := &mockIPCBroker{subscribeOutputFn: tt.subscribeOutputFn, sendInputFn: tt.sendInputFn}
+			sb := &mockSandboxControllerWithTracking{createErr: tt.createErr, hasActive: tt.hasActive, hasActiveErr: tt.hasActiveErr}
+
+			o := newTestOrchestratorWithSandbox(s, mq, b, sb, 30*time.Second)
+			o.cfg.K8s.FastStartEnabled = tt.fastStart
+			o.cfg.Queue.MaxConcurrent = 10
+			rtr, _ := router.New([]channel.Channel{ch}, s)
+			o.router = rtr
+			o.auth = auth.New(s)
+
+			o.registeredGroups["group1@g.us"] = store.Group{JID: "group1@g.us", Folder: "test-group", IsMain: true}
+			s.messages["group1@g.us"] = []store.Message{
+				{ChatJID: "group1@g.us", Content: "hello", Timestamp: time.Now(), Sender: "alice"},
+			}
+
+			release, ok := o.claimSandboxSlot("group1@g.us")
+			if !ok {
+				t.Fatal("claim slot")
+			}
+			defer release()
+
+			_, err := o.processGroupMessages(context.Background(), "group1@g.us", func() {})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErrSubstr) {
+				t.Errorf("processGroupMessages err = %v, want substring %q", err, tt.wantErrSubstr)
+			}
+
+			if got := b.deleteStreamsCalled; got != tt.wantDeleteStreams {
+				t.Errorf("DeleteStreams calls = %d, want %d", got, tt.wantDeleteStreams)
+			}
+
+			o.spawnStartMu.Lock()
+			_, present := o.spawnStart["group1@g.us"]
+			o.spawnStartMu.Unlock()
+			if present != tt.wantSpawnStartPresent {
+				t.Errorf("spawnStart present = %v, want %v", present, tt.wantSpawnStartPresent)
+			}
+		})
+	}
+}
+
+// TestReleaseOrphanedStreams exercises the HasActiveSandbox-gated helper used by
+// the CreateSandbox/EnsureStream failure paths. Unlike the MarkActive path (which
+// deletes unconditionally to dodge an async-delete TOCTOU), this helper must skip
+// the delete when a genuinely-separate active sandbox still owns the group, and
+// must skip (leak rather than risk a live stream) when the active-sandbox check
+// itself errors.
+func TestReleaseOrphanedStreams(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		fastStart         bool
+		hasActive         bool
+		hasActiveErr      error
+		wantDeleteStreams int
+	}{
+		"no active sandbox deletes orphaned stream": {
+			fastStart:         true,
+			hasActive:         false,
+			wantDeleteStreams: 1,
+		},
+		"separate active sandbox owns group skips delete": {
+			fastStart:         true,
+			hasActive:         true,
+			wantDeleteStreams: 0,
+		},
+		"active-sandbox check error skips delete (conservative leak)": {
+			fastStart:         true,
+			hasActiveErr:      errors.New("kube api down"),
+			wantDeleteStreams: 0,
+		},
+		"fast-start disabled is a no-op": {
+			fastStart:         false,
+			hasActive:         false,
+			wantDeleteStreams: 0,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s := newMockStore()
+			b := &mockIPCBroker{}
+			sb := &mockSandboxControllerWithTracking{hasActive: tt.hasActive, hasActiveErr: tt.hasActiveErr}
+			o := newTestOrchestratorWithSandbox(s, newMockQueue(), b, sb, 30*time.Second)
+			o.cfg.K8s.FastStartEnabled = tt.fastStart
+
+			grp := store.Group{JID: "group1@g.us", Folder: "test-group", Name: "test"}
+			o.releaseOrphanedStreams(context.Background(), grp, "unit-test")
+
+			if got := b.deleteStreamsCalled; got != tt.wantDeleteStreams {
+				t.Errorf("releaseOrphanedStreams(hasActive=%v, err=%v) DeleteStreams calls = %d, want %d",
+					tt.hasActive, tt.hasActiveErr, got, tt.wantDeleteStreams)
+			}
+		})
+	}
 }

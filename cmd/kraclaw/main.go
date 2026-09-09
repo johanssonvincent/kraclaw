@@ -18,6 +18,7 @@ import (
 	agentsandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/johanssonvincent/kraclaw/internal/auth/chatgpt"
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/channel/tui"
 	"github.com/johanssonvincent/kraclaw/internal/config"
@@ -40,6 +41,7 @@ func init() {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		panic(fmt.Sprintf("failed to add client-go scheme: %v", err))
 	}
+
 	if err := agentsandboxv1alpha1.AddToScheme(scheme); err != nil {
 		panic(fmt.Sprintf("failed to add agent-sandbox scheme: %v", err))
 	}
@@ -47,6 +49,7 @@ func init() {
 
 func main() {
 	startedAt := time.Now().UTC()
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
@@ -60,6 +63,7 @@ func main() {
 	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
+
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
@@ -68,7 +72,7 @@ func main() {
 	}()
 
 	// Connect MySQL and run migrations
-	mysqlStore, err := store.NewMySQLStore(cfg.MySQL.DSN, cfg.MySQL.MaxOpenConns, cfg.MySQL.MaxIdleConns, cfg.MySQL.ConnMaxLifetime)
+	mysqlStore, err := store.NewMySQLStore(ctx, cfg.MySQL.DSN, cfg.MySQL.MaxOpenConns, cfg.MySQL.MaxIdleConns, cfg.MySQL.ConnMaxLifetime)
 	if err != nil {
 		log.Error("failed to initialise MySQL store", "error", err)
 		os.Exit(1)
@@ -78,6 +82,7 @@ func main() {
 			log.Warn("mysql store close", "error", err)
 		}
 	}()
+
 	log.Info("connected to MySQL, migrations complete")
 
 	// Connect NATS
@@ -91,6 +96,7 @@ func main() {
 			log.Error("nats drain", "error", err)
 		}
 	}()
+
 	log.Info("connected to NATS")
 
 	ipcBroker, err := ipc.NewNATSBroker(nc, log)
@@ -121,6 +127,7 @@ func main() {
 		ctrlClient  client.WithWatch
 		sandboxCtrl *sandbox.Controller
 	)
+
 	kubeConfig, k8sClient, err = connectKubernetes(cfg.K8s)
 	if err != nil {
 		log.Warn("failed to connect to Kubernetes; sandbox admin APIs will be degraded", "error", err)
@@ -133,16 +140,51 @@ func main() {
 			if cfg.K8s.AgentImageAnthropic != "" {
 				agentImages[provider.ProviderAnthropic] = cfg.K8s.AgentImageAnthropic
 			}
+
 			if cfg.K8s.AgentImageOpenAI != "" {
 				agentImages[provider.ProviderOpenAI] = cfg.K8s.AgentImageOpenAI
 			}
-			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, agentImages, cfg.NATS.URL, cfg.K8s.SandboxProxyURL)
+
+			sandboxCtrl, err = sandbox.New(k8sClient, ctrlClient, kubeConfig, cfg.K8s.Namespace, agentImages, cfg.NATS.URL, cfg.K8s.SandboxProxyURL, cfg.NATS.AuthSecret, cfg.K8s.FastStartEnabled)
 			if err != nil {
 				log.Error("failed to create sandbox controller", "error", err)
+
 				return
 			}
+
 			log.Info("connected to Kubernetes", "namespace", cfg.K8s.Namespace)
 		}
+	}
+
+	// Shared credential resolver/model lister. The resolver is reused by both
+	// credproxy request routing and dynamic OpenAI model discovery.
+	var (
+		credStore   *credproxy.CredentialStore
+		resolver    credproxy.CredentialResolver
+		modelLister *credproxy.ModelLister
+	)
+
+	needsMultiProvider := cfg.Proxy.CredentialEncryptionKey != "" || cfg.Proxy.OpenAIAPIKey != ""
+	if needsMultiProvider {
+		if cfg.Proxy.CredentialEncryptionKey != "" {
+			enc, err := credproxy.NewEncryptor(cfg.Proxy.CredentialEncryptionKey)
+			if err != nil {
+				log.Error("failed to create credential encryptor", "error", err)
+				os.Exit(1)
+			}
+
+			credStore, err = credproxy.NewCredentialStore(mysqlStore.DB(), enc)
+			if err != nil {
+				log.Error("failed to create credential store", "error", err)
+				os.Exit(1)
+			}
+
+			resolver = credproxy.NewDefaultResolver(credStore, cfg.Proxy)
+		} else {
+			resolver = credproxy.NewDefaultResolver(nil, cfg.Proxy)
+		}
+
+		modelLister = credproxy.NewModelLister(resolver)
 	}
 
 	// Create TUI channel and orchestrator
@@ -152,14 +194,17 @@ func main() {
 	// The factory returns the pre-created instance so server and orchestrator share state.
 	channel.DefaultRegistry.Register("tui", func(cfg channel.ChannelConfig) (channel.Channel, error) {
 		tuiChannel.SetConfig(cfg)
+
 		return tuiChannel, nil
 	})
 
-	orch, err := orchestrator.New(cfg, mysqlStore, natsQueue, ipcBroker, sandboxCtrl, channel.DefaultRegistry, log)
+	orch, err := orchestrator.New(cfg, mysqlStore, natsQueue, ipcBroker, sandboxCtrl, channel.DefaultRegistry, log, modelLister)
 	if err != nil {
 		log.Error("failed to create orchestrator", "error", err)
+
 		return
 	}
+
 	orchErr := make(chan error, 1)
 	go func() {
 		orchErr <- orch.Start(ctx)
@@ -186,34 +231,13 @@ func main() {
 
 	// Start credential proxy
 	var proxy *credproxy.Proxy
-
-	// Multi-provider proxy is needed when:
-	// 1. Per-group credential encryption is configured, OR
-	// 2. OpenAI platform credentials are set (needs provider-aware routing)
-	needsMultiProvider := cfg.Proxy.CredentialEncryptionKey != "" || cfg.Proxy.OpenAIAPIKey != ""
-
 	if needsMultiProvider {
-		var resolver credproxy.CredentialResolver
-		if cfg.Proxy.CredentialEncryptionKey != "" {
-			enc, err := credproxy.NewEncryptor(cfg.Proxy.CredentialEncryptionKey)
-			if err != nil {
-				log.Error("failed to create credential encryptor", "error", err)
-				os.Exit(1)
-			}
-			credStore, err := credproxy.NewCredentialStore(mysqlStore.DB(), enc)
-			if err != nil {
-				log.Error("failed to create credential store", "error", err)
-				os.Exit(1)
-			}
-			resolver = credproxy.NewDefaultResolver(credStore, cfg.Proxy)
-		} else {
-			resolver = credproxy.NewDefaultResolver(nil, cfg.Proxy)
-		}
 		proxy, err = credproxy.NewMultiProviderProxy(cfg.Proxy, resolver)
 		if err != nil {
 			log.Error("failed to create multi-provider credential proxy", "error", err)
 			os.Exit(1)
 		}
+
 		log.Info("credential proxy configured with multi-provider support")
 	} else {
 		proxy, err = credproxy.New(cfg.Proxy)
@@ -222,6 +246,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
 	proxyErr := make(chan error, 1)
 	go func() {
 		proxyErr <- proxy.Start(ctx)
@@ -246,6 +271,36 @@ func main() {
 		}
 	}()
 
+	// Build the ChatGPT OAuth client. Its only side effect is HTTP traffic
+	// when the AuthService device-flow RPC is invoked, so it's safe to
+	// construct unconditionally; AuthService registration is gated on
+	// credStore being non-nil below.
+	chatgptClient, err := chatgpt.NewClient(chatgpt.Config{
+		Issuer: cfg.OAuth.ChatGPTIssuer,
+		Logger: log.With("component", "chatgpt"),
+	})
+	if err != nil {
+		log.Error("failed to create chatgpt client", "error", err)
+		os.Exit(1)
+	}
+
+	// Shared provider registry — passed to every service that needs one
+	// so we have a single source of truth for provider metadata.
+	providerRegistry := provider.NewRegistry()
+
+	// Compose Auth sub-struct only when both dependencies are available.
+	// chatgptClient is always set at this point; credStore is non-nil only
+	// when per-group credential encryption is configured. Both must be present
+	// for the AuthService to register — partial config is a startup error.
+	var authCfg *server.AuthConfig
+	if chatgptClient != nil && credStore != nil {
+		authCfg = &server.AuthConfig{
+			ChatGPT:     chatgptClient,
+			Credentials: credStore,
+			Providers:   providerRegistry,
+		}
+	}
+
 	// Start gRPC + REST server
 	srv, err := server.New(server.Config{
 		GRPCAddr:              cfg.Server.GRPCAddr,
@@ -267,6 +322,8 @@ func main() {
 		TUIChannel:            tuiChannel,
 		Channels:              []channel.Channel{tuiChannel},
 		Log:                   log,
+		ModelLister:           modelLister,
+		Auth:                  authCfg,
 	})
 	if err != nil {
 		log.Error("failed to create server", "error", err)
@@ -288,9 +345,11 @@ func main() {
 	defer shutdownCancel()
 
 	srv.Stop(shutdownCtx)
+
 	if err := orch.Stop(shutdownCtx); err != nil {
 		log.Error("orchestrator shutdown error", "error", err)
 	}
+
 	if err := proxy.Stop(shutdownCtx); err != nil {
 		log.Error("proxy shutdown error", "error", err)
 	}
@@ -300,6 +359,7 @@ func main() {
 
 func setupLogger(cfg config.LoggingConfig) *slog.Logger {
 	var handler slog.Handler
+
 	opts := &slog.HandlerOptions{}
 
 	switch cfg.Level {
@@ -333,14 +393,18 @@ func connectNATS(cfg config.NATSConfig, log *slog.Logger) (*natsgo.Conn, error) 
 		natsgo.ClosedHandler(func(_ *natsgo.Conn) {
 			log.Error("nats connection permanently closed")
 		}),
+		natsgo.UserInfo(cfg.User, cfg.Password),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
+
 	if err := nc.Flush(); err != nil {
 		nc.Close()
+
 		return nil, fmt.Errorf("flush: %w", err)
 	}
+
 	return nc, nil
 }
 
@@ -359,12 +423,15 @@ func connectKubernetes(cfg config.K8sConfig) (*rest.Config, kubernetes.Interface
 		)
 		kubeConfig, err = clientConfig.ClientConfig()
 	}
+
 	if err != nil {
 		return nil, nil, err
 	}
+
 	clientset, err := kubernetes.NewForConfig(kubeConfig)
 	if err != nil {
 		return nil, nil, err
 	}
+
 	return kubeConfig, clientset, nil
 }

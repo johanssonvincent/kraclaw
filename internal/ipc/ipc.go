@@ -39,6 +39,7 @@ const (
 // duplication.
 func SanitizeGroupID(groupJID string) string {
 	h := sha256.Sum256([]byte(groupJID))
+
 	return hex.EncodeToString(h[:16])
 }
 
@@ -55,6 +56,7 @@ func SanitizeAgentID(agentID string) string {
 	if len(safe) > 32 {
 		safe = safe[:32]
 	}
+
 	return safe
 }
 
@@ -80,7 +82,13 @@ type IPCBroker interface {
 	SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, <-chan error, error)
 	// ReadInput returns a channel receiving input messages for a specific agent.
 	ReadInput(ctx context.Context, group, agentID string) (<-chan *IPCMessage, error)
+	// EnsureStreamForAgent provisions the per-group stream and the per-agent
+	// input consumer before any spawn so the agent can attach without paying
+	// CreateOrUpdate round-trips on boot.
+	EnsureStreamForAgent(ctx context.Context, group, agentID string) error
 	// DeleteStreams removes all IPC data for a group (all agents).
 	DeleteStreams(ctx context.Context, group string) error
+	// StreamExists reports whether the per-group IPC stream is provisioned.
+	StreamExists(ctx context.Context, group string) (bool, error)
 	Close() error
 }

@@ -1,7 +1,11 @@
 # Kraclaw Helm Chart Values
 # All env var defaults are sourced from internal/config/config.go envconfig tags.
 
+# The kraclaw binary is single-writer; it embeds the scheduler and assumes exactly one replica.
+# Scaling replicas is unsafe without HA work.
+# single-writer
 replicaCount: 1
+updateStrategy: RollingUpdate
 
 image:
   repository: ghcr.io/johanssonvincent/kraclaw
@@ -46,6 +50,9 @@ mysql:
 # NATS
 nats:
   url: "nats://nats.nats.svc.cluster.local:4222"  # NATS_URL
+  # existingSecret: name of a pre-created Secret with keys NATS_USER and NATS_PASSWORD.
+  # Required in clusters where the NATS server enforces auth; empty disables all auth wiring.
+  existingSecret: ""
 
 # NOTE: PVC names below assume release name "kraclaw". If using a different release name,
 # override k8s.sessionsPvc, k8s.groupsPvc, k8s.dataPvc, and sandbox.sessionsPvc, sandbox.groupsPvc,
@@ -54,8 +61,12 @@ nats:
 #
 # Kubernetes / sandbox configuration — AGENT_IMAGE_ANTHROPIC and AGENT_IMAGE_OPENAI are required before helm install
 k8s:
-  agentImageAnthropic: ""              # AGENT_IMAGE_ANTHROPIC — Go-based Anthropic agent (REQUIRED)
-  agentImageOpenAI: ""                 # AGENT_IMAGE_OPENAI — Go-based OpenAI agent
+  # AGENT_IMAGE_ANTHROPIC — Go Anthropic agent. MUST be digest-pinned in production
+  # (e.g. ghcr.io/johanssonvincent/kraclaw-agent-anthropic@sha256:<digest>). The
+  # check-image-digests.sh prepush guard rejects values-prod.yaml without @sha256: refs.
+  agentImageAnthropic: ""              # (REQUIRED)
+  # AGENT_IMAGE_OPENAI — same rule as Anthropic; digest pin required in production.
+  agentImageOpenAI: ""
   inCluster: true                       # K8S_IN_CLUSTER
   sessionsPvc: ""                        # K8S_SESSIONS_PVC — auto-computed from fullname if empty
   groupsPvc: ""                          # K8S_GROUPS_PVC — auto-computed from fullname if empty
@@ -139,8 +150,18 @@ secrets:
 sandbox:
   enabled: true
 
+  # Fast-start optimisation flag — gates legacy init-dirs container and defensive
+  # agent-side IPC paths. Default true; set to false to roll back to legacy behaviour.
+  # Wired through to the server and agent envs.
+  fastStart:
+    enabled: true
+
   # Default agent container image for SandboxTemplate pod spec (REQUIRED when sandbox.enabled=true)
-  agentImage: ""            # set to the agent image to run, e.g. via --set sandbox.agentImage=...
+  agentImage: "ghcr.io/johanssonvincent/kraclaw-agent-anthropic@sha256:93c2978f705f1a26633fb6576cc23a46b79d16b75763a4b9781e9296bea8fe96"            # set to the agent image to run, e.g. via --set sandbox.agentImage=...
+
+
+
+
 
   # Init container image for per-group directory setup
   initImage: "busybox:latest"
@@ -150,6 +171,11 @@ sandbox:
 
   # UID for all pod containers (must match agent's expected user)
   runAsUser: 1000
+
+  # Directory the agent writes group archives to, injected as KRACLAW_AGENT_ARCHIVES_DIR.
+  # Empty string uses the agent's built-in default ("/workspace/archives", see
+  # pkg/agent/agent.go). Override only if the archives volume mount differs.
+  archivesDir: ""
 
   # In-cluster service URLs — use FQDN to work across namespaces
   natsUrl: "nats://nats.nats.svc.cluster.local:4222"
@@ -167,11 +193,19 @@ sandbox:
       cpu: "10m"
       memory: "32Mi"
 
-  # Agent container resources — tune for your workload
+  # Agent container resources — tune for your workload. Request right-sized to
+  # 200m (was 500m): scheduler admits faster on warm nodes; limit unchanged so
+  # bursty CPU during cold-start still lands within the 2000m ceiling.
   agentResources:
     requests:
-      cpu: "500m"
+      cpu: "200m"
       memory: "512Mi"
     limits:
       cpu: "2000m"
       memory: "2Gi"
+
+# Pre-pull DaemonSet — holds agent images warm on every node so cold-start with
+# ImagePullPolicy=IfNotPresent never pays a registry round-trip. Effective only
+# when sandbox.fastStart.enabled=true; set false to opt out independently.
+prepull:
+  enabled: true

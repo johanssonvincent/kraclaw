@@ -49,16 +49,20 @@ func NewNATSQueue(nc *nats.Conn, gas groupActiveStore, logger *slog.Logger) (*NA
 	if nc == nil {
 		return nil, fmt.Errorf("nats queue: connection is required")
 	}
+
 	if gas == nil {
 		return nil, fmt.Errorf("nats queue: groupActiveStore is required")
 	}
+
 	if logger == nil {
 		logger = slog.Default()
 	}
+
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("nats queue: jetstream: %w", err)
 	}
+
 	return &NATSQueue{
 		nc:     nc,
 		js:     js,
@@ -77,7 +81,9 @@ func (q *NATSQueue) ensureStream(ctx context.Context, groupJID string) (string, 
 		// Stream no longer exists in NATS; remove the stale cache entry and recreate.
 		q.streams.Delete(sanitized)
 	}
+
 	name := queueStreamName(sanitized)
+
 	stream, err := q.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      name,
 		Subjects:  []string{queueSubject(sanitized)},
@@ -89,7 +95,9 @@ func (q *NATSQueue) ensureStream(ctx context.Context, groupJID string) (string, 
 	if err != nil {
 		return "", nil, fmt.Errorf("ensure queue stream %s: %w", name, err)
 	}
+
 	q.streams.Store(sanitized, struct{}{})
+
 	return sanitized, stream, nil
 }
 
@@ -99,13 +107,16 @@ func (q *NATSQueue) Enqueue(ctx context.Context, groupJID string, msg *QueueMess
 	if err != nil {
 		return fmt.Errorf("enqueue ensure stream: %w", err)
 	}
+
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal queue message: %w", err)
 	}
+
 	if _, err := q.js.Publish(ctx, queueSubject(sanitized), data); err != nil {
 		return fmt.Errorf("publish queue message: %w", err)
 	}
+
 	return nil
 }
 
@@ -116,7 +127,9 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 	if err != nil {
 		return nil, fmt.Errorf("dequeue ensure stream: %w", err)
 	}
+
 	streamName := queueStreamName(sanitized)
+
 	var cons jetstream.Consumer
 	if cached, ok := q.consumers.Load(sanitized); ok {
 		cons = cached.(jetstream.Consumer)
@@ -128,6 +141,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 		if err != nil {
 			return nil, fmt.Errorf("create dequeue consumer: %w", err)
 		}
+
 		cons = created
 		q.consumers.Store(sanitized, cons)
 	}
@@ -144,32 +158,41 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 			errors.Is(err, jetstream.ErrStreamNotFound) {
 			q.consumers.Delete(sanitized)
 		}
+
 		return nil, fmt.Errorf("fetch queue message: %w", err)
 	}
+
 	if msg, ok := <-msgs.Messages(); ok {
 		var qm QueueMessage
 		if err := json.Unmarshal(msg.Data(), &qm); err != nil {
 			meta, _ := msg.Metadata()
+
 			var seq uint64
 			if meta != nil {
 				seq = meta.Sequence.Stream
 			}
+
 			q.logger.Warn("dequeue: malformed message payload — acking to discard",
 				"subject", msg.Subject(),
 				"sequence", seq,
 				"raw", string(msg.Data()))
+
 			if err := msg.Ack(); err != nil {
 				q.logger.Error("ack malformed queue message", "subject", msg.Subject(), "sequence", seq, "error", err)
+
 				return nil, fmt.Errorf("dequeue: malformed message ack: %w", err)
 			}
 			// Message was successfully discarded; caller should retry Dequeue for next message.
 			return nil, nil
 		}
+
 		if err := msg.Ack(); err != nil {
 			return nil, fmt.Errorf("dequeue: ack: %w", err)
 		}
+
 		return &qm, nil
 	}
+
 	if err := msgs.Error(); err != nil && !errors.Is(err, jetstream.ErrMsgIteratorClosed) {
 		// Evict the cached consumer for the same fatal errors as the Fetch path.
 		// ErrNoResponders is included because NATS v1.x returns it (rather than
@@ -185,6 +208,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 			return nil, fmt.Errorf("fetch error: %w", err)
 		}
 	}
+
 	return nil, nil // empty queue
 }
 
@@ -196,6 +220,7 @@ func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, e
 	if err != nil {
 		return nil, fmt.Errorf("peek ensure stream: %w", err)
 	}
+
 	streamName := queueStreamName(sanitized)
 
 	// Self-heal: remove any legacy "peek-{sanitized}" durable consumer left by
@@ -204,10 +229,12 @@ func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, e
 		!errors.Is(derr, jetstream.ErrConsumerNotFound) {
 		q.logger.Warn("peek: failed to delete legacy peek consumer", "error", derr)
 	}
+
 	info, err := stream.Info(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("peek: stream info: %w", err)
 	}
+
 	if info.State.Msgs == 0 {
 		return nil, nil // empty queue
 	}
@@ -217,6 +244,7 @@ func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, e
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
 			return nil, nil // empty queue (race between Info and GetMsg)
 		}
+
 		return nil, fmt.Errorf("peek: get msg: %w", err)
 	}
 
@@ -224,6 +252,7 @@ func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, e
 	if err := json.Unmarshal(raw.Data, &qm); err != nil {
 		return nil, fmt.Errorf("peek: unmarshal message: %w", err)
 	}
+
 	return &qm, nil
 }
 
@@ -233,10 +262,12 @@ func (q *NATSQueue) Len(ctx context.Context, groupJID string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("len ensure stream: %w", err)
 	}
+
 	info, err := stream.Info(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("stream info: %w", err)
 	}
+
 	return int64(info.State.Msgs), nil
 }
 
@@ -245,6 +276,7 @@ func (q *NATSQueue) MarkActive(ctx context.Context, groupJID string) error {
 	if err := q.gas.MarkGroupActive(ctx, groupJID); err != nil {
 		return fmt.Errorf("mark active: %w", err)
 	}
+
 	return nil
 }
 
@@ -253,6 +285,7 @@ func (q *NATSQueue) MarkInactive(ctx context.Context, groupJID string) error {
 	if err := q.gas.MarkGroupInactive(ctx, groupJID); err != nil {
 		return fmt.Errorf("mark inactive: %w", err)
 	}
+
 	return nil
 }
 
@@ -262,6 +295,7 @@ func (q *NATSQueue) IsActive(ctx context.Context, groupJID string) (bool, error)
 	if err != nil {
 		return false, fmt.Errorf("is active: %w", err)
 	}
+
 	return active, nil
 }
 
@@ -271,6 +305,7 @@ func (q *NATSQueue) ActiveCount(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("active count: %w", err)
 	}
+
 	return count, nil
 }
 
@@ -280,6 +315,7 @@ func (q *NATSQueue) ActiveJIDs(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("active jids: %w", err)
 	}
+
 	return jids, nil
 }
 
@@ -287,9 +323,12 @@ func (q *NATSQueue) ActiveJIDs(ctx context.Context) ([]string, error) {
 func (q *NATSQueue) Close() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
 	if q.closed {
 		return nil
 	}
+
 	q.closed = true
+
 	return nil
 }

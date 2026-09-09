@@ -44,9 +44,11 @@ func recoveryInterceptor(log *slog.Logger) grpc.UnaryServerInterceptor {
 					"panic", r,
 					"stack", string(debug.Stack()),
 				)
+
 				err = status.Errorf(codes.Internal, "internal server error")
 			}
 		}()
+
 		return handler(ctx, req)
 	}
 }

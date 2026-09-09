@@ -2,10 +2,10 @@ syntax = "proto3";
 
 package kraclaw.v1;
 
-option go_package = "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1";
-
-import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1";
 
 service SandboxService {
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);

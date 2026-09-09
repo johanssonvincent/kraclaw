@@ -255,16 +255,45 @@ func TestLoad(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "fast start enabled by default",
+			env: map[string]string{
+				"MYSQL_DSN":             "user:pass@tcp(localhost:3306)/kraclaw",
+				"AGENT_IMAGE_ANTHROPIC": "registry.local/anthropic:latest",
+				"ANTHROPIC_API_KEY":     "sk-test",
+				"GRPC_INSECURE":         "true",
+			},
+			check: func(t *testing.T, cfg *Config) {
+				if !cfg.K8s.FastStartEnabled {
+					t.Errorf("expected default FastStartEnabled true, got %v", cfg.K8s.FastStartEnabled)
+				}
+			},
+		},
+		{
+			name: "fast start disabled via env",
+			env: map[string]string{
+				"MYSQL_DSN":              "user:pass@tcp(localhost:3306)/kraclaw",
+				"AGENT_IMAGE_ANTHROPIC":  "registry.local/anthropic:latest",
+				"ANTHROPIC_API_KEY":      "sk-test",
+				"GRPC_INSECURE":          "true",
+				"K8S_FAST_START_ENABLED": "false",
+			},
+			check: func(t *testing.T, cfg *Config) {
+				if cfg.K8s.FastStartEnabled {
+					t.Errorf("expected FastStartEnabled false, got %v", cfg.K8s.FastStartEnabled)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clear all relevant env vars
+			unsetNATSEnv(t)
 			envKeys := []string{
 				"MYSQL_DSN", "AGENT_IMAGE", "GRPC_ADDR", "REST_ADDR",
 				"GRPC_TLS_CERT_FILE", "GRPC_TLS_KEY_FILE", "GRPC_TLS_CLIENT_CA_FILE",
 				"GRPC_ALLOWED_CIDRS", "GRPC_REFLECTION_ENABLED",
-				"K8S_NAMESPACE", "K8S_IN_CLUSTER",
+				"K8S_NAMESPACE", "K8S_IN_CLUSTER", "K8S_FAST_START_ENABLED",
 				"PROXY_ADDR", "ANTHROPIC_UPSTREAM_URL", "ANTHROPIC_API_KEY",
 				"OPENAI_UPSTREAM_URL", "OPENAI_API_KEY", "CREDENTIAL_ENCRYPTION_KEY",
 				"AGENT_IMAGE_ANTHROPIC", "AGENT_IMAGE_OPENAI",
@@ -291,5 +320,16 @@ func TestLoad(t *testing.T) {
 				tt.check(t, cfg)
 			}
 		})
+	}
+}
+
+func unsetNATSEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"NATS_URL", "NATS_USER", "NATS_PASSWORD", "NATS_AUTH_SECRET"} {
+		key := key
+		if old, had := os.LookupEnv(key); had {
+			t.Cleanup(func() { _ = os.Setenv(key, old) })
+		}
+		_ = os.Unsetenv(key)
 	}
 }

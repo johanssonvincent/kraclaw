@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/ory/dockertest/v3"
-	"github.com/ory/dockertest/v3/docker"
+	mysqldrv "github.com/go-sql-driver/mysql"
+	"github.com/moby/moby/api/types/container"
+	"github.com/ory/dockertest/v4"
 )
 
 // ---------------------------------------------------------------------------
@@ -25,8 +25,8 @@ var (
 	realStoreOnce sync.Once
 	realStoreDSN  string
 	realStoreErr  error
-	realStorePool *dockertest.Pool
-	realStoreRes  *dockertest.Resource
+	realStorePool dockertest.ClosablePool
+	realStoreRes  dockertest.ClosableResource
 
 	// errConnLost is a sentinel used to test that store methods wrap driver errors.
 	errConnLost = errors.New("connection lost")
@@ -39,25 +39,26 @@ func requireTestStore(t *testing.T) *MySQLStore {
 	}
 
 	realStoreOnce.Do(func() {
-		pool, err := dockertest.NewPool("")
+		ctx := context.Background()
+
+		pool, err := dockertest.NewPool(ctx, "", dockertest.WithMaxWait(2*time.Minute))
 		if err != nil {
 			realStoreErr = fmt.Errorf("create docker pool: %w", err)
 			return
 		}
-		pool.MaxWait = 2 * time.Minute
 		realStorePool = pool
 
-		res, err := pool.RunWithOptions(&dockertest.RunOptions{
-			Repository: "mysql",
-			Tag:        "8.0",
-			Env: []string{
+		res, err := pool.Run(ctx, "mysql",
+			dockertest.WithTag("8.0"),
+			dockertest.WithEnv([]string{
 				"MYSQL_ROOT_PASSWORD=kraclaw",
 				"MYSQL_DATABASE=kraclaw_test",
-			},
-		}, func(hc *docker.HostConfig) {
-			hc.AutoRemove = true
-			hc.RestartPolicy = docker.RestartPolicy{Name: "no"}
-		})
+			}),
+			dockertest.WithHostConfig(func(hc *container.HostConfig) {
+				hc.AutoRemove = true
+				hc.RestartPolicy = container.RestartPolicy{Name: "no"}
+			}),
+		)
 		if err != nil {
 			realStoreErr = fmt.Errorf("start mysql container: %w", err)
 			return
@@ -67,7 +68,7 @@ func requireTestStore(t *testing.T) *MySQLStore {
 		port := res.GetPort("3306/tcp")
 		dsn := fmt.Sprintf("root:kraclaw@tcp(localhost:%s)/kraclaw_test?parseTime=true", port)
 
-		if err := pool.Retry(func() error {
+		if err := pool.Retry(ctx, 2*time.Minute, func() error {
 			db, err := sql.Open("mysql", dsn)
 			if err != nil {
 				return err
@@ -76,7 +77,7 @@ func requireTestStore(t *testing.T) *MySQLStore {
 			return db.Ping()
 		}); err != nil {
 			realStoreErr = fmt.Errorf("wait for mysql: %w", err)
-			_ = pool.Purge(res)
+			_ = res.Close(ctx)
 			return
 		}
 
@@ -87,7 +88,7 @@ func requireTestStore(t *testing.T) *MySQLStore {
 		t.Skipf("skipping: docker MySQL unavailable: %v", realStoreErr)
 	}
 
-	s, err := NewMySQLStore(realStoreDSN, 5, 5, time.Minute)
+	s, err := NewMySQLStore(context.Background(), realStoreDSN, 5, 5, time.Minute)
 	if err != nil {
 		t.Fatalf("NewMySQLStore: %v", err)
 	}
@@ -95,47 +96,47 @@ func requireTestStore(t *testing.T) *MySQLStore {
 	return s
 }
 
-// TestRunMigrations_DirtyReturnsError verifies that the runMigrations function
-// contains fail-fast behavior for dirty migration state rather than auto-reset.
-// Because runMigrations opens its own DB connection from a DSN, it cannot be
-// unit-tested with sqlmock. Instead we verify the source code contains the
-// expected error path and does NOT contain the dangerous auto-reset pattern.
-func TestRunMigrations_DirtyReturnsError(t *testing.T) {
+func TestRunMigrations_SourceContract(t *testing.T) {
 	src, err := os.ReadFile("mysql.go")
 	if err != nil {
 		t.Fatalf("read mysql.go: %v", err)
 	}
 	source := string(src)
 
-	// Must contain the fail-fast error message.
-	if !strings.Contains(source, "dirty migration state detected at startup") {
-		t.Fatal("mysql.go missing fail-fast error message for dirty migration state")
+	for _, want := range []string{
+		"goose.NewProvider(goose.DialectMySQL",
+		"lock.NewMySQLTableLocker",
+		"provider.Up(ctx)",
+		"seedLegacyMigrations",
+		"dirty migration state detected",
+		"manual intervention required",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("mysql.go missing expected migration runner fragment: %s", want)
+		}
 	}
 
-	// Must use errors.Is for ErrNoChange comparison.
-	if !strings.Contains(source, "errors.Is(err, migrate.ErrNoChange)") {
-		t.Fatal("mysql.go should use errors.Is for ErrNoChange comparison")
-	}
-
-	// Must NOT contain the dangerous auto-reset pattern.
-	if strings.Contains(source, "m.Force(-1)") {
-		t.Fatal("mysql.go still contains m.Force(-1) — dirty migration auto-reset must be removed")
-	}
-	if strings.Contains(source, "forcing version reset and retrying") {
-		t.Fatal("mysql.go still contains old auto-reset log message")
+	for _, banned := range []string{
+		"m.Force(",
+		"forcing version reset and retrying",
+		"DELETE FROM goose_db_version",
+		"DROP TABLE goose_db_version",
+		"DROP TABLE schema_migrations",
+	} {
+		if strings.Contains(source, banned) {
+			t.Fatalf("mysql.go contains banned destructive migration pattern: %s", banned)
+		}
 	}
 }
 
-
 func TestRetryWithBackoff(t *testing.T) {
 	tests := []struct {
-		name            string
-		attempts        int
-		returnErrs      []error
-		wantErr         bool
-		wantCalls       int
-		errContains     string
-		wantUnwrappable bool // if true, asserts dirtyMigrationError is reachable via errors.As through a wrapping layer
+		name        string
+		attempts    int
+		returnErrs  []error
+		wantErr     bool
+		wantCalls   int
+		errContains string
 	}{
 		{
 			name:       "succeeds on first attempt",
@@ -152,11 +153,11 @@ func TestRetryWithBackoff(t *testing.T) {
 			wantCalls:  2,
 		},
 		{
-			name:        "attempts=1 succeeds on first and only attempt",
-			attempts:    1,
-			returnErrs:  []error{nil},
-			wantErr:     false,
-			wantCalls:   1,
+			name:       "attempts=1 succeeds on first and only attempt",
+			attempts:   1,
+			returnErrs: []error{nil},
+			wantErr:    false,
+			wantCalls:  1,
 		},
 		{
 			name:        "exhausts all attempts",
@@ -173,15 +174,6 @@ func TestRetryWithBackoff(t *testing.T) {
 			wantErr:     true,
 			wantCalls:   1,
 			errContains: "failed after 1 attempts",
-		},
-		{
-			name:            "non-retryable error exits immediately and is unwrappable through a wrapping layer",
-			attempts:        5,
-			returnErrs:      []error{&dirtyMigrationError{msg: "dirty", migErr: errors.New("original")}},
-			wantErr:         true,
-			wantCalls:       1,
-			errContains:     "dirty",
-			wantUnwrappable: true,
 		},
 	}
 
@@ -207,15 +199,6 @@ func TestRetryWithBackoff(t *testing.T) {
 			}
 			if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
 				t.Fatalf("expected error containing %q, got %q", tt.errContains, err.Error())
-			}
-			if tt.wantUnwrappable {
-				// Simulate the fmt.Errorf("%w") wrapping that runMigrations applies,
-				// to verify the chain survives an additional wrapping layer.
-				wrapped := fmt.Errorf("migrate up: %w", err)
-				var dme *dirtyMigrationError
-				if !errors.As(wrapped, &dme) {
-					t.Fatalf("expected dirtyMigrationError to be reachable via errors.As after wrapping, got %T: %v", wrapped, wrapped)
-				}
 			}
 		})
 	}
@@ -245,7 +228,6 @@ func TestPingRetryOnTransientError(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
-
 
 func newTestStore(t *testing.T) (*MySQLStore, sqlmock.Sqlmock) {
 	t.Helper()
@@ -828,43 +810,31 @@ func TestGetTask(t *testing.T) {
 
 func TestDeleteTask(t *testing.T) {
 	tests := []struct {
-		name        string
-		id          string
-		groupFolder string
-		setup       func(sqlmock.Sqlmock)
+		name         string
+		id           string
+		groupFolder  string
+		rowsAffected int64
 	}{
 		{
-			name:        "deletes matching task",
-			id:          "task1",
-			groupFolder: "folder1",
-			setup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectBegin()
-				mock.ExpectExec("DELETE FROM task_run_logs WHERE task_id = \\? AND group_folder = \\?").
-					WithArgs("task1", "folder1").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectExec("DELETE FROM scheduled_tasks WHERE id = \\? AND group_folder = \\?").
-					WithArgs("task1", "folder1").WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectCommit()
-			},
+			name:         "deletes matching task",
+			id:           "task1",
+			groupFolder:  "folder1",
+			rowsAffected: 1,
 		},
 		{
-			name:        "wrong group deletes 0 rows",
-			id:          "task1",
-			groupFolder: "other-group",
-			setup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectBegin()
-				mock.ExpectExec("DELETE FROM task_run_logs WHERE task_id = \\? AND group_folder = \\?").
-					WithArgs("task1", "other-group").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectExec("DELETE FROM scheduled_tasks WHERE id = \\? AND group_folder = \\?").
-					WithArgs("task1", "other-group").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectCommit()
-			},
+			name:         "wrong group deletes 0 rows",
+			id:           "task1",
+			groupFolder:  "other-group",
+			rowsAffected: 0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store, mock := newTestStore(t)
-			tt.setup(mock)
+			mock.ExpectExec("DELETE FROM scheduled_tasks WHERE id = \\? AND group_folder = \\?").
+				WithArgs(tt.id, tt.groupFolder).
+				WillReturnResult(sqlmock.NewResult(0, tt.rowsAffected))
 
 			err := store.DeleteTask(context.Background(), tt.id, tt.groupFolder)
 			if err != nil {
@@ -874,6 +844,21 @@ func TestDeleteTask(t *testing.T) {
 				t.Errorf("unmet expectations: %v", err)
 			}
 		})
+	}
+}
+
+func TestCompositeIndex(t *testing.T) {
+	up, err := os.ReadFile("../../migrations/20260831000001_scheduler_tasks_composite_index.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+
+	if !strings.Contains(string(up), "CREATE INDEX idx_status_next_run ON scheduled_tasks (status, next_run)") {
+		t.Errorf("migration must create idx_status_next_run on (status, next_run), got: %s", string(up))
+	}
+
+	if !strings.Contains(string(up), "DROP INDEX idx_status_next_run") {
+		t.Errorf("migration must drop idx_status_next_run, got: %s", string(up))
 	}
 }
 
@@ -1352,4 +1337,220 @@ func TestMySQLStore_MarkGroupActive_UnknownJID(t *testing.T) {
 			t.Errorf("unmet expectations: %v", err)
 		}
 	})
+}
+
+func TestMySQLTimeZone(t *testing.T) {
+	t.Run("wiring, source assertion", func(t *testing.T) {
+		src, err := os.ReadFile("mysql.go")
+		if err != nil {
+			t.Fatalf("read mysql.go: %v", err)
+		}
+
+		s := string(src)
+
+		start := strings.Index(s, "func NewMySQLStore(")
+		if start < 0 {
+			t.Fatalf("NewMySQLStore not found")
+		}
+
+		body := s[start:]
+		if end := strings.Index(body[1:], "\nfunc "); end >= 0 {
+			body = body[:end+1]
+		}
+
+		if !strings.Contains(body, `sql.Open("mysql", normalizedDSN)`) {
+			t.Errorf("NewMySQLStore must open with the normalized DSN")
+		}
+
+		if !strings.Contains(body, "runMigrations(ctx, normalizedDSN)") {
+			t.Errorf("runMigrations must receive the normalized DSN")
+		}
+
+		if strings.Contains(body, `sql.Open("mysql", dsn)`) || strings.Contains(body, "runMigrations(dsn)") {
+			t.Errorf("raw operator DSN must not reach sql.Open or runMigrations")
+		}
+	})
+
+	tests := []struct {
+		name         string
+		dsn          string
+		wantErr      bool
+		wantTimeZone string
+	}{
+		{name: "adds time params to bare DSN", dsn: "user:pass@tcp(localhost:3306)/kraclaw", wantTimeZone: "'+00:00'"},
+		{name: "overrides operator parseTime and loc", dsn: "user@tcp(h)/db?parseTime=false&loc=Local", wantTimeZone: "'+00:00'"},
+		{name: "overrides operator time_zone", dsn: "user@tcp(h)/db?time_zone=+05:30", wantTimeZone: "'+00:00'"},
+		{name: "rejects unparseable DSN", dsn: "not-a-dsn", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized, err := normalizeDSN(tt.dsn)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("normalizeDSN(%q): want error, got nil", tt.dsn)
+				}
+
+				if !strings.Contains(err.Error(), "normalize dsn") {
+					t.Errorf("error = %v, want contains %q", err, "normalize dsn")
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("normalizeDSN(%q): %v", tt.dsn, err)
+			}
+
+			cfg, err := mysqldrv.ParseDSN(normalized)
+			if err != nil {
+				t.Fatalf("ParseDSN(normalized): %v", err)
+			}
+
+			if !cfg.ParseTime {
+				t.Errorf("ParseTime = false, want true")
+			}
+
+			if cfg.Loc != time.UTC {
+				t.Errorf("Loc = %v, want UTC", cfg.Loc)
+			}
+
+			if got := cfg.Params["time_zone"]; got != tt.wantTimeZone {
+				t.Errorf("time_zone = %q, want %q", got, tt.wantTimeZone)
+			}
+		})
+	}
+}
+
+func TestSeedLegacyMigrations(t *testing.T) {
+	allVersions := []int64{
+		20260316171826,
+		20260327000001,
+		20260331000001,
+		20260403000001,
+		20260403000002,
+		20260420000001,
+		20260831000001,
+	}
+
+	existsRow := func(v bool) *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"exists"}).AddRow(v)
+	}
+
+	tests := []struct {
+		name        string
+		versions    []int64
+		setup       func(sqlmock.Sqlmock)
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:     "fresh database seeds nothing",
+			versions: allVersions,
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery("SELECT EXISTS .+ table_name = \\?").
+					WithArgs("goose_db_version").
+					WillReturnRows(existsRow(false))
+				mock.ExpectQuery("SELECT EXISTS .+ table_name = \\?").
+					WithArgs("schema_migrations").
+					WillReturnRows(existsRow(false))
+			},
+		},
+		{
+			name:     "already managed by goose skips seeding",
+			versions: allVersions,
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery("SELECT EXISTS .+ table_name = \\?").
+					WithArgs("goose_db_version").
+					WillReturnRows(existsRow(true))
+				mock.ExpectQuery("SELECT EXISTS .+ table_name = \\?").
+					WithArgs("schema_migrations").
+					WillReturnRows(existsRow(false))
+			},
+		},
+		{
+			name:     "goose version present skips seeding",
+			versions: allVersions,
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery("SELECT EXISTS .+ table_name = \\?").
+					WithArgs("goose_db_version").
+					WillReturnRows(existsRow(true))
+				mock.ExpectQuery("SELECT EXISTS .+ table_name = \\?").
+					WithArgs("schema_migrations").
+					WillReturnRows(existsRow(true))
+				mock.ExpectQuery("SELECT MAX\\(version_id\\) FROM goose_db_version").
+					WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(int64(20260831000001)))
+			},
+		},
+		{
+			name:     "clean legacy database is seeded",
+			versions: allVersions,
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery("SELECT EXISTS .+ table_name = \\?").
+					WithArgs("goose_db_version").
+					WillReturnRows(existsRow(false))
+				mock.ExpectQuery("SELECT EXISTS .+ table_name = \\?").
+					WithArgs("schema_migrations").
+					WillReturnRows(existsRow(true))
+				mock.ExpectQuery("SELECT version, dirty FROM schema_migrations").
+					WillReturnRows(sqlmock.NewRows([]string{"version", "dirty"}).AddRow(int64(20260420000001), false))
+				mock.ExpectExec("CREATE TABLE goose_db_version").WillReturnResult(sqlmock.NewResult(1, 1))
+
+				for _, v := range allVersions[:6] {
+					mock.ExpectExec("INSERT INTO goose_db_version .+ VALUES \\(\\?, \\?\\)").
+						WithArgs(v, true).
+						WillReturnResult(sqlmock.NewResult(1, 1))
+				}
+			},
+		},
+		{
+			name:     "dirty legacy state fails fast",
+			versions: allVersions,
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery("SELECT EXISTS .+ table_name = \\?").
+					WithArgs("goose_db_version").
+					WillReturnRows(existsRow(false))
+				mock.ExpectQuery("SELECT EXISTS .+ table_name = \\?").
+					WithArgs("schema_migrations").
+					WillReturnRows(existsRow(true))
+				mock.ExpectQuery("SELECT version, dirty FROM schema_migrations").
+					WillReturnRows(sqlmock.NewRows([]string{"version", "dirty"}).AddRow(int64(20260420000001), true))
+			},
+			wantErr:     true,
+			errContains: "dirty migration state detected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("create sqlmock: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+
+			tt.setup(mock)
+
+			err = seedLegacyMigrations(context.Background(), db, tt.versions)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errContains)
+				}
+
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Fatalf("expected error containing %q, got %q", tt.errContains, err.Error())
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet expectations: %v", err)
+			}
+		})
+	}
 }

@@ -2,18 +2,34 @@ package scheduler
 
 import (
 	"context"
+	"database/sql/driver"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	gosql "github.com/go-sql-driver/mysql"
 	"github.com/johanssonvincent/kraclaw/internal/store"
-	"github.com/robfig/cron/v3"
 	"golang.org/x/sync/semaphore"
 )
 
 // maxConcurrentTasks bounds how many tasks can execute simultaneously within a poll window.
 const maxConcurrentTasks = int64(3)
+
+func isTransientAdvanceError(err error) bool {
+	if errors.Is(err, driver.ErrBadConn) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) {
+		return true
+	}
+
+	if mysqlErr, ok := errors.AsType[*gosql.MySQLError](err); ok {
+		return mysqlErr.Number == 1205 || mysqlErr.Number == 1213
+	}
+
+	return false
+}
 
 // TaskExecutor executes a single scheduled task.
 type TaskExecutor func(ctx context.Context, task store.ScheduledTask) error
@@ -32,9 +48,11 @@ func New(s store.TaskStore, executor TaskExecutor, pollInterval time.Duration) (
 	if s == nil {
 		return nil, fmt.Errorf("scheduler: task store is required")
 	}
+
 	if executor == nil {
 		return nil, fmt.Errorf("scheduler: executor is required")
 	}
+
 	return &Scheduler{
 		store:        s,
 		executor:     executor,
@@ -57,6 +75,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			s.log.Info("scheduler stopped")
+
 			return ctx.Err()
 		case <-ticker.C:
 		}
@@ -67,6 +86,7 @@ func (s *Scheduler) poll(ctx context.Context) {
 	tasks, err := s.store.GetDueTasks(ctx)
 	if err != nil {
 		s.log.Error("failed to get due tasks", "error", err)
+
 		return
 	}
 
@@ -85,34 +105,85 @@ func (s *Scheduler) poll(ctx context.Context) {
 			// the next poll tick provided NextRun is still in the past.
 			if err := s.semaphore.Acquire(ctx, 1); err != nil {
 				s.log.Error("semaphore acquire cancelled", "task_id", t.ID, "error", err)
+
 				return
 			}
 			defer s.semaphore.Release(1)
+
 			s.runTask(ctx, t)
 		}(task)
 	}
+
 	wg.Wait()
 }
 
 func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	start := time.Now()
+
 	s.log.Info("running task", "task_id", task.ID, "group", task.GroupFolder)
 
-	err := s.executor(ctx, task)
+	nextRun, err := s.computeNextRun(&task)
+	if err != nil {
+		s.log.Error("invalid schedule; pausing task", "task_id", task.ID, "schedule", task.ScheduleValue, "error", err)
+
+		task.Status = store.TaskPaused
+		if pauseErr := s.store.UpdateTask(ctx, &task); pauseErr != nil {
+			s.log.Error("failed to pause task", "task_id", task.ID, "error", pauseErr)
+		}
+
+		return
+	}
+
+	task.LastRun = &start
+	if task.ScheduleType == store.ScheduleOnce {
+		task.NextRun = nil
+		task.Status = store.TaskCompleted
+	} else {
+		task.NextRun = nextRun
+	}
+
+	if err := s.store.UpdateTask(ctx, &task); err != nil {
+		if isTransientAdvanceError(err) {
+			s.log.Error("task advance deferred to next poll", "task_id", task.ID, "error", err)
+
+			return
+		}
+
+		s.log.Error("task advance failed permanently; pausing task", "task_id", task.ID, "error", err)
+
+		task.Status = store.TaskPaused
+		if pauseErr := s.store.UpdateTask(ctx, &task); pauseErr != nil {
+			s.log.Error("failed to pause task", "task_id", task.ID, "error", pauseErr)
+		}
+
+		return
+	}
+
+	err = s.executor(runCtx, task)
 
 	duration := time.Since(start)
 	status := store.RunSuccess
+
 	var errStr *string
+
 	if err != nil {
 		status = store.RunError
 		e := err.Error()
 		errStr = &e
+
 		s.log.Error("task failed", "task_id", task.ID, "error", err, "duration", duration)
 	} else {
 		s.log.Info("task completed", "task_id", task.ID, "duration", duration)
 	}
 
-	// Log the task run regardless of outcome so the run history is always complete.
+	outcome := "enqueued"
+	if err != nil {
+		outcome = err.Error()
+	}
+
 	logErr := s.store.LogTaskRun(ctx, &store.TaskRunLog{
 		TaskID:      task.ID,
 		GroupFolder: task.GroupFolder,
@@ -120,61 +191,45 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 		DurationMs:  int(duration.Milliseconds()),
 		Status:      status,
 		Error:       errStr,
+		Result:      &outcome,
 	})
 	if logErr != nil {
 		s.log.Error("failed to log task run", "task_id", task.ID, "error", logErr)
 	}
 
-	if err != nil {
-		// Leave LastRun/NextRun/Status untouched so the task row is re-surfaced
-		// by GetDueTasks on the next poll tick. The TaskRunLog row above captures
-		// the failure history. UpdateTask is intentionally skipped here.
-		return
-	}
-
-	// Advance the schedule only on success.
-	now := time.Now()
-	task.LastRun = &now
-	nextRun := s.computeNextRun(&task)
-	task.NextRun = nextRun
-	if nextRun == nil && task.ScheduleType == store.ScheduleOnce {
-		task.Status = store.TaskCompleted
-	}
-
+	task.LastResult = &outcome
 	if updateErr := s.store.UpdateTask(ctx, &task); updateErr != nil {
-		if task.ScheduleType == store.ScheduleOnce {
-			s.log.Error("failed to mark once-task completed; task will re-fire on next poll",
-				"task_id", task.ID, "error", updateErr)
-		} else {
-			s.log.Error("failed to update task", "task_id", task.ID, "error", updateErr)
-		}
+		s.log.Error("failed to record task outcome", "task_id", task.ID, "error", updateErr)
 	}
 }
 
 // computeNextRun calculates the next run time for a task.
-func (s *Scheduler) computeNextRun(task *store.ScheduledTask) *time.Time {
+func (s *Scheduler) computeNextRun(task *store.ScheduledTask) (*time.Time, error) {
 	now := time.Now()
 
 	switch task.ScheduleType {
 	case store.ScheduleCron:
-		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		sched, err := parser.Parse(task.ScheduleValue)
+		sched, err := store.CronParser.Parse(task.ScheduleValue)
 		if err != nil {
-			s.log.Error("invalid cron expression", "task_id", task.ID, "expr", task.ScheduleValue, "error", err)
-			return nil
+			return nil, fmt.Errorf("parse cron expression: %w", err)
 		}
+
 		next := sched.Next(now)
-		return &next
+
+		return &next, nil
 
 	case store.ScheduleInterval:
 		d, err := time.ParseDuration(task.ScheduleValue)
-		if err != nil || d <= 0 {
-			s.log.Error("invalid interval", "task_id", task.ID, "value", task.ScheduleValue, "error", err)
-			return nil
+		if err != nil {
+			return nil, fmt.Errorf("parse interval: %w", err)
+		}
+
+		if d <= 0 {
+			return nil, fmt.Errorf("interval %q must be positive", task.ScheduleValue)
 		}
 
 		if task.LastRun == nil {
-			return &now
+			return &now, nil
 		}
 
 		// Anchor to last scheduled time and skip forward to prevent drift.
@@ -189,20 +244,22 @@ func (s *Scheduler) computeNextRun(task *store.ScheduledTask) *time.Time {
 		for !next.After(now) {
 			next = next.Add(d)
 		}
-		return &next
+
+		return &next, nil
 
 	case store.ScheduleOnce:
 		if task.LastRun != nil {
-			return nil
+			return nil, nil
 		}
+
 		t, err := time.Parse(time.RFC3339, task.ScheduleValue)
 		if err != nil {
-			s.log.Error("invalid once schedule", "task_id", task.ID, "value", task.ScheduleValue, "error", err)
-			return nil
+			return nil, fmt.Errorf("parse once schedule: %w", err)
 		}
-		return &t
+
+		return &t, nil
 
 	default:
-		return nil
+		return nil, fmt.Errorf("unknown schedule type %q", task.ScheduleType)
 	}
 }

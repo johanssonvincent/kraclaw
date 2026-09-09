@@ -47,6 +47,7 @@ func (h *eventHub) subscribe() (<-chan *kraclawv1.Event, func()) {
 	return ch, func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
+
 		if ch, ok := h.subs[id]; ok {
 			delete(h.subs, id)
 			close(ch)

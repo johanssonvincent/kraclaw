@@ -16,18 +16,24 @@ func (c *Controller) CleanupOrphans(ctx context.Context) error {
 	}
 
 	var cleaned int
+
 	for _, s := range sandboxes {
 		switch s.State {
 		case StateCompleted, StateFailed:
 			if err := c.StopSandbox(ctx, s.Name); err != nil {
 				if apierrors.IsNotFound(err) {
 					c.log.Info("orphan already cleaned up", "name", s.Name)
+
 					cleaned++
+
 					continue
 				}
+
 				c.log.Error("failed to clean up orphan", "name", s.Name, "error", err)
+
 				continue
 			}
+
 			cleaned++
 		case StateRunning:
 			c.log.Warn("orphan sandbox still running, skipping", "name", s.Name, "group", s.Group)
@@ -37,5 +43,6 @@ func (c *Controller) CleanupOrphans(ctx context.Context) error {
 	if cleaned > 0 {
 		c.log.Info("cleaned up orphan sandboxes", "count", cleaned)
 	}
+
 	return nil
 }

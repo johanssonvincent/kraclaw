@@ -11,7 +11,7 @@ import (
 func TestIntegrationMySQLStoreRoundTrip(t *testing.T) {
 	env := requireIntegrationEnv(t)
 
-	s, err := store.NewMySQLStore(env.mysqlDSN, 8, 4, time.Minute)
+	s, err := store.NewMySQLStore(context.Background(), env.mysqlDSN, 8, 4, time.Minute)
 	if err != nil {
 		t.Fatalf("new mysql store: %v", err)
 	}

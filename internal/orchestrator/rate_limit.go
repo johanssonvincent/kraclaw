@@ -38,7 +38,9 @@ func (tb *TokenBucket) TryAcquire(now time.Time) bool {
 
 	if tb.tokens >= 1.0 {
 		tb.tokens -= 1.0
+
 		return true
 	}
+
 	return false
 }

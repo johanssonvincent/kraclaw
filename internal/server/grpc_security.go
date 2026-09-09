@@ -36,6 +36,7 @@ func loadGRPCTLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, err
 
 func parseAllowedCIDRs(raw string) ([]*net.IPNet, error) {
 	parts := strings.Split(raw, ",")
+
 	nets := make([]*net.IPNet, 0, len(parts))
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
@@ -47,6 +48,7 @@ func parseAllowedCIDRs(raw string) ([]*net.IPNet, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse CIDR %q: %w", part, err)
 		}
+
 		nets = append(nets, network)
 	}
 
@@ -63,6 +65,7 @@ func ipAllowed(ip net.IP, nets []*net.IPNet) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -83,6 +86,7 @@ func (l *allowlistListener) Accept() (net.Conn, error) {
 		if !ok {
 			l.log.Warn("rejecting non-TCP gRPC connection", "remote_addr", conn.RemoteAddr().String())
 			_ = conn.Close()
+
 			continue
 		}
 
@@ -91,6 +95,7 @@ func (l *allowlistListener) Accept() (net.Conn, error) {
 		}
 
 		l.log.Warn("rejecting gRPC connection from disallowed IP", "remote_ip", addr.IP.String())
+
 		_ = conn.Close()
 	}
 }

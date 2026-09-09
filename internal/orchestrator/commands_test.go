@@ -8,6 +8,7 @@ import (
 
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
+	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
@@ -61,8 +62,10 @@ func TestHandleSlashCommand(t *testing.T) {
 			content: "/model",
 			sender:  "alice",
 			groups: []store.Group{
-				{JID: "group1@g.us", Folder: "group1", Name: "Test",
-					ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"}},
+				{
+					JID: "group1@g.us", Folder: "group1", Name: "Test",
+					ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"},
+				},
 			},
 			wantReturn: true,
 			wantSent: func(msgs []sentMessage) bool {
@@ -167,8 +170,10 @@ func TestHandleModelCommand_SetModel(t *testing.T) {
 			name:      "set already-current model",
 			requested: "claude-sonnet-4-6",
 			groups: []store.Group{
-				{JID: "group1@g.us", Folder: "group1", Name: "Test",
-					ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"}},
+				{
+					JID: "group1@g.us", Folder: "group1", Name: "Test",
+					ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"},
+				},
 			},
 			wantText: "already set",
 		},
@@ -230,8 +235,10 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 	t.Run("models with current marker", func(t *testing.T) {
 		s := newMockStore()
 		s.groups = []store.Group{
-			{JID: "group1@g.us", Folder: "group1", Name: "Test",
-				ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"}},
+			{
+				JID: "group1@g.us", Folder: "group1", Name: "Test",
+				ContainerConfig: &store.ContainerConfig{Model: "claude-sonnet-4-6"},
+			},
 		}
 		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
@@ -270,8 +277,10 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 	t.Run("unknown provider returns error message", func(t *testing.T) {
 		s := newMockStore()
 		s.groups = []store.Group{
-			{JID: "group1@g.us", Folder: "group1", Name: "Test",
-				ContainerConfig: &store.ContainerConfig{Provider: "opanai"}},
+			{
+				JID: "group1@g.us", Folder: "group1", Name: "Test",
+				ContainerConfig: &store.ContainerConfig{Provider: "opanai"},
+			},
 		}
 		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
@@ -289,8 +298,10 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 	t.Run("models for openai provider", func(t *testing.T) {
 		s := newMockStore()
 		s.groups = []store.Group{
-			{JID: "group1@g.us", Folder: "group1", Name: "Test",
-				ContainerConfig: &store.ContainerConfig{Provider: "openai", Model: "gpt-5.4"}},
+			{
+				JID: "group1@g.us", Folder: "group1", Name: "Test",
+				ContainerConfig: &store.ContainerConfig{Provider: "openai", Model: "gpt-5-codex"},
+			},
 		}
 		ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
 		o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
@@ -303,8 +314,8 @@ func TestHandleModelsCommand_Scenarios(t *testing.T) {
 		if !strings.Contains(ch.sent[0].text, "Models (OpenAI):") {
 			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "Models (OpenAI):")
 		}
-		if !strings.Contains(ch.sent[0].text, "gpt-5.4") {
-			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "gpt-5.4")
+		if !strings.Contains(ch.sent[0].text, "gpt-5-codex") {
+			t.Errorf("sent text = %q, want substring %q", ch.sent[0].text, "gpt-5-codex")
 		}
 	})
 }
@@ -327,6 +338,75 @@ func TestHandleModelCommand_ProviderRegistryValidation(t *testing.T) {
 	}
 	if !strings.Contains(ch.sent[0].text, "Model set to claude-opus-4-6") {
 		t.Fatalf("sent text = %q, want model set confirmation", ch.sent[0].text)
+	}
+}
+
+func TestHandleModelCommand_OpenAIDynamicValidation(t *testing.T) {
+	tests := []struct {
+		name              string
+		requested         string
+		listDynamicModels func(context.Context, string, string) ([]provider.ModelInfo, error)
+		wantText          string
+	}{
+		{
+			name:      "accepts model from dynamic list",
+			requested: "gpt-5.4-chat-latest",
+			listDynamicModels: func(context.Context, string, string) ([]provider.ModelInfo, error) {
+				return []provider.ModelInfo{{ID: "gpt-5.4-chat-latest"}}, nil
+			},
+			wantText: "Model set to gpt-5.4-chat-latest",
+		},
+		{
+			name:      "rejects model not in dynamic list",
+			requested: "gpt-unknown",
+			listDynamicModels: func(context.Context, string, string) ([]provider.ModelInfo, error) {
+				return []provider.ModelInfo{{ID: "gpt-5.4-chat-latest"}}, nil
+			},
+			wantText: `Unknown model "gpt-unknown"`,
+		},
+		{
+			name:      "falls back to static validation when dynamic listing fails",
+			requested: "gpt-5-codex",
+			listDynamicModels: func(context.Context, string, string) ([]provider.ModelInfo, error) {
+				return nil, errors.New("dynamic listing failed")
+			},
+			wantText: "Model set to gpt-5-codex",
+		},
+		{
+			name:      "falls back to static validation when dynamic listing is empty",
+			requested: "gpt-5-codex",
+			listDynamicModels: func(context.Context, string, string) ([]provider.ModelInfo, error) {
+				return []provider.ModelInfo{}, nil
+			},
+			wantText: "Model set to gpt-5-codex",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newMockStore()
+			s.groups = []store.Group{{
+				JID:    "group1@g.us",
+				Folder: "group1",
+				Name:   "Test",
+				ContainerConfig: &store.ContainerConfig{
+					Provider: provider.ProviderOpenAI,
+				},
+			}}
+			q := newMockQueue()
+			ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+			o := newTestOrchestratorWithRouter(s, q, &mockIPCBroker{}, []channel.Channel{ch})
+			o.listDynamicModels = tt.listDynamicModels
+
+			o.handleModelCommand(context.Background(), "group1@g.us", tt.requested)
+
+			if len(ch.sent) == 0 {
+				t.Fatal("expected sent message")
+			}
+			if !strings.Contains(ch.sent[0].text, tt.wantText) {
+				t.Fatalf("sent text = %q, want substring %q", ch.sent[0].text, tt.wantText)
+			}
+		})
 	}
 }
 

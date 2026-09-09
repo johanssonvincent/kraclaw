@@ -23,6 +23,7 @@ func init() {
 		if token == "" {
 			return nil, nil
 		}
+
 		return New(token, cfg), nil
 	})
 }
@@ -67,6 +68,7 @@ func (t *Telegram) Connect(ctx context.Context) error {
 	go b.Start(botCtx)
 
 	t.log.Info("connected to Telegram")
+
 	return nil
 }
 
@@ -85,6 +87,7 @@ func (t *Telegram) handleUpdate(ctx context.Context, b *tgbot.Bot, update *tgmod
 	chatJID := jidPrefix + strconv.FormatInt(msg.Chat.ID, 10)
 
 	senderName := ""
+
 	senderID := ""
 	if msg.From != nil {
 		senderID = strconv.FormatInt(msg.From.ID, 10)
@@ -112,6 +115,7 @@ func (t *Telegram) handleUpdate(ctx context.Context, b *tgbot.Bot, update *tgmod
 		if chatName == "" && msg.Chat.Username != "" {
 			chatName = msg.Chat.Username
 		}
+
 		t.cfg.OnChatMeta(chatJID, time.Now(), chatName, "telegram", isGroup)
 	}
 }
@@ -137,6 +141,7 @@ func (t *Telegram) SendMessage(ctx context.Context, jid string, text string) err
 	if err != nil {
 		return fmt.Errorf("send telegram message: %w", err)
 	}
+
 	return nil
 }
 
@@ -162,12 +167,14 @@ func (t *Telegram) SetTyping(ctx context.Context, jid string, typing bool) error
 		ChatID: chatID,
 		Action: tgmodels.ChatActionTyping,
 	})
+
 	return err
 }
 
 func (t *Telegram) IsConnected() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+
 	return t.connected
 }
 
@@ -185,15 +192,18 @@ func (t *Telegram) Disconnect(_ context.Context) error {
 
 	t.connected = false
 	t.log.Info("disconnected from Telegram")
+
 	return nil
 }
 
 // chatIDFromJID extracts the int64 chat ID from a telegram JID.
 func chatIDFromJID(jid string) (int64, error) {
 	raw := strings.TrimPrefix(jid, jidPrefix)
+
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid telegram chat ID %q: %w", raw, err)
 	}
+
 	return id, nil
 }

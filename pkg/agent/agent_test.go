@@ -1,6 +1,17 @@
 package agent
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	natserver "github.com/nats-io/nats-server/v2/server"
+)
 
 func TestLoadConfig_RequiresGroup(t *testing.T) {
 	t.Setenv("KRACLAW_GROUP", "")
@@ -74,5 +85,147 @@ func TestLoadConfig_AllFields(t *testing.T) {
 	}
 	if cfg.Provider != "openai" {
 		t.Fatalf("expected openai, got %q", cfg.Provider)
+	}
+}
+
+func TestEnsureGroupDirs(t *testing.T) {
+	cases := map[string]struct {
+		homeEnv string
+		setup   func(t *testing.T, home string)
+		wantErr string
+	}{
+		"happy_path": {
+			homeEnv: "",
+			setup:   func(t *testing.T, home string) {},
+		},
+		"home_unset": {
+			homeEnv: "__UNSET__",
+			setup:   func(t *testing.T, home string) {},
+			wantErr: "HOME unset",
+		},
+		"idempotent_existing": {
+			homeEnv: "",
+			setup: func(t *testing.T, home string) {
+				if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+			},
+		},
+	}
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			archives := t.TempDir()
+			if tt.homeEnv == "__UNSET__" {
+				t.Setenv("HOME", "")
+			} else {
+				t.Setenv("HOME", home)
+			}
+			t.Setenv("KRACLAW_AGENT_ARCHIVES_DIR", archives)
+			tt.setup(t, home)
+			err := ensureGroupDirs()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("ensureGroupDirs() err = %v, want nil", err)
+					return
+				}
+				if _, statErr := os.Stat(filepath.Join(home, ".claude")); statErr != nil {
+					t.Errorf(".claude not created: %v", statErr)
+				}
+				if _, statErr := os.Stat(archives); statErr != nil {
+					t.Errorf("archives dir not created: %v", statErr)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("ensureGroupDirs() err = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRun_PrepullArg_ReturnsOnSignal(t *testing.T) {
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	os.Args = []string{"agent", "--prepull"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	oldWait := waitForPrepullSignal
+	waitForPrepullSignal = func() {
+		<-ctx.Done()
+	}
+	t.Cleanup(func() { waitForPrepullSignal = oldWait })
+
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(func(ctx context.Context, ipc *IPCClient, log *slog.Logger) error {
+			return fmt.Errorf("handler must not run in prepull mode")
+		})
+	}()
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run() err = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not return after prepull wait was released")
+	}
+}
+
+func startTestNATSServerWithAuth(t *testing.T) string {
+	t.Helper()
+	opts := &natserver.Options{
+		Host:     "127.0.0.1",
+		Port:     -1,
+		Username: "agentuser",
+		Password: "agentpass",
+	}
+	s, err := natserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("new nats server: %v", err)
+	}
+	go s.Start()
+	if !s.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats server not ready")
+	}
+	t.Cleanup(s.Shutdown)
+	return s.ClientURL()
+}
+
+func TestConnectNATS(t *testing.T) {
+	url := startTestNATSServerWithAuth(t)
+	cases := []struct {
+		name    string
+		user    string
+		pass    string
+		wantErr bool
+	}{
+		{"correct credentials connect", "agentuser", "agentpass", false},
+		{"wrong password fails", "agentuser", "nope", true},
+		{"missing credentials fail", "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			nc, err := ConnectNATS(url, tc.user, tc.pass)
+			if tc.wantErr {
+				if err == nil {
+					if nc != nil {
+						nc.Close()
+					}
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ConnectNATS: %v", err)
+			}
+			if nc == nil {
+				t.Fatal("expected non-nil connection")
+			}
+			nc.Close()
+		})
 	}
 }

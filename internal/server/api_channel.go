@@ -27,9 +27,11 @@ func (s *channelService) SendMessage(_ context.Context, req *kraclawv1.SendMessa
 	if s.tui == nil {
 		return nil, status.Error(codes.Unavailable, "TUI channel not configured")
 	}
+
 	if req.ChatJid == "" {
 		return nil, status.Error(codes.InvalidArgument, "chat_jid is required")
 	}
+
 	if req.Text == "" {
 		return nil, status.Error(codes.InvalidArgument, "text is required")
 	}
@@ -37,7 +39,9 @@ func (s *channelService) SendMessage(_ context.Context, req *kraclawv1.SendMessa
 	if err := s.tui.HandleInbound(req.ChatJid, req.Sender, req.SenderName, req.Text); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "channel not ready: %v", err)
 	}
+
 	s.log.Info("inbound TUI message", "jid", req.ChatJid, "sender", req.Sender)
+
 	return &kraclawv1.SendMessageResponse{}, nil
 }
 
@@ -45,6 +49,7 @@ func (s *channelService) StreamInbound(req *kraclawv1.StreamInboundRequest, stre
 	if s.tui == nil {
 		return status.Error(codes.Unavailable, "TUI channel not configured")
 	}
+
 	if req.ChatJid == "" {
 		return status.Error(codes.InvalidArgument, "chat_jid is required")
 	}
@@ -69,8 +74,10 @@ func (s *channelService) StreamInbound(req *kraclawv1.StreamInboundRequest, stre
 		case text, ok := <-ch:
 			if !ok {
 				s.log.Info("inbound stream closed", "chat_jid", req.ChatJid)
+
 				return status.Error(codes.Aborted, "channel closed by server")
 			}
+
 			msg := &kraclawv1.InboundMessage{
 				Content: text,
 				ChatJid: req.ChatJid,
@@ -88,10 +95,12 @@ func (s *channelService) lookupModel(ctx context.Context, chatJID string) string
 	if s.store == nil {
 		return ""
 	}
+
 	group, err := s.store.GetGroup(ctx, chatJID)
 	if err != nil || group == nil || group.ContainerConfig == nil {
 		return ""
 	}
+
 	return group.ContainerConfig.Model
 }
 
@@ -103,5 +112,6 @@ func (s *channelService) ListChannels(_ context.Context, _ *kraclawv1.ListChanne
 			Connected: ch.IsConnected(),
 		})
 	}
+
 	return resp, nil
 }

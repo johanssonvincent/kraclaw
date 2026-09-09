@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -19,6 +21,8 @@ import (
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/johanssonvincent/kraclaw/internal/channel"
+	"github.com/johanssonvincent/kraclaw/internal/config"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
@@ -46,7 +50,7 @@ func createTestSandboxController() *sandbox.Controller {
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
-	ctrl, _ := sandbox.New(fake.NewClientset(), ctrlClient, nil, "default", agentImages, "nats://localhost:4222", "http://localhost:3001")
+	ctrl, _ := sandbox.New(fake.NewClientset(), ctrlClient, nil, "default", agentImages, "nats://localhost:4222", "http://localhost:3001", "", true)
 	return ctrl
 }
 
@@ -396,8 +400,14 @@ func (m *mockIPCBroker) ReadInput(ctx context.Context, group, agentID string) (<
 	return ch, nil
 }
 
+func (m *mockIPCBroker) EnsureStreamForAgent(_ context.Context, _ string, _ string) error {
+	return nil
+}
 func (m *mockIPCBroker) DeleteStreams(ctx context.Context, group string) error { return nil }
-func (m *mockIPCBroker) Close() error                                          { return nil }
+func (m *mockIPCBroker) StreamExists(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (m *mockIPCBroker) Close() error { return nil }
 
 type mockStreamServer struct {
 	ctx     context.Context
@@ -417,8 +427,8 @@ func (m *mockStreamServer) Context() context.Context     { return m.ctx }
 func (m *mockStreamServer) SetHeader(metadata.MD) error  { return nil }
 func (m *mockStreamServer) SendHeader(metadata.MD) error { return nil }
 func (m *mockStreamServer) SetTrailer(metadata.MD)       {}
-func (m *mockStreamServer) SendMsg(interface{}) error    { return nil }
-func (m *mockStreamServer) RecvMsg(interface{}) error    { return nil }
+func (m *mockStreamServer) SendMsg(any) error            { return nil }
+func (m *mockStreamServer) RecvMsg(any) error            { return nil }
 
 func testLogger() *slog.Logger {
 	return slog.Default()
@@ -449,14 +459,15 @@ func (m *mockGroupStore) GetGroup(context.Context, string) (*store.Group, error)
 func (m *mockGroupStore) GetGroupByFolder(context.Context, string) (*store.Group, error) {
 	return nil, nil
 }
-func (m *mockGroupStore) ListGroups(context.Context) ([]store.Group, error)  { return nil, nil }
-func (m *mockGroupStore) DeleteGroup(context.Context, string) error          { return nil }
+func (m *mockGroupStore) ListGroups(context.Context) ([]store.Group, error)   { return nil, nil }
+func (m *mockGroupStore) DeleteGroup(context.Context, string) error           { return nil }
 func (m *mockGroupStore) StoreMessage(context.Context, *store.Message) error  { return nil }
 func (m *mockGroupStore) StoreBatch(context.Context, []store.Message) error   { return nil }
 func (m *mockGroupStore) DeleteMessage(context.Context, string, string) error { return nil }
 func (m *mockGroupStore) GetNewMessages(context.Context, []string, time.Time, int) ([]store.Message, error) {
 	return nil, nil
 }
+
 func (m *mockGroupStore) GetMessagesSince(context.Context, string, time.Time, int) ([]store.Message, error) {
 	return nil, nil
 }
@@ -470,6 +481,7 @@ func (m *mockGroupStore) CreateTask(_ context.Context, task *store.ScheduledTask
 	m.createdTask = task
 	return nil
 }
+
 func (m *mockGroupStore) GetTask(_ context.Context, id, groupFolder string) (*store.ScheduledTask, error) {
 	if m.getTaskErr != nil {
 		return nil, m.getTaskErr
@@ -479,10 +491,13 @@ func (m *mockGroupStore) GetTask(_ context.Context, id, groupFolder string) (*st
 	}
 	return nil, fmt.Errorf("task %q not found", id)
 }
+
 func (m *mockGroupStore) ListTasks(context.Context) ([]store.ScheduledTask, error) { return nil, nil }
+
 func (m *mockGroupStore) ListTasksByGroup(context.Context, string) ([]store.ScheduledTask, error) {
 	return nil, nil
 }
+
 func (m *mockGroupStore) UpdateTask(_ context.Context, task *store.ScheduledTask) error {
 	if m.updateTaskErr != nil {
 		return m.updateTaskErr
@@ -498,6 +513,7 @@ func (m *mockGroupStore) LogTaskRun(context.Context, *store.TaskRunLog) error { 
 func (m *mockGroupStore) GetTaskRunLogs(context.Context, string, string, int) ([]store.TaskRunLog, error) {
 	return nil, nil
 }
+
 func (m *mockGroupStore) GetSession(context.Context, string) (*store.Session, error) {
 	return nil, nil
 }
@@ -508,6 +524,7 @@ func (m *mockGroupStore) SetState(context.Context, string, string) error      { 
 func (m *mockGroupStore) GetAllowlist(context.Context, string) ([]store.SenderAllowlistEntry, error) {
 	return nil, nil
 }
+
 func (m *mockGroupStore) UpsertAllowlistEntry(context.Context, *store.SenderAllowlistEntry) error {
 	return nil
 }
@@ -864,5 +881,150 @@ func TestGetStatus_NoChannels(t *testing.T) {
 	}
 	if resp.ConnectedChannels != 0 {
 		t.Fatalf("ConnectedChannels = %d, want 0", resp.ConnectedChannels)
+	}
+}
+
+// --- TestListProviders ---
+
+func TestListProviders_EmptyRegistry(t *testing.T) {
+	svc := &groupService{
+		providers: provider.NewRegistryForTest(nil),
+		log:       testLogger(),
+	}
+	resp, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error for empty registry: %v", err)
+	}
+	if len(resp.Providers) != 0 {
+		t.Fatalf("expected 0 providers, got %d", len(resp.Providers))
+	}
+}
+
+func TestListProviders_NilRegistry(t *testing.T) {
+	svc := &groupService{log: testLogger()} // providers == nil
+	_, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})
+	if err == nil {
+		t.Fatal("expected error for nil provider registry")
+	}
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable, got %v", status.Code(err))
+	}
+}
+
+func TestListProviders_ReturnsBothProviders(t *testing.T) {
+	svc := &groupService{
+		providers: provider.NewRegistry(),
+		log:       testLogger(),
+	}
+	resp, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Providers) != 2 {
+		t.Fatalf("expected 2 providers, got %d", len(resp.Providers))
+	}
+	ids := make(map[string]bool)
+	for _, p := range resp.Providers {
+		ids[p.GetId()] = true
+	}
+	if !ids[provider.ProviderAnthropic] {
+		t.Error("missing anthropic provider")
+	}
+	if !ids[provider.ProviderOpenAI] {
+		t.Error("missing openai provider")
+	}
+}
+
+func TestListProviders_EachHasDefaultModelAndModels(t *testing.T) {
+	svc := &groupService{
+		providers: provider.NewRegistry(),
+		log:       testLogger(),
+	}
+	resp, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, p := range resp.Providers {
+		if p.GetDefaultModel() == "" {
+			t.Errorf("provider %q has empty default_model", p.GetId())
+		}
+		if len(p.GetModels()) == 0 {
+			t.Errorf("provider %q has no models", p.GetId())
+		}
+		// Each model must have a non-empty ID and display name.
+		for _, m := range p.GetModels() {
+			if m.GetId() == "" {
+				t.Errorf("provider %q has model with empty id", p.GetId())
+			}
+			if m.GetDisplayName() == "" {
+				t.Errorf("provider %q model %q has empty display_name", p.GetId(), m.GetId())
+			}
+		}
+	}
+}
+
+func TestListProviders_DefaultModelInModelList(t *testing.T) {
+	svc := &groupService{
+		providers: provider.NewRegistry(),
+		log:       testLogger(),
+	}
+	resp, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, p := range resp.Providers {
+		found := false
+		for _, m := range p.GetModels() {
+			if m.GetId() == p.GetDefaultModel() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("provider %q default_model %q not in model list", p.GetId(), p.GetDefaultModel())
+		}
+	}
+}
+
+func TestListProviders_UsesDynamicOpenAIModelsWhenGroupJIDProvided(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.5"},{"id":"whisper-1"}]}`))
+	}))
+	defer upstream.Close()
+
+	lister := credproxy.NewModelLister(credproxy.NewDefaultResolver(nil, config.ProxyConfig{
+		OpenAIAPIKey:      "sk-openai",
+		OpenAIUpstreamURL: upstream.URL,
+	}))
+	svc := &groupService{
+		providers: provider.NewRegistry(),
+		models:    lister,
+		log:       testLogger(),
+	}
+
+	resp, err := svc.ListProviders(context.Background(), &kraclawv1.ListProvidersRequest{GroupJid: "tui:g1"})
+	if err != nil {
+		t.Fatalf("ListProviders() err = %v, want nil", err)
+	}
+	if gotAuth != "Bearer sk-openai" {
+		t.Fatalf("Authorization = %q, want Bearer sk-openai", gotAuth)
+	}
+	var openaiProvider *kraclawv1.ProviderInfo
+	for _, p := range resp.GetProviders() {
+		if p.GetId() == provider.ProviderOpenAI {
+			openaiProvider = p
+			break
+		}
+	}
+	if openaiProvider == nil {
+		t.Fatal("missing openai provider")
+	}
+	if len(openaiProvider.GetModels()) != 1 || openaiProvider.GetModels()[0].GetId() != "gpt-5.5" {
+		t.Fatalf("openai models = %#v, want only dynamic gpt-5.5", openaiProvider.GetModels())
+	}
+	if openaiProvider.GetDefaultModel() != "gpt-5.5" {
+		t.Fatalf("openai default_model = %q, want gpt-5.5", openaiProvider.GetDefaultModel())
 	}
 }

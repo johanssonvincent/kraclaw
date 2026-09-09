@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
-
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
 
 	"github.com/johanssonvincent/kraclaw/pkg/agent"
 )
+
+type conversationTurn struct {
+	role string
+	text string
+}
 
 func main() {
 	if err := agent.Run(runOpenAI); err != nil {
@@ -24,29 +25,24 @@ func main() {
 func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) error {
 	model := os.Getenv("OPENAI_MODEL")
 	if model == "" {
-		model = "gpt-5.4"
+		model = "gpt-5.5"
 	}
+
 	proxyURL := os.Getenv("KRACLAW_PROXY_URL")
 	if proxyURL == "" {
 		return fmt.Errorf("KRACLAW_PROXY_URL is required")
 	}
+
 	groupJID := os.Getenv("KRACLAW_GROUP")
 	if groupJID == "" {
 		return fmt.Errorf("KRACLAW_GROUP is required")
 	}
 
-	// Create OpenAI client pointing at the credential proxy.
-	opts := []option.RequestOption{
-		option.WithAPIKey("placeholder"), // Proxy injects real key.
-	}
-	opts = append(opts, option.WithBaseURL(proxyURL+"/v1"))
-	opts = append(opts, option.WithHeader("X-Kraclaw-Group", groupJID))
-
-	client := openai.NewClient(opts...)
+	client := newCodexClient(proxyURL, groupJID)
 
 	log.Info("openai agent ready", "model", model, "proxy", proxyURL)
 
-	var history []openai.ChatCompletionMessageParamUnion
+	var history []conversationTurn
 
 	inputCh, ipcErrCh, err := ipc.ReadInput(ctx)
 	if err != nil {
@@ -69,40 +65,27 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 				text, err := extractMessageText(msg.Payload)
 				if err != nil {
 					log.Warn("failed to extract message text", "error", err)
+
 					continue
 				}
 
-				msgs := make([]openai.ChatCompletionMessageParamUnion, len(history)+1)
-				copy(msgs, history)
-				msgs[len(history)] = openai.UserMessage(text)
-				stream := client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
-					Model:    model,
-					Messages: msgs,
-				})
-
-				var buf strings.Builder
-				for stream.Next() {
-					chunk := stream.Current()
-					for _, choice := range chunk.Choices {
-						if choice.Delta.Content != "" {
-							buf.WriteString(choice.Delta.Content)
-						}
-					}
-				}
-				fullResponse := buf.String()
-				if err := stream.Err(); err != nil {
+				fullResponse, err := client.streamResponse(ctx, model, history, text)
+				if err != nil {
 					log.Error("openai stream error", "error", err)
+
 					if sendErr := ipc.SendOutput(ctx, &agent.OutboundMessage{
 						Type: "message",
 						Text: "I encountered an error processing your message. Please try again.",
 					}); sendErr != nil {
 						log.Error("failed to send error message", "error", sendErr)
 					}
+
 					continue
 				}
 
 				if fullResponse == "" {
 					log.Warn("openai returned empty response", "model", model)
+
 					fullResponse = "I received an empty response from the model. Please try again."
 				}
 
@@ -111,11 +94,12 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 					Text: fullResponse,
 				}); err != nil {
 					log.Error("failed to send response, discarding from history", "error", err)
+
 					continue
 				}
 				// Only append to history after successful send.
-				history = append(history, openai.UserMessage(text))
-				history = append(history, openai.AssistantMessage(fullResponse))
+				history = append(history, conversationTurn{role: "user", text: text})
+				history = append(history, conversationTurn{role: "assistant", text: fullResponse})
 
 			case "set_model":
 				var payload struct {
@@ -132,6 +116,7 @@ func runOpenAI(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) erro
 
 			case "shutdown":
 				log.Info("shutdown signal received")
+
 				return nil
 
 			default:
@@ -149,11 +134,14 @@ func extractMessageText(payload json.RawMessage) (string, error) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return "", err
 	}
+
 	if p.Messages != "" {
 		return p.Messages, nil
 	}
+
 	if p.Text != "" {
 		return p.Text, nil
 	}
+
 	return "", fmt.Errorf("no text content in payload")
 }

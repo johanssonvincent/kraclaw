@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -9,15 +10,15 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
-	nats "github.com/nats-io/nats.go"
+	"github.com/moby/moby/api/types/container"
 	natserver "github.com/nats-io/nats-server/v2/server"
-	"github.com/ory/dockertest/v3"
-	"github.com/ory/dockertest/v3/docker"
+	nats "github.com/nats-io/nats.go"
+	"github.com/ory/dockertest/v4"
 )
 
 type integrationEnv struct {
-	pool          *dockertest.Pool
-	mysqlResource *dockertest.Resource
+	pool          dockertest.ClosablePool
+	mysqlResource dockertest.ClosableResource
 	mysqlDSN      string
 	natsServer    *natserver.Server
 	natsStoreDir  string
@@ -57,26 +58,26 @@ func requireIntegrationEnv(t *testing.T) *integrationEnv {
 
 func setupIntegrationEnv() *integrationEnv {
 	env := &integrationEnv{}
+	ctx := context.Background()
 
-	pool, err := dockertest.NewPool("")
+	pool, err := dockertest.NewPool(ctx, "", dockertest.WithMaxWait(2*time.Minute))
 	if err != nil {
 		env.setupErr = fmt.Errorf("create docker pool: %w", err)
 		return env
 	}
-	pool.MaxWait = 2 * time.Minute
 	env.pool = pool
 
-	env.mysqlResource, err = pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: "mysql",
-		Tag:        "8.0",
-		Env: []string{
+	env.mysqlResource, err = pool.Run(ctx, "mysql",
+		dockertest.WithTag("8.0"),
+		dockertest.WithEnv([]string{
 			"MYSQL_ROOT_PASSWORD=kraclaw",
 			"MYSQL_DATABASE=kraclaw_test",
-		},
-	}, func(hc *docker.HostConfig) {
-		hc.AutoRemove = true
-		hc.RestartPolicy = docker.RestartPolicy{Name: "no"}
-	})
+		}),
+		dockertest.WithHostConfig(func(hc *container.HostConfig) {
+			hc.AutoRemove = true
+			hc.RestartPolicy = container.RestartPolicy{Name: "no"}
+		}),
+	)
 	if err != nil {
 		env.setupErr = fmt.Errorf("start mysql container: %w", err)
 		return env
@@ -85,7 +86,7 @@ func setupIntegrationEnv() *integrationEnv {
 	mysqlPort := env.mysqlResource.GetPort("3306/tcp")
 	env.mysqlDSN = fmt.Sprintf("root:kraclaw@tcp(localhost:%s)/kraclaw_test?parseTime=true", mysqlPort)
 
-	if err := pool.Retry(func() error {
+	if err := pool.Retry(ctx, 2*time.Minute, func() error {
 		db, err := sql.Open("mysql", env.mysqlDSN)
 		if err != nil {
 			return err
@@ -98,7 +99,6 @@ func setupIntegrationEnv() *integrationEnv {
 		return env
 	}
 
-	// Start embedded NATS with JetStream for IPC and queue tests.
 	natsDir, err := os.MkdirTemp("", "kraclaw-nats-test-*")
 	if err != nil {
 		env.setupErr = fmt.Errorf("create nats store dir: %w", err)
@@ -153,6 +153,7 @@ func (e *integrationEnv) close() {
 		_ = os.RemoveAll(e.natsStoreDir)
 	}
 	if e.mysqlResource != nil {
-		_ = e.pool.Purge(e.mysqlResource)
+		_ = e.mysqlResource.Close(context.Background())
 	}
+	_ = e.pool.Close(context.Background())
 }
