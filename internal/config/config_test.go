@@ -115,6 +115,35 @@ func TestValidate_OpenAIProviderRequiresOpenAIImage(t *testing.T) {
 	}
 }
 
+func TestValidate_MultiProviderRequiresEncryptionKey(t *testing.T) {
+	// Test case: when we have multiple providers that would require encryption,
+	// we should require the encryption key to be set
+	cfg := validConfig()
+	cfg.Proxy.AnthropicAPIKey = "sk-anthropic-test"
+	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
+	cfg.K8s.AgentImageAnthropic = "ghcr.io/test/anthropic:latest"
+	cfg.K8s.AgentImageOpenAI = "ghcr.io/test/openai:latest"
+	// No encryption key set - should fail validation
+	cfg.Proxy.CredentialEncryptionKey = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when multi-provider setup requires encryption key")
+	}
+}
+
+func TestValidate_MultiProviderWithEncryptionPasses(t *testing.T) {
+	// Test case: when we have multiple providers that would require encryption,
+	// and the encryption key is set, it should pass
+	cfg := validConfig()
+	cfg.Proxy.AnthropicAPIKey = "sk-anthropic-test"
+	cfg.Proxy.OpenAIAPIKey = "sk-openai-test"
+	cfg.K8s.AgentImageAnthropic = "ghcr.io/test/anthropic:latest"
+	cfg.K8s.AgentImageOpenAI = "ghcr.io/test/openai:latest"
+	cfg.Proxy.CredentialEncryptionKey = strings.Repeat("ab", 32)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoad(t *testing.T) {
 	tests := []struct {
 		name    string

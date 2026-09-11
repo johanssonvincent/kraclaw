@@ -535,6 +535,24 @@ func TestLastResultRecorded(t *testing.T) {
 			if outcomeTask.LastResult == nil || *outcomeTask.LastResult != tt.wantOutcome {
 				t.Errorf("outcome UpdateTask LastResult = %v, want %q", outcomeTask.LastResult, tt.wantOutcome)
 			}
+
+			// Executor error on a recurring task must apply the documented
+			// compensating NextRun (~now+1m) in the outcome write, so the task
+			// retries quickly and stays active.
+			if tt.executorErr != nil {
+				if outcomeTask.NextRun == nil {
+					t.Fatal("outcome UpdateTask NextRun = nil, want ~now+1m")
+				}
+
+				if outcomeTask.NextRun.Before(time.Now().Add(30*time.Second)) ||
+					outcomeTask.NextRun.After(time.Now().Add(90*time.Second)) {
+					t.Errorf("compensating NextRun = %v, want within [now+30s, now+90s]", outcomeTask.NextRun)
+				}
+
+				if outcomeTask.Status != store.TaskActive {
+					t.Errorf("Status = %q, want %q (recurring task stays active)", outcomeTask.Status, store.TaskActive)
+				}
+			}
 		})
 	}
 }
@@ -766,5 +784,96 @@ func TestPerRunContextIsolation(t *testing.T) {
 			t.Fatal("executor not released by parent cancellation")
 		}
 		<-done
+	})
+}
+
+func TestSchedulerCompensatingWriteOnFailure(t *testing.T) {
+	t.Run("recurring task failure triggers compensating write", func(t *testing.T) {
+		// Create a recurring task (interval schedule) that will fail
+		past := time.Now().Add(-5 * time.Minute)
+		ms := &mockTaskStore{tasks: []store.ScheduledTask{{
+			ID:            "t1",
+			ScheduleType:  store.ScheduleInterval,
+			ScheduleValue: "5m",
+			NextRun:       &past,
+			Status:        store.TaskActive,
+		}}}
+
+		// Create an executor that always fails
+		executor := func(_ context.Context, task store.ScheduledTask) error {
+			return fmt.Errorf("simulated task failure")
+		}
+
+		sched, err := New(ms, executor, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sched.poll(context.Background())
+
+		ms.mu.Lock()
+		defer ms.mu.Unlock()
+
+		// The compensating NextRun is folded into the final outcome write:
+		// 2 UpdateTask calls total (1 initial advance, 1 outcome carrying
+		// both LastResult and the compensating NextRun).
+		if len(ms.updateCalls) != 2 {
+			t.Fatalf("expected 2 UpdateTask calls, got %d", len(ms.updateCalls))
+		}
+
+		// The outcome write should carry the compensating NextRun.
+		compensatingUpdate := ms.updateCalls[1]
+		if compensatingUpdate.NextRun == nil {
+			t.Fatal("expected outcome update to set compensating NextRun")
+		}
+
+		// Check that NextRun is approximately 1 minute from now
+		expectedNextRun := time.Now().Add(1 * time.Minute)
+		if compensatingUpdate.NextRun.Sub(expectedNextRun) > 30*time.Second {
+			t.Errorf("expected NextRun ~1 minute from now, got %v", compensatingUpdate.NextRun)
+		}
+
+		// Task should still be active (not paused)
+		if compensatingUpdate.Status != store.TaskActive {
+			t.Errorf("expected task to remain active, got status %q", compensatingUpdate.Status)
+		}
+	})
+
+	t.Run("once task failure does NOT trigger compensating write", func(t *testing.T) {
+		// Create a once task that will fail
+		past := time.Now().Add(-5 * time.Minute)
+		ms := &mockTaskStore{tasks: []store.ScheduledTask{{
+			ID:            "t1",
+			ScheduleType:  store.ScheduleOnce,
+			ScheduleValue: past.Format(time.RFC3339),
+			NextRun:       &past,
+			Status:        store.TaskActive,
+		}}}
+
+		// Create an executor that always fails
+		executor := func(_ context.Context, task store.ScheduledTask) error {
+			return fmt.Errorf("simulated task failure")
+		}
+
+		sched, err := New(ms, executor, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sched.poll(context.Background())
+
+		ms.mu.Lock()
+		defer ms.mu.Unlock()
+
+		// Should have 2 UpdateTask calls (1 for initial advance, 1 for final outcome)
+		// No compensating write for once tasks
+		if len(ms.updateCalls) != 2 {
+			t.Fatalf("expected 2 UpdateTask calls for once task, got %d", len(ms.updateCalls))
+		}
+
+		// The first update should be the initial advance (which sets the task to completed)
+		if ms.updateCalls[0].Status != store.TaskCompleted {
+			t.Errorf("expected once task to be completed, got status %q", ms.updateCalls[0].Status)
+		}
 	})
 }

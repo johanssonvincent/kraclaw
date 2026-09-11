@@ -140,11 +140,12 @@ func (c *Config) Validate() error {
 	if c.Proxy.AnthropicAPIKey == "" && c.Proxy.OpenAIAPIKey == "" {
 		return fmt.Errorf("at least one provider credential must be set (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
 	}
-	// OpenAI-only setups require the multi-provider proxy path (with encryption key)
-	// because the legacy proxy only supports Anthropic.
-	hasAnthropic := c.Proxy.AnthropicAPIKey != ""
-	if !hasAnthropic && c.Proxy.OpenAIAPIKey != "" && c.Proxy.CredentialEncryptionKey == "" {
-		return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY is required when only OpenAI credentials are configured (legacy proxy only supports Anthropic)")
+	// OpenAI-based setups (OpenAI-only or mixed multi-provider) all go through
+	// the multi-provider proxy path in cmd/kraclaw, which needs the key for the
+	// per-group CredentialStore. Anthropic-only setups may use the legacy proxy
+	// without it.
+	if c.Proxy.OpenAIAPIKey != "" && c.Proxy.CredentialEncryptionKey == "" {
+		return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY is required when OPENAI_API_KEY is configured (multi-provider proxy encrypts per-group credentials)")
 	}
 
 	if !c.Server.GRPCInsecure && (c.Server.GRPCTLSCertFile == "" || c.Server.GRPCTLSKeyFile == "" || c.Server.GRPCTLSClientCAFile == "") {

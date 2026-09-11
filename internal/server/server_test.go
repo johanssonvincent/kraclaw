@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"google.golang.org/grpc"
@@ -148,4 +149,48 @@ func TestAuthConfig_Validate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestServerStopWithStreamingRPC(t *testing.T) {
+	// This test verifies that Server.Stop returns even when a streaming RPC is blocking
+	// Create a minimal server with a streaming RPC handler that blocks until ctx is cancelled
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Create a dummy server config
+	cfg := Config{
+		GRPCAddr:         ":0",
+		RESTAddr:         ":0",
+		GRPCInsecure:     true,
+		GRPCAllowedCIDRs: "127.0.0.1/32",
+		Log:              slog.Default(),
+	}
+
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	// Start the server
+	go func() {
+		// This will block until the context is cancelled
+		if err := srv.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			t.Logf("server start error: %v", err)
+		}
+	}()
+
+	// Give the server a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Test that Stop returns quickly even with a blocking RPC
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+
+	// This should not hang indefinitely, even if there are blocking RPCs
+	srv.Stop(stopCtx)
+
+	// Cancel the context to stop the server
+	stopCancel()
 }

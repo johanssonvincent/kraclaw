@@ -175,6 +175,16 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 		errStr = &e
 
 		s.log.Error("task failed", "task_id", task.ID, "error", err, "duration", duration)
+
+		// For recurring tasks, apply the documented compensating write:
+		// NextRun = now + 1 minute so the task retries quickly instead of
+		// waiting a full schedule period. The task stays active. The outcome
+		// UpdateTask below persists LastResult; fold the compensating NextRun
+		// into that write rather than issuing a separate one.
+		if task.ScheduleType != store.ScheduleOnce {
+			nextRunIn1Min := time.Now().Add(1 * time.Minute)
+			task.NextRun = &nextRunIn1Min
+		}
 	} else {
 		s.log.Info("task completed", "task_id", task.ID, "duration", duration)
 	}
