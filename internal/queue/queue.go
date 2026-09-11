@@ -38,9 +38,6 @@ type groupActiveStore interface {
 	ActiveGroupJIDs(ctx context.Context) ([]string, error)
 }
 
-// TODO: consider splitting into MessageQueue (Enqueue/Dequeue/Peek/Len) and
-// GroupActivityTracker (MarkActive/MarkInactive/IsActive/ActiveCount/ActiveJIDs)
-// to make each responsibility independently mockable and testable.
 // Queue defines the interface for the message processing queue.
 type Queue interface {
 	Enqueue(ctx context.Context, groupJID string, msg *QueueMessage) error
