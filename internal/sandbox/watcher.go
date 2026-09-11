@@ -102,8 +102,18 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 				select {
 				case ch <- SandboxEvent{Type: evType, Status: *sandboxToStatus(sandbox)}:
 				default:
-					c.log.Warn("sandbox event channel full, dropping event",
-						"type", evType, "sandbox", sandbox.Name)
+					// For Deleted events, we must not drop them - they are critical for state management
+					if event.Type == watch.Deleted {
+						// Block until the event can be sent
+						select {
+						case ch <- SandboxEvent{Type: evType, Status: *sandboxToStatus(sandbox)}:
+						case <-ctx.Done():
+							return
+						}
+					} else {
+						c.log.Warn("sandbox event channel full, dropping event",
+							"type", evType, "sandbox", sandbox.Name)
+					}
 				}
 			}
 		}

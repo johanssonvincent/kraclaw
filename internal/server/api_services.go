@@ -297,6 +297,19 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 		return nil, status.Error(codes.Internal, "failed to register group")
 	}
 
+	// Retrieve the actual group from store to get the real AddedAt value
+	storedGroup, err := s.store.GetGroup(ctx, group.JID)
+	if err != nil {
+		s.log.Error("failed to retrieve stored group", "jid", req.Jid, "error", err)
+
+		return nil, status.Errorf(codes.Internal, "retrieve group: %v", err)
+	}
+
+	addedAt := group.AddedAt
+	if storedGroup != nil {
+		addedAt = storedGroup.AddedAt
+	}
+
 	s.log.Info("group registered", "jid", req.Jid, "name", req.Name, "folder", req.Folder)
 
 	return &kraclawv1.Group{
@@ -306,7 +319,7 @@ func (s *groupService) RegisterGroup(ctx context.Context, req *kraclawv1.Registe
 		TriggerPattern:  group.TriggerPattern,
 		IsMain:          group.IsMain,
 		RequiresTrigger: group.RequiresTrigger,
-		AddedAt:         toProtoTimestamp(time.Now()),
+		AddedAt:         toProtoTimestamp(addedAt),
 	}, nil
 }
 
@@ -495,7 +508,12 @@ func (s *taskService) UpdateTask(ctx context.Context, req *kraclawv1.UpdateTaskR
 
 	existing, err := s.store.GetTask(ctx, req.Id, req.GroupFolder)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "task not found: %v", err)
+		return nil, status.Errorf(codes.Internal, "get task: %v", err)
+	}
+
+	// The store returns (nil, nil) when the task does not exist.
+	if existing == nil {
+		return nil, status.Error(codes.NotFound, "task not found")
 	}
 
 	// Verify group ownership
@@ -675,7 +693,7 @@ func (s *sandboxService) StreamSandboxOutput(req *kraclawv1.StreamOutputRequest,
 		return status.Error(codes.Unavailable, "IPC broker not configured")
 	}
 
-	ch, _, err := s.ipc.SubscribeOutput(stream.Context(), req.GroupFolder)
+	ch, errCh, err := s.ipc.SubscribeOutput(stream.Context(), req.GroupFolder)
 	if err != nil {
 		return status.Errorf(codes.Internal, "subscribe output: %v", err)
 	}
@@ -684,6 +702,11 @@ func (s *sandboxService) StreamSandboxOutput(req *kraclawv1.StreamOutputRequest,
 		select {
 		case <-stream.Context().Done():
 			return nil
+		case err := <-errCh:
+			if err != nil {
+				s.log.Error("ipc output stream error", "error", err)
+				return status.Error(codes.Internal, "ipc output stream: "+err.Error())
+			}
 		case msg, ok := <-ch:
 			if !ok {
 				return nil

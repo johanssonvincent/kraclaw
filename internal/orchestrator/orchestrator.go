@@ -1836,6 +1836,12 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 			return false
 		}
 
+		if err := task.Validate(); err != nil {
+			o.log.Error("task_update rejected: validation failed", "group", group.Name, "error", err)
+
+			return false
+		}
+
 		if err := o.store.UpdateTask(ctx, &task); err != nil {
 			o.log.Error("failed to update task", "group", group.Name, "error", err)
 		}
