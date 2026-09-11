@@ -242,6 +242,7 @@ func (s *Server) Stop(ctx context.Context) {
 	// caller's ctx, and hard-stop on either.
 
 	done := make(chan struct{})
+
 	go func() {
 		s.grpcServer.GracefulStop()
 
