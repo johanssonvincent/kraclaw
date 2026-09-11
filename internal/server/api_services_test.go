@@ -120,12 +120,14 @@ func TestCreateSandbox_WithPromptSendsIPC(t *testing.T) {
 	if broker.sentInputs[0].group != "mygroup" {
 		t.Fatalf("SendInput group = %q, want %q", broker.sentInputs[0].group, "mygroup")
 	}
-	var text string
-	if err := json.Unmarshal(broker.sentInputs[0].msg.Payload, &text); err != nil {
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(broker.sentInputs[0].msg.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal prompt payload: %v", err)
 	}
-	if text != "hello agent" {
-		t.Fatalf("prompt payload = %q, want %q", text, "hello agent")
+	if payload.Text != "hello agent" {
+		t.Fatalf("prompt payload = %q, want %q", payload.Text, "hello agent")
 	}
 }
 
@@ -198,12 +200,14 @@ func TestPipeSandboxInput_Valid(t *testing.T) {
 	if broker.sentInputs[0].msg.Type != ipc.IPCMessageText {
 		t.Fatalf("message type = %q, want %q", broker.sentInputs[0].msg.Type, ipc.IPCMessageText)
 	}
-	var text string
-	if err := json.Unmarshal(broker.sentInputs[0].msg.Payload, &text); err != nil {
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(broker.sentInputs[0].msg.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if text != "hello world" {
-		t.Fatalf("payload text = %q, want %q", text, "hello world")
+	if payload.Text != "hello world" {
+		t.Fatalf("payload text = %q, want %q", payload.Text, "hello world")
 	}
 }
 

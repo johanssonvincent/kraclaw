@@ -614,7 +614,7 @@ func (s *sandboxService) CreateSandbox(ctx context.Context, req *kraclawv1.Creat
 
 	// If prompt provided, send it as initial input via IPC
 	if req.Prompt != "" && s.ipc != nil {
-		payload, err := json.Marshal(req.Prompt)
+		payload, err := json.Marshal(map[string]string{"text": req.Prompt})
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "marshal prompt: %v", err)
 		}
@@ -653,7 +653,7 @@ func (s *sandboxService) PipeSandboxInput(ctx context.Context, req *kraclawv1.Pi
 		return nil, status.Error(codes.InvalidArgument, "text is required")
 	}
 
-	payload, err := json.Marshal(req.Text)
+	payload, err := json.Marshal(map[string]string{"text": req.Text})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "marshal text: %v", err)
 	}

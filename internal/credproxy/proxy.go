@@ -411,14 +411,34 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 			)
 
 			if resp.StatusCode >= 400 {
-				body, err := io.ReadAll(resp.Body)
+				// Cap buffering at 64 KiB: a hostile or misbehaving upstream
+				// streaming an unbounded error body must not OOM the proxy.
+				body, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes+1))
 				if err != nil {
 					return fmt.Errorf("read upstream error body: %w", err)
 				}
 
 				_ = resp.Body.Close()
+
+				if len(body) > maxUpstreamErrorBodyBytes {
+					// Body exceeded the cap: restore the already-buffered prefix as a
+					// bounded body (the original stream is consumed) so the client
+					// still receives an error instead of an empty response, and drop
+					// Content-Length since it no longer matches.
+					p.log.Warn("upstream error body exceeded buffer cap, truncating",
+						"status", resp.StatusCode,
+						"content_type", resp.Header.Get("Content-Type"),
+						"upstream_host", resp.Request.URL.Host,
+						"path", resp.Request.URL.Path,
+						"buffered_bytes", len(body),
+					)
+
+					body = body[:maxUpstreamErrorBodyBytes]
+				}
+
 				resp.Body = io.NopCloser(bytes.NewReader(body))
 				resp.ContentLength = int64(len(body))
+				resp.Header.Del("Content-Length")
 
 				logBody := body
 				if len(logBody) > maxUpstreamErrorBodyBytes {
@@ -499,17 +519,28 @@ func (p *Proxy) metricsMiddleware(next http.Handler) http.Handler {
 // hostGuard rejects requests with a Host header that does not match the
 // proxy's own listen address or is explicitly targeting an external host.
 // This is a defense-in-depth measure against SSRF via Host header manipulation.
-// When a resolver is configured, the guard is bypassed since the upstream
-// changes dynamically per request based on the resolved provider.
+// When a resolver is configured, the guard still validates the upstream target
+// against the allowed hosts to prevent bypassing the allowlist via resolver mode.
 func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// When a resolver is set, the upstream is determined dynamically by the
-		// Director, so static host checking is not applicable.
-		if p.resolver != nil {
-			next.ServeHTTP(w, r)
+		// Director, which validates the resolved upstream against
+		// allowedUpstreamHosts. Here we only reject absolute-URI request
+		// targets (r.URL.Host set) pointing at hosts outside the allowlist —
+		// the Host header is NOT checked because agents address the proxy by
+		// its own hostname (e.g. kraclaw-credproxy:3001), which is never an
+		// upstream host.
+		if p.resolver != nil && r.URL.Host != "" &&
+			len(p.allowedUpstreamHosts) > 0 && !p.allowedUpstreamHosts[r.URL.Host] {
+			p.log.Warn("rejected request with non-allowed target host in resolver mode",
+				"request_host", r.URL.Host,
+				"allowed_hosts", p.allowedUpstreamHosts,
+			)
+			http.Error(w, "Forbidden: target host not allowed", http.StatusForbidden)
 
 			return
 		}
+
 		// If the request has an explicit upstream target in the URL (absolute URI),
 		// verify it matches the allowed upstream host.
 		if r.URL.Host != "" && r.URL.Host != p.allowedHost {
@@ -518,7 +549,6 @@ func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 				"allowed_host", p.allowedHost,
 			)
 			http.Error(w, "Forbidden: target host not allowed", http.StatusForbidden)
-
 			return
 		}
 
