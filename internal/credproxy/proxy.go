@@ -549,6 +549,7 @@ func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 				"allowed_host", p.allowedHost,
 			)
 			http.Error(w, "Forbidden: target host not allowed", http.StatusForbidden)
+
 			return
 		}
 

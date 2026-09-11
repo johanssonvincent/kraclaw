@@ -240,6 +240,7 @@ func (s *Server) Stop(ctx context.Context) {
 	// Run grpcServer.GracefulStop in a goroutine so a stuck streaming RPC
 	// cannot block shutdown forever: race it against a timeout and the
 	// caller's ctx, and hard-stop on either.
+
 	done := make(chan struct{})
 	go func() {
 		s.grpcServer.GracefulStop()

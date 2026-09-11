@@ -705,6 +705,7 @@ func (s *sandboxService) StreamSandboxOutput(req *kraclawv1.StreamOutputRequest,
 		case err := <-errCh:
 			if err != nil {
 				s.log.Error("ipc output stream error", "error", err)
+
 				return status.Error(codes.Internal, "ipc output stream: "+err.Error())
 			}
 		case msg, ok := <-ch:
