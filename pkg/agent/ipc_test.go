@@ -43,12 +43,7 @@ func startTestNATS(t *testing.T) *nats.Conn {
 	return nc
 }
 
-// TestIPCClient_SubjectContract pins the contract that the agent and server
-// hash the same input when deriving JetStream subject and stream names.
-// Regression: agents used to be instantiated with the group JID while the
-// server published using the group folder, so the two sides hashed into
-// different streams and never exchanged messages. If the wiring regresses
-// (e.g. someone passes cfg.GroupJID into NewIPCClient), this test fails.
+// TestIPCClient_SubjectContract pins the contract that the ...
 func TestIPCClient_SubjectContract(t *testing.T) {
 	const folder = "testslivo"
 	const jid = "tui:testslivo"
@@ -166,9 +161,7 @@ func TestIPCClient_ReadInput(t *testing.T) {
 	}
 }
 
-// TestIPCClient_ReadInput_ContextCancel verifies that cancelling the context
-// passed to ReadInput causes both the message channel and the error channel to
-// close (gap 11).
+// TestIPCClient_ReadInput_ContextCancel verifies that cance...
 func TestIPCClient_ReadInput_ContextCancel(t *testing.T) {
 	nc := startTestNATS(t)
 	group := "ctx-cancel-readinput"
@@ -269,10 +262,7 @@ func TestIPCClient_SendOutput_EnsureStreamError_Wrapped(t *testing.T) {
 	}
 }
 
-// TestIPCClientSyncOnce verifies the behavioral idempotency contract of
-// ReadInput: concurrent callers must receive the SAME channel references so
-// that only a single consumer is created (preventing message loss or
-// duplication from multiple consumer instances).
+// TestIPCClientSyncOnce verifies the behavioral idempotency...
 func TestIPCClientSyncOnce(t *testing.T) {
 	nc := startTestNATS(t)
 	group := "sync-once"
@@ -339,9 +329,7 @@ func TestIPCClientSyncOnce(t *testing.T) {
 	}
 }
 
-// startTestNATSServer is a variant of startTestNATS that also returns the
-// underlying server handle so tests can forcibly shut it down to simulate
-// connection-loss iterator errors.
+// startTestNATSServer is a variant of startTestNATS that al...
 func startTestNATSServer(t *testing.T) (*nats.Conn, *natserver.Server) {
 	t.Helper()
 	opts := &natserver.Options{
@@ -372,9 +360,7 @@ func startTestNATSServer(t *testing.T) (*nats.Conn, *natserver.Server) {
 	return nc, s
 }
 
-// TestIPCClient_ReadInput_IteratorError verifies that when the underlying
-// NATS connection/iterator fails with a non-context error, ReadInput
-// surfaces the error on errCh and closes both channels so callers unblock.
+// TestIPCClient_ReadInput_IteratorError verifies that when ...
 func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
 	nc, server := startTestNATSServer(t)
 	group := "iterator-error"
@@ -436,9 +422,7 @@ func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
 			if e == nil {
 				continue
 			}
-			// Any non-nil, non-context error is a valid iterator error for
-			// this test. Context errors would indicate the test itself
-			// timed out waiting, not the code under test.
+// Any non-nil, non-context error is a valid iterator error for
 			if strings.Contains(e.Error(), "context") {
 				t.Fatalf("got context error, expected non-context iterator error: %v", e)
 			}
@@ -450,9 +434,7 @@ func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
 	}
 }
 
-// TestIPCClient_ReadInput_MultiGroupIsolation verifies that two IPCClients
-// bound to different groups do not cross-deliver input messages, even when
-// they share a single NATS connection.
+// TestIPCClient_ReadInput_MultiGroupIsolation verifies that...
 func TestIPCClient_ReadInput_MultiGroupIsolation(t *testing.T) {
 	nc := startTestNATS(t)
 
@@ -553,9 +535,7 @@ func TestIPCClient_ReadInput_MultiGroupIsolation(t *testing.T) {
 	}
 }
 
-// TestIPCClient_ReadInput_MalformedMessage verifies that malformed (non-JSON)
-// input messages are ACK'd and skipped without panicking or breaking the
-// subscription.
+// TestIPCClient_ReadInput_MalformedMessage verifies that ma...
 func TestIPCClient_ReadInput_MalformedMessage(t *testing.T) {
 	nc := startTestNATS(t)
 
@@ -687,9 +667,7 @@ func (js *mockAckFailJS) Consumer(_ context.Context, _ string, _ string) (jetstr
 }
 
 func TestIPCClient_ReadInput_AckFailurePropagatesError(t *testing.T) {
-	// Inject a mock JetStream that delivers one message whose Ack always fails.
-	// Before the fix the goroutine returned silently without writing to errCh,
-	// making the failure indistinguishable from clean shutdown.
+// Inject a mock JetStream that delivers one message whose A...
 	msg := &mockAckFailMsg{data: []byte(`{"type":"message","payload":{}}`)}
 	iter := &mockMessagesCtx{msg: msg, done: make(chan struct{})}
 	consumer := &mockAckFailConsumer{iter: iter}

@@ -148,9 +148,7 @@ func (c *Controller) agentImageForProvider(prov string) (string, error) {
 	return "", fmt.Errorf("no agent image configured for provider %q (set AGENT_IMAGE_%s)", prov, strings.ToUpper(prov))
 }
 
-// isTransientError reports whether err is likely a transient K8s API failure
-// that can be retried. Non-transient errors (validation, conflict, forbidden,
-// not-found) must not be retried as they will not self-resolve.
+// isTransientError reports whether err is likely a transien...
 func isTransientError(err error) bool {
 	if err == nil {
 		return false
@@ -166,8 +164,6 @@ func isTransientError(err error) bool {
 }
 
 // CreateSandbox creates a new Sandbox resource for an agent.
-// Transient K8s API errors are retried up to sandboxCreateMaxRetries times with
-// exponential backoff. Non-transient errors (validation, conflict, forbidden) fail fast.
 func (c *Controller) CreateSandbox(ctx context.Context, cfg SandboxConfig) (*SandboxStatus, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -321,9 +317,7 @@ func pvcName(configured, defaultName string) string {
 	return defaultName
 }
 
-// buildSandbox constructs a Sandbox resource with the full pod spec and GROUP_FOLDER injected.
-// The pod spec mirrors the kraclaw-agent-template SandboxTemplate but with per-group env vars
-// resolved at creation time, which is required because SandboxClaimSpec has no injection mechanism.
+// buildSandbox constructs a Sandbox resource with the full ...
 func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandboxv1alpha1.Sandbox, error) {
 	labels := map[string]string{
 		labelManagedBy: managedByValue,
@@ -415,9 +409,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 	runAs := runAsUser
 	replicas := int32(1)
 
-	// Gate the legacy init-dirs container behind the fast-start flag.
-	// When fast-start is enabled the agent binary creates its own directories
-	// (ensureGroupDirs), so the init container is redundant and wastes ~3-5s.
+// Gate the legacy init-dirs container behind the fast-start...
 	var initContainers []corev1.Container
 	if !c.fastStartEnabled {
 		initContainers = []corev1.Container{

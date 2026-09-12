@@ -17,10 +17,6 @@ func New(store store.AllowlistStore) *Authorizer {
 }
 
 // IsAllowed checks if a sender is permitted in the given chat.
-// If no allowlist entries exist for the chat, all senders are allowed.
-// If entries exist, the sender must match an entry with mode "trigger".
-// Entries with mode "drop" cause the message to be dropped.
-// A pattern of "*" matches all senders.
 func (a *Authorizer) IsAllowed(ctx context.Context, chatJID string, sender string) (bool, error) {
 	entries, err := a.store.GetAllowlist(ctx, chatJID)
 	if err != nil {

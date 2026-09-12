@@ -14,9 +14,7 @@ import (
 // not exist in the database.
 var ErrGroupNotFound = errors.New("group not found")
 
-// CronParser is the single parser for every schedule string in the codebase —
-// validation and next-run computation must share it or they can drift into
-// accepting different schedules.
+// CronParser is the single parser for every schedule string...
 var CronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 
 // ContainerConfig holds per-group container settings.
@@ -221,8 +219,6 @@ type ChatStore interface {
 }
 
 // TaskStore handles group-scoped scheduled task operations.
-// All mutation methods require a groupFolder parameter to enforce isolation.
-// This interface is for normal callers — compile-time enforcement prevents unscoped access.
 type TaskStore interface {
 	CreateTask(ctx context.Context, task *ScheduledTask) error
 	GetTask(ctx context.Context, id, groupFolder string) (*ScheduledTask, error)

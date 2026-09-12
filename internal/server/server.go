@@ -30,9 +30,7 @@ import (
 	kraclawv1 "github.com/johanssonvincent/kraclaw/pkg/pb/kraclawv1"
 )
 
-// ErrAuthConfigIncomplete signals that AuthConfig has only one of
-// ChatGPT/Credentials set. Both must be present (or both nil) so the
-// AuthService is either fully wired or absent — no silent half-config.
+// ErrAuthConfigIncomplete signals that AuthConfig has only ...
 var ErrAuthConfigIncomplete = errors.New("server: AuthConfig requires both ChatGPT and Credentials")
 
 // AuthConfig groups the dependencies the AuthService needs. nil disables

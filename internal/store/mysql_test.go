@@ -17,9 +17,7 @@ import (
 	"github.com/ory/dockertest/v4"
 )
 
-// ---------------------------------------------------------------------------
-// Real-MySQL helpers (dockertest)
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 var (
 	realStoreOnce sync.Once
@@ -239,9 +237,7 @@ func newTestStore(t *testing.T) (*MySQLStore, sqlmock.Sqlmock) {
 	return newMySQLStoreFromDB(db), mock
 }
 
-// ---------------------------------------------------------------------------
-// GroupStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func TestGetGroup(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
@@ -376,9 +372,7 @@ func TestUpsertGroup(t *testing.T) {
 	}
 }
 
-// TestUpsertGroupPreservesActiveState verifies that the UpsertGroup SQL does not
-// include is_active or last_active_at in the ON DUPLICATE KEY UPDATE clause,
-// ensuring those columns are never clobbered on update.
+// TestUpsertGroupPreservesActiveState verifies that the Ups...
 func TestUpsertGroupPreservesActiveState(t *testing.T) {
 	src, err := os.ReadFile("mysql.go")
 	if err != nil {
@@ -396,10 +390,7 @@ func TestUpsertGroupPreservesActiveState(t *testing.T) {
 		t.Fatal("UpsertGroup missing ON DUPLICATE KEY UPDATE")
 	}
 
-	// The UPDATE clause must NOT mention is_active or last_active_at.
-	// We verify by checking these strings do not appear in an UPDATE context.
-	// A simple presence check is sufficient because those columns should only
-	// appear in MarkGroupActive / MarkGroupInactive.
+// The UPDATE clause must NOT mention is_active or last_acti...
 	if strings.Contains(source, "is_active = VALUES") {
 		t.Fatal("UpsertGroup UPDATE clause must not include is_active — managed by MarkGroupActive/Inactive")
 	}
@@ -424,9 +415,7 @@ func TestDeleteGroup(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// MessageStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func TestStoreMessage(t *testing.T) {
 	store, mock := newTestStore(t)
@@ -616,9 +605,7 @@ func TestGetMessagesSince(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// ChatStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func TestUpsertChat(t *testing.T) {
 	store, mock := newTestStore(t)
@@ -709,9 +696,7 @@ func TestListChats(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// TaskStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func TestCreateTask(t *testing.T) {
 	store, mock := newTestStore(t)
@@ -989,9 +974,7 @@ func TestGetTaskRunLogs(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// SessionStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func TestGetSession(t *testing.T) {
 	tests := []struct {
@@ -1076,9 +1059,7 @@ func TestDeleteSession(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// RouterStateStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func TestGetState(t *testing.T) {
 	tests := []struct {
@@ -1144,9 +1125,7 @@ func TestSetState(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// AllowlistStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func TestGetAllowlist(t *testing.T) {
 	store, mock := newTestStore(t)
@@ -1206,9 +1185,7 @@ func TestDeleteAllowlistEntry(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// GroupActiveStore (real MySQL via dockertest)
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func TestGroupActiveStore(t *testing.T) {
 	s := requireTestStore(t)
@@ -1292,10 +1269,7 @@ func TestGroupActiveStore(t *testing.T) {
 	}
 }
 
-// TestMySQLStore_MarkGroupActive_UnknownJID verifies that MarkGroupActive and
-// MarkGroupInactive return errors.Is(err, ErrGroupNotFound) when called with a
-// JID that does not exist in the database (gap 10).
-// Uses sqlmock so it runs without Docker.
+// TestMySQLStore_MarkGroupActive_UnknownJID verifies that M...
 func TestMySQLStore_MarkGroupActive_UnknownJID(t *testing.T) {
 	ctx := context.Background()
 	const jid = "nonexistent@g.us"

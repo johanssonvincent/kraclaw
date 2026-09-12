@@ -11,10 +11,7 @@ type chatMessage struct {
 	content string
 }
 
-// formatChatMessages groups consecutive messages from the same sender, prints
-// a coral/kraken label line on cluster boundaries, and renders content as
-// markdown for agent replies. Lines starting with "» " are treated as
-// tool-use sub-lines and rendered dim to match the design.
+// formatChatMessages groups consecutive messages from the s...
 func (m model) formatChatMessages() string {
 	var (
 		b          strings.Builder

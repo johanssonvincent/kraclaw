@@ -7,10 +7,7 @@ import (
 	"time"
 )
 
-// mintJWT builds an unsigned JWT carrying the given payload. The header is a
-// fixed RS256 stub and the signature segment is a single character — the
-// parser only needs the segment count and the payload to be base64-decodable
-// JSON.
+// mintJWT builds an unsigned JWT carrying the given payload...
 func mintJWT(t *testing.T, payload map[string]any) string {
 	t.Helper()
 	header := map[string]string{"alg": "RS256", "typ": "JWT"}

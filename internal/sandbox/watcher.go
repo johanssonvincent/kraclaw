@@ -19,11 +19,7 @@ type SandboxEvent struct {
 	Status SandboxStatus
 }
 
-// WatchSandboxes returns a channel of sandbox lifecycle events.
-// It performs a List first to capture the current resourceVersion, then starts a Watch
-// from that point to avoid replaying historical events on reconnect.
-// The returned channel closes when the watch stream ends (ctx cancel or API disconnect).
-// Callers should wrap this in a retry loop (see orchestrator.sandboxWatcher).
+// WatchSandboxes returns a channel of sandbox lifecycle eve...
 func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, error) {
 	ch := make(chan SandboxEvent, 64)
 
@@ -90,10 +86,7 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 
 				if event.Type != watch.Deleted {
 					recordPhaseTransitions(sandbox, seen, c.log)
-					// Guard against unbounded growth within a single watch session
-					// if Deleted events are missed (e.g. dropped by the channel).
-					// Each sandbox records at most a handful of phases, so 1000
-					// entries is far above any realistic concurrent-sandbox count.
+// Guard against unbounded growth within a single watch session
 					if len(seen) > 1000 {
 						seen = map[string]map[string]bool{}
 					}
@@ -112,17 +105,7 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 	return ch, nil
 }
 
-// recordPhaseTransitions observes cold-start phase histograms for the
-// PodScheduled and Ready conditions on a Sandbox. seen is keyed by sandbox
-// name → phase name so duplicate Modified events do not double-record.
-// Durations are measured from the Sandbox's CreationTimestamp to the
-// condition's LastTransitionTime.
-//
-// Samples with a zero LastTransitionTime or a negative duration (a data-quality
-// defect, not a real measurement) are skipped and logged rather than recorded,
-// so a phantom fast sample never pollutes the distribution. seen is marked only
-// when the sample is actually observed, so a transient bad timestamp can still
-// be recorded correctly on a later Modified event.
+// recordPhaseTransitions observes cold-start phase histogra...
 func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]map[string]bool, log *slog.Logger) {
 	if seen[sb.Name] == nil {
 		seen[sb.Name] = map[string]bool{}
@@ -130,9 +113,7 @@ func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]ma
 
 	created := sb.CreationTimestamp.Time
 	if sb.CreationTimestamp.IsZero() {
-		// Without a creation time every phase duration is measured from the zero
-		// instant, producing a phantom multi-decade sample that passes the d<0
-		// guard. Skip the whole object rather than pollute the distribution.
+// Without a creation time every phase duration is measured ...
 		log.Warn("skipping cold-start phase samples: sandbox has zero CreationTimestamp",
 			"sandbox", sb.Name)
 

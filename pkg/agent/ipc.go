@@ -48,21 +48,14 @@ type IPCClient struct {
 	mu            sync.Mutex
 	streamCreated bool
 
-	// defensiveStream mirrors KRACLAW_AGENT_DEFENSIVE_STREAM=="1", read once at
-	// construction. When set, the agent defensively (re)creates the IPC stream
-	// before sending output / reading input instead of relying solely on the
-	// server having created it.
+// defensiveStream mirrors KRACLAW_AGENT_DEFENSIVE_STREAM=="...
 	defensiveStream bool
 
-	// consumerFetchBackoff is the initial sleep between bounded Consumer-fetch
-	// retries. Zero value means use 100ms. Accessible to same-package tests that
-	// need to shrink the wall-clock cost; not part of the public contract.
+// consumerFetchBackoff is the initial sleep between bounded...
 	consumerFetchBackoff time.Duration
 }
 
 // NewIPCClient creates an IPC client for a specific group.
-// The group parameter must be the group folder (not the JID), matching the
-// value the server uses when computing sanitized stream names and subjects.
 func NewIPCClient(nc *nats.Conn, group, agentID string, logger *slog.Logger) (*IPCClient, error) {
 	if nc == nil {
 		return nil, fmt.Errorf("ipc client: NATS connection is required")
@@ -177,17 +170,7 @@ func (c *IPCClient) SendOutput(ctx context.Context, msg *OutboundMessage) error 
 	return nil
 }
 
-// ReadInput initialises the background reader on the first call and returns
-// the same channels on all subsequent calls.  The ctx passed to the FIRST
-// call must be long-lived (process lifetime) because it governs the reader
-// goroutine: if that ctx is already cancelled when the first call arrives,
-// startReadInput returns immediately and all subsequent callers see a closed
-// channel with no error.
-//
-// The returned errCh (capacity 1) receives the terminal error when the reader
-// goroutine exits due to an ACK failure or iterator error.  After receiving an
-// error the caller should create a new IPCClient and call ReadInput again —
-// sync.Once prevents re-initialising the reader on the same client instance.
+// ReadInput initialises the background reader on the first ...
 func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-chan error, error) {
 	c.readOnce.Do(func() {
 		c.msgCh = make(chan *InboundMessage, 64)
@@ -241,9 +224,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 		if attempt == 5 {
 			break // avoid wasted sleep after the last attempt
 		}
-		// Add jitter (up to backoff/2) to de-correlate retries across agents
-		// racing the server's stream/consumer provisioning. Worst-case added
-		// latency per wait is backoff/2 (e.g. ~400ms on the final 800ms backoff).
+// Add jitter (up to backoff/2) to de-correlate retries acro...
 		var jitter time.Duration
 		if half := backoff / 2; half > 0 {
 			jitter = time.Duration(rand.Int64N(int64(half)))

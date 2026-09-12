@@ -173,9 +173,7 @@ func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequ
 		ActiveTasks:       activeTasks,
 		UptimeSince:       timestamppb.New(s.startedAt),
 		MysqlConnected:    mysqlConnected,
-		// TODO: remove RedisConnected from proto and TUI — field is vestigial after
-		// NATS migration in PR #23. Requires proto regeneration (make proto) and
-		// TUI update to remove the "Redis:" status line.
+// TODO: remove RedisConnected from proto and TUI — field is...
 		RedisConnected: false,
 		K8SConnected:   k8sConnected,
 	}, nil

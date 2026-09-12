@@ -148,11 +148,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 
 	msgs, err := cons.Fetch(1, jetstream.FetchMaxWait(queueFetchTimeout))
 	if err != nil {
-		// Only evict the cached consumer on fatal errors that indicate the
-		// consumer no longer exists server-side. Transient errors (timeouts,
-		// connection hiccups) should not trigger eviction, as that would
-		// cascade into unnecessary consumer re-creation. ErrStreamNotFound is
-		// included because a deleted+recreated stream invalidates all of its consumers.
+// Only evict the cached consumer on fatal errors that indic...
 		if errors.Is(err, jetstream.ErrConsumerNotFound) ||
 			errors.Is(err, jetstream.ErrConsumerDeleted) ||
 			errors.Is(err, jetstream.ErrStreamNotFound) {
@@ -194,9 +190,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 	}
 
 	if err := msgs.Error(); err != nil && !errors.Is(err, jetstream.ErrMsgIteratorClosed) {
-		// Evict the cached consumer for the same fatal errors as the Fetch path.
-		// ErrNoResponders is included because NATS v1.x returns it (rather than
-		// ErrConsumerNotFound) when Fetch is called on a deleted consumer.
+// Evict the cached consumer for the same fatal errors as th...
 		if errors.Is(err, jetstream.ErrConsumerNotFound) ||
 			errors.Is(err, jetstream.ErrConsumerDeleted) ||
 			errors.Is(err, jetstream.ErrStreamNotFound) ||
@@ -213,8 +207,6 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 }
 
 // Peek returns the oldest message without removing it.
-// It uses a direct stream get (not a durable consumer) so the message is never
-// locked from the Dequeue durable consumer on WorkQueuePolicy streams.
 func (q *NATSQueue) Peek(ctx context.Context, groupJID string) (*QueueMessage, error) {
 	sanitized, stream, err := q.ensureStream(ctx, groupJID)
 	if err != nil {

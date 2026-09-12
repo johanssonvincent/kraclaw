@@ -253,9 +253,7 @@ func (s *MySQLStore) Close() error {
 	return s.db.Close()
 }
 
-// ---------------------------------------------------------------------------
-// GroupStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func (s *MySQLStore) GetGroup(ctx context.Context, jid string) (*Group, error) {
 	row := s.db.QueryRowContext(ctx,
@@ -378,9 +376,7 @@ func scanGroupRows(rows *sql.Rows) (*Group, error) {
 	return &g, nil
 }
 
-// ---------------------------------------------------------------------------
-// MessageStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func (s *MySQLStore) StoreMessage(ctx context.Context, msg *Message) error {
 	_, err := s.db.ExecContext(ctx,
@@ -515,9 +511,7 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 	return msgs, rows.Err()
 }
 
-// ---------------------------------------------------------------------------
-// ChatStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func (s *MySQLStore) UpsertChat(ctx context.Context, c *Chat) error {
 	_, err := s.db.ExecContext(ctx,
@@ -578,9 +572,7 @@ func (s *MySQLStore) ListChats(ctx context.Context) ([]Chat, error) {
 	return chats, rows.Err()
 }
 
-// ---------------------------------------------------------------------------
-// TaskStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func (s *MySQLStore) CreateTask(ctx context.Context, task *ScheduledTask) error {
 	_, err := s.db.ExecContext(ctx,
@@ -756,9 +748,7 @@ func scanTasks(rows *sql.Rows) ([]ScheduledTask, error) {
 	return tasks, rows.Err()
 }
 
-// ---------------------------------------------------------------------------
-// SessionStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func (s *MySQLStore) GetSession(ctx context.Context, groupFolder string) (*Session, error) {
 	var sess Session
@@ -802,9 +792,7 @@ func (s *MySQLStore) DeleteSession(ctx context.Context, groupFolder string) erro
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// RouterStateStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func (s *MySQLStore) GetState(ctx context.Context, key string) (string, error) {
 	var value string
@@ -835,9 +823,7 @@ func (s *MySQLStore) SetState(ctx context.Context, key, value string) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// AllowlistStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
 func (s *MySQLStore) GetAllowlist(ctx context.Context, chatJID string) ([]SenderAllowlistEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
@@ -886,16 +872,9 @@ func (s *MySQLStore) DeleteAllowlistEntry(ctx context.Context, id int64) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// GroupActiveStore
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------...
 
-// MarkGroupActive sets is_active = TRUE and last_active_at = NOW() for the group.
-// Returns ErrGroupNotFound when no row with the given jid exists.
-//
-// MySQL (without CLIENT_FOUND_ROWS) reports RowsAffected = 0 both when the JID
-// is missing and when the row data is unchanged (already active + same second).
-// To distinguish the two cases we fall back to an existence check on zero.
+// MarkGroupActive sets is_active = TRUE and last_active_at ...
 func (s *MySQLStore) MarkGroupActive(ctx context.Context, jid string) error {
 	res, err := s.db.ExecContext(ctx,
 		"UPDATE `groups` SET is_active = TRUE, last_active_at = NOW() WHERE jid = ?", jid)
@@ -936,9 +915,7 @@ func (s *MySQLStore) MarkGroupInactive(ctx context.Context, jid string) error {
 	return nil
 }
 
-// requireGroupExists returns ErrGroupNotFound (wrapped with op prefix) when the
-// group JID is absent from the database, or nil when the group exists.
-// Used as a tie-breaker after RowsAffected returns 0 on an UPDATE.
+// requireGroupExists returns ErrGroupNotFound (wrapped with...
 func (s *MySQLStore) requireGroupExists(ctx context.Context, jid, op string) error {
 	var exists bool
 

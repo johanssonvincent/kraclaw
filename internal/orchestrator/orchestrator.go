@@ -71,36 +71,20 @@ type Orchestrator struct {
 	registeredGroups map[string]store.Group // JID -> Group
 	activeSandboxes  map[string]string      // chatJID -> current sandbox name
 
-	// spawnStart tracks the CreateSandbox start time per chatJID so the first
-	// IPC output message can observe the full first_output cold-start phase on
-	// metrics.SandboxSpawnDuration. Entry is added pre-CreateSandbox and removed
-	// when first_output is observed.
+// spawnStart tracks the CreateSandbox start time per chatJI...
 	spawnStart   map[string]time.Time
 	spawnStartMu sync.Mutex
 
-	// inflightSandboxes tracks in-flight spawn claims (set semantics). The value
-	// is always struct{}{}; only key presence matters — never inspect the value.
-	// Guards against the double-sandbox TOCTOU: a second poll or deactivate-
-	// recovery that observes IsActive()==false before the first goroutine reaches
-	// MarkActive() would otherwise spawn a duplicate sandbox for the same group.
-	// A claim is held from claimSandboxSlot() until the early releaseSlot() call
-	// inside processGroupMessages (after CreateSandbox, activeSandboxes population,
-	// and MarkActive all succeed), or until the goroutine exits on any error path
-	// (deferred release via sync.Once).
+// inflightSandboxes tracks in-flight spawn claims (set sema...
 	inflightSandboxes sync.Map // map[string]struct{} — keyed on chatJID
 
-	// confirmedCursorDirty is set to true when lastConfirmedTimestamp advances.
-	// A background flusher reads and clears this flag every 5 s to batch
-	// saveState writes instead of one per agent output message.
+// confirmedCursorDirty is set to true when lastConfirmedTim...
 	confirmedCursorDirty atomic.Bool
 
 	rateLimiters   map[string]*TokenBucket
 	rateLimitersMu sync.Mutex
 
-	// prevLast* fields (PERF-04) are a best-effort dedup optimisation: compared against
-	// current state before each MySQL write and accessed without mu. A benign race
-	// (redundant or skipped write at worst) is acceptable given the low cost of the
-	// operation they guard.
+// prevLast* fields (PERF-04) are a best-effort dedup optimi...
 	prevLastTimestampStr string // serialized last_timestamp from last save
 	prevAgentTsJSON      string // JSON-serialized last_agent_timestamp from last save
 	prevConfirmedTsJSON  string // JSON-serialized last_confirmed_timestamp from last save
@@ -112,9 +96,7 @@ type Orchestrator struct {
 
 	marshalInitialInput func(v any) ([]byte, error)
 
-	// ipcReconnectDelays controls the backoff schedule used by watchGroupOutput
-	// when the IPC output channel closes unexpectedly. Exposed as a field so
-	// tests can shrink the delays.
+// ipcReconnectDelays controls the backoff schedule used by ...
 	ipcReconnectDelays []time.Duration
 }
 
@@ -263,10 +245,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}
 	}
 
-	// 6. Reconcile the active group set against actual K8s state.
-	// Sandboxes that completed or were deleted while the server was down leave
-	// stale entries in the active group store.  If enough accumulate they exceed
-	// MaxConcurrent and prevent any new sandbox from starting.
+// 6. Reconcile the active group set against actual K8s state.
 	o.reconcileActiveSet(ctx)
 
 	// 7. Start periodic orphan cleanup.
@@ -471,12 +450,7 @@ func (o *Orchestrator) saveState(ctx context.Context) error {
 	return nil
 }
 
-// confirmedCursorFlusher is a background goroutine that persists the confirmed
-// cursor to MySQL at most once per 5 s, batching rapid agent-response sequences
-// into a single write. It also performs a final flush on context cancellation so
-// the cursor is consistent at clean shutdown. Worst-case data exposure on unclean
-// shutdown: ≤5 s of confirmed-cursor advances; the sandbox restart re-delivers
-// any unconfirmed messages from lastAgentTimestamp on next boot.
+// confirmedCursorFlusher is a background goroutine that per...
 func (o *Orchestrator) confirmedCursorFlusher(ctx context.Context) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
@@ -498,10 +472,7 @@ func (o *Orchestrator) confirmedCursorFlusher(ctx context.Context) {
 	}
 }
 
-// flushConfirmedCursor writes the confirmed cursor to persistent storage if it
-// has been modified since the last flush. Returns nil if not dirty or if the
-// flush succeeded. On failure the dirty flag is restored so the next tick
-// retries, and the error is returned for the caller to log.
+// flushConfirmedCursor writes the confirmed cursor to persi...
 func (o *Orchestrator) flushConfirmedCursor(ctx context.Context) error {
 	if !o.confirmedCursorDirty.Swap(false) {
 		return nil
@@ -786,9 +757,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 				o.log.Error("failed to save state", "error", err)
 			}
 		} else {
-			// Atomically claim an in-flight slot before spawning. If another
-			// goroutine already holds it, skip this poll cycle — the in-flight
-			// work will handle any pending messages for this group.
+// Atomically claim an in-flight slot before spawning. If an...
 			release, ok := o.claimSandboxSlot(chatJID)
 			if !ok {
 				o.log.Info("sandbox spawn skipped: already in-flight",
@@ -810,10 +779,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 						o.log.Error("panic in processGroupMessages",
 							"group", g.Name, "panic", r,
 							"stack", string(debug.Stack()))
-						// Cursor rollback always runs to re-deliver any messages sent to
-						// the dead agent. MarkInactive and saveState are gated on wasActive:
-						// if the panic fired before MarkActive (e.g. inside GetMessagesSince),
-						// the group was never inserted into MySQL as active — skip those calls.
+// Cursor rollback always runs to re-deliver any messages se...
 						o.mu.Lock()
 						_, wasActive := o.activeSandboxes[jid]
 						delete(o.activeSandboxes, jid)
@@ -850,12 +816,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 	}
 }
 
-// claimSandboxSlot atomically reserves an in-flight slot for chatJID.
-// Returns (release, true) if the caller won the claim; returns (nil, false)
-// if another goroutine already holds it. When ok is true, callers MUST
-// invoke release() exactly once — typically via defer — when done. When
-// ok is false, release is nil and must not be called.
-// Calling release() more than once logs an Error-level message with a "BUG:" prefix but does not panic.
+// claimSandboxSlot reserves an in-flight spawn slot.
 func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 	if _, loaded := o.inflightSandboxes.LoadOrStore(chatJID, struct{}{}); loaded {
 		return nil, false
@@ -870,18 +831,7 @@ func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 	}, true
 }
 
-// processGroupMessages fetches pending messages for chatJID, enforces the
-// MAX_CONCURRENT admission gate, and — if the gate passes — creates a K8s sandbox
-// and wires up IPC. Returns (true, nil) when a sandbox was successfully spawned, or
-// (false, nil/err) when no spawn occurred.
-//
-// releaseSlot must be the in-flight slot release closure obtained from
-// claimSandboxSlot. processGroupMessages calls it early (after CreateSandbox,
-// activeSandboxes population, and MarkActive all succeed) so the slot is freed
-// before the calling goroutine's deferred
-// release fires, avoiding a transient window where ActiveCount and the
-// in-flight map both reflect the same group. Callers must still defer
-// releaseSlot() to cover error paths that return before the early release.
+// processGroupMessages fetches pending messages for chatJID...
 func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string, releaseSlot func()) (bool, error) {
 	o.mu.Lock()
 
@@ -917,22 +867,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		}
 	}
 
-	// Enforce MAX_CONCURRENT limit — reject sandbox creation when at capacity (REL-01).
-	// activeCount is from MySQL (via GroupActiveStore); others is from the in-flight
-	// map. The two reads are individually consistent but not taken atomically with
-	// respect to each other, nor with respect to MarkActive() below. This is a
-	// best-effort pre-flight throttle: under a sufficiently large burst of concurrent
-	// spawn attempts across distinct groups, up to N extra sandboxes can be admitted
-	// past MaxConcurrent, where N is the number of goroutines racing through this
-	// check before any of them calls MarkActive. In practice the window is narrow:
-	// claimSandboxSlot is called before this function (both pollMessages and the
-	// watchGroupOutput deactivate-recovery path claim a slot before reaching here),
-	// so two goroutines for the same group cannot both reach this check concurrently;
-	// only goroutines for distinct groups can collide. Not a hard invariant.
-	// The current group's slot is already held in inflightSandboxes (claimed before
-	// this goroutine spawned) and is not yet reflected in activeCount (MarkActive has
-	// not been called), so the Range loop explicitly excludes chatJID to avoid
-	// counting this spawn against itself.
+// Enforce MAX_CONCURRENT limit — reject sandbox creation wh...
 	activeCount, err := o.queue.ActiveCount(ctx)
 	if err != nil {
 		return false, fmt.Errorf("check active count: %w", err)
@@ -1024,9 +959,7 @@ func (o *Orchestrator) rollbackCursorStep(sc *spawnContext) func(context.Context
 	}
 }
 
-// spawnAgent acquires the sandbox and IPC resources for one agent run. Every
-// failure path compensates through the staged cleanup list, so a new failure
-// branch cannot forget a step — it only adds its own error return.
+// spawnAgent acquires the sandbox and IPC resources for one...
 func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *store.Group, previousCursor time.Time, sessionID, formatted string, releaseSlot func()) (status *sandbox.SandboxStatus, err error) {
 	sc := &spawnContext{chatJID: chatJID, group: *group, previousCursor: previousCursor}
 
@@ -1083,9 +1016,7 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 		o.releaseOrphanedStreams(ctx, sc.group, "EnsureStream")
 	})
 
-	// Pre-create the IPC stream + consumer so the agent skips CreateOrUpdate
-	// round-trips on boot. Idempotent; safe to call on every spawn. Gated on
-	// FastStartEnabled so the rollout path (false) preserves legacy semantics.
+// Pre-create the IPC stream + consumer so the agent skips C...
 	if o.cfg.K8s.FastStartEnabled {
 		ensureStart := time.Now()
 
@@ -1129,10 +1060,7 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 		o.mu.Unlock()
 	})
 
-	// Unconditional delete: StopSandbox's CR removal is async, so the gated
-	// helper would still observe this sandbox as active (it does not filter
-	// DeletionTimestamp) and skip the delete — a TOCTOU leak. The stream was
-	// pre-created for THIS spawn and the sandbox is being torn down.
+// Unconditional delete: StopSandbox's CR removal is async, ...
 	sc.stage(func(ctx context.Context) {
 		if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
 			o.log.Error("failed to delete IPC streams", "group", group.Name, "error", delErr)
@@ -1149,20 +1077,10 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 		}
 	})
 
-	// Release the in-flight slot now that MarkActive has landed. MySQL's
-	// ActiveCount covers this group from this point forward, so the slot is no
-	// longer needed to prevent double-spawn. Releasing early avoids a transient
-	// double-count where ActiveCount and the in-flight map both reflect the
-	// same group between here and the deferred release in the calling goroutine.
-	// releaseSlot is idempotent (a double-release logs a BUG but does not panic).
+// Release the in-flight slot now that MarkActive has landed...
 	releaseSlot()
 
-	// Observability: log when concurrent-spawn races push the active count over
-	// the configured limit. The pre-flight check (ActiveCount + inflightSandboxes)
-	// is non-atomic — N goroutines for distinct groups can all read below-limit
-	// before any of them calls MarkActive. This post-admission re-check surfaces
-	// that scenario to operators without rolling back (rollback would introduce
-	// its own race). The limit is best-effort by design.
+// Observability: log when concurrent-spawn races push the a...
 	if postCount, postErr := o.queue.ActiveCount(ctx); postErr == nil &&
 		postCount > int64(o.cfg.Queue.MaxConcurrent) {
 		o.log.Warn("MAX_CONCURRENT exceeded after admission (concurrent-spawn race)",
@@ -1178,9 +1096,7 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 		return nil, fmt.Errorf("subscribe output: %w", err)
 	}
 
-	// Spawn watchGroupOutput directly to listen for agent output (no event channel).
-	// The outer recover catches panics in the narrow pre-setup window (map lookup etc.)
-	// before watchGroupOutput's own internal defer recover can install itself.
+// Spawn watchGroupOutput directly to listen for agent outpu...
 	go func(jid string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -1204,9 +1120,7 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 	return created, nil
 }
 
-// sandboxWatcher runs a self-healing loop that subscribes to Sandbox lifecycle events.
-// When the watch channel closes (K8s API restart or network hiccup), it reconnects
-// using exponential backoff (100ms base, 30s cap, 1.5x multiplier).
+// sandboxWatcher runs a self-healing loop that subscribes t...
 func (o *Orchestrator) sandboxWatcher(ctx context.Context) {
 	const (
 		baseBackoff = 100 * time.Millisecond
@@ -1268,17 +1182,7 @@ func (o *Orchestrator) runSandboxWatcher(ctx context.Context) error {
 	}
 }
 
-// handleSandboxEvent processes a single Sandbox lifecycle event.
-// When a sandbox reaches a terminal state (completed, failed) or is deleted,
-// the owning group is marked inactive so the active-set count stays accurate
-// and new sandboxes can be created on the next message poll.
-//
-// The watchGroupOutput goroutine is the primary path for marking groups inactive
-// when an agent shuts down normally.  handleSandboxEvent acts as a safety net
-// for cases where no watchGroupOutput is running — e.g. sandboxes that were
-// already complete when the server restarted and are reported by the initial
-// List inside WatchSandboxes, or sandboxes that disappear without sending an
-// IPC shutdown message.
+// handleSandboxEvent processes a single Sandbox lifecycle e...
 func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.SandboxEvent) {
 	terminal := event.Type == "deleted" ||
 		event.Status.State == sandbox.StateCompleted ||
@@ -1314,9 +1218,7 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 		return
 	}
 
-	// If the group has a tracked sandbox and this event is for a different
-	// sandbox (e.g. orphan cleanup of an old resource), skip it — the
-	// current sandbox is still running.
+// If the group has a tracked sandbox and this event is for ...
 	if currentSandbox != "" && event.Status.Name != currentSandbox {
 		o.log.Info("sandbox event: ignoring stale event for non-current sandbox",
 			"event_sandbox", event.Status.Name, "current_sandbox", currentSandbox,
@@ -1332,10 +1234,7 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 		o.mu.Lock()
 		delete(o.activeSandboxes, chatJID)
 		o.mu.Unlock()
-		// The sandbox is already terminal — attempt MarkInactive best-effort so
-		// MySQL's active flag converges and ActiveCount stays accurate. Do not
-		// return early on failure; the in-memory cleanup above is the authoritative
-		// signal at this call site.
+// The sandbox is already terminal — attempt MarkInactive be...
 		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
 			o.log.Error("sandbox event: best-effort MarkInactive also failed after IsActive error",
 				"folder", folder, "jid", chatJID, "error", markErr)
@@ -1364,9 +1263,7 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 	}
 }
 
-// watchGroupOutput subscribes to IPC output for a single group and processes messages.
-// It also periodically checks that the agent Job still exists to avoid getting stuck
-// if the agent dies without sending a shutdown message.
+// watchGroupOutput monitors IPC output and agent liveness.
 func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
 	o.mu.Lock()
 	group, ok := o.registeredGroups[chatJID]
@@ -1384,10 +1281,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 
 	deactivate := func() {
 		deactivateOnce.Do(func() {
-			// Idempotency guard: bail out if the group was already marked inactive
-			// (e.g., by the SendInput failure teardown path in processGroupMessages)
-			// to prevent an orphaned watchGroupOutput goroutine from spawning a
-			// spurious recovery after the main cleanup path has already run.
+// Idempotency guard: bail out if the group was already mark...
 			active, activeErr := o.queue.IsActive(ctx, chatJID)
 			if activeErr != nil {
 				o.log.Error("deactivate: IsActive check failed; skipping MarkInactive but proceeding with cursor rollback and recovery — possible double-spawn if group is still active",
@@ -1402,11 +1296,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			} else {
 				// Group is active — mark it inactive.
 				if err := o.queue.MarkInactive(ctx, chatJID); err != nil {
-					// Do not delete from activeSandboxes: keeping the entry allows
-					// handleSandboxEvent to find the sandbox by name and independently call
-					// MarkInactive when the K8s Job completion event fires.
-					// Spawning recovery on inconsistent MySQL state could inflate
-					// the active count, so we skip it.
+// Do not delete from activeSandboxes: keeping the entry allows
 					o.log.Error("failed to mark group inactive; skipping recovery — "+
 						"messages sent to dead agent will be permanently skipped on restart "+
 						"unless the K8s sandbox completion event fires before the process exits; "+
@@ -1453,10 +1343,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 
 				pendingCheckFailed = true
 			}
-			// Also drain the NATS queue for scheduled tasks.
-			// Dequeue returns nil,nil for both an empty queue and a malformed-message
-			// that was ACK'd and skipped. Loop a few times so that skipped malformed
-			// messages do not mask valid queued tasks.
+// Also drain the NATS queue for scheduled tasks.
 			const maxMalformedRetries = 5
 
 			var qMsg *queue.QueueMessage
@@ -1491,12 +1378,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
 				release, ok := o.claimSandboxSlot(chatJID)
 				if !ok {
-					// Re-enqueue the consumed qMsg. processGroupMessages reads pending
-					// work from MySQL (store.GetMessagesSince), not from the NATS queue,
-					// so any message already dequeued here would be permanently lost
-					// unless re-enqueued — the stream has already consumed it. This
-					// matters in particular for scheduled tasks (see executeScheduledTask)
-					// whose payload lives only in the queue, not in MySQL.
+// Re-enqueue the consumed qMsg. processGroupMessages reads ...
 					if qMsg != nil {
 						if reqErr := o.queue.Enqueue(ctx, chatJID, qMsg); reqErr != nil {
 							o.log.Error("post-deactivate: failed to re-enqueue message after slot claim failure; message lost",
@@ -1529,9 +1411,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 								o.log.Error("panic in post-deactivate processGroupMessages",
 									"group", group.Name, "panic", r,
 									"stack", string(debug.Stack()))
-								// Cursor rollback always runs to re-deliver any messages sent to
-								// the dead agent. MarkInactive is gated on wasActive: if the panic
-								// fired before MarkActive, the group was never active in MySQL.
+// Cursor rollback always runs to re-deliver any messages se...
 								o.mu.Lock()
 								_, wasActive := o.activeSandboxes[chatJID]
 								delete(o.activeSandboxes, chatJID)
@@ -1574,14 +1454,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						if err != nil {
 							o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
 						}
-						// Re-enqueue the consumed qMsg only when no sandbox was spawned.
-						// When spawned==true a live sandbox already exists; the next
-						// pollMessages tick will dequeue qMsg and deliver it via the
-						// normal GetMessagesSince path, so re-enqueueing would duplicate
-						// the scheduled-task prompt to the active agent.
-						// When spawned==false the message must be re-enqueued because
-						// processGroupMessages reads from MySQL (GetMessagesSince), not
-						// from NATS, so the payload lives only in the dequeued qMsg.
+// Re-enqueue the consumed qMsg only when no sandbox was spa...
 						if !spawned && qMsg != nil {
 							if reqErr := o.queue.Enqueue(context.Background(), chatJID, qMsg); reqErr != nil {
 								o.log.Error("post-deactivate: failed to re-enqueue message after recovery; message lost",
@@ -1599,10 +1472,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 		})
 	}
 
-	// Panic recovery: if watchGroupOutput panics at any point after this,
-	// deactivate() cleans up activeSandboxes and MySQL state. sync.Once
-	// inside deactivate ensures at-most-once cleanup even when deactivate()
-	// was also called normally before the panic.
+// Panic recovery: if watchGroupOutput panics at any point a...
 	defer func() {
 		if r := recover(); r != nil {
 			o.log.Error("panic in watchGroupOutput",
@@ -1615,9 +1485,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 	liveness := time.NewTicker(10 * time.Second)
 	defer liveness.Stop()
 
-	// startupTimeout guards against the agent pod never starting (e.g. operator not
-	// reconciling the SandboxClaim). If no IPC message arrives within the deadline we
-	// treat the sandbox as failed and deactivate the group so the message can be retried.
+// startupTimeout guards against the agent pod never startin...
 	startupTimeout := o.cfg.K8s.SandboxStartupTimeout
 	if startupTimeout <= 0 {
 		startupTimeout = 5 * time.Minute
@@ -1631,11 +1499,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 	for {
 		select {
 		case <-ctx.Done():
-			// On shutdown we intentionally skip deactivate() and leave the MySQL
-			// active count as-is. handleSandboxEvent calls MarkInactive when each
-			// K8s Job completes, naturally draining stale entries. Running full
-			// deactivate + recovery here would race with shutdown and risk spawning
-			// new sandboxes during teardown.
+// On shutdown we intentionally skip deactivate() and leave ...
 			return
 		case <-startupDeadline.C:
 			if !agentConnected {
@@ -1729,8 +1593,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 	}
 }
 
-// handleIPCMessage processes a single IPC message from an agent.
-// Returns true if the agent has shut down and the watcher should stop.
+// handleIPCMessage processes IPC messages and handles agent lifecycle.
 func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, group store.Group, msg *ipc.IPCMessage) bool {
 	switch msg.Type {
 	case ipc.IPCMessageText:
@@ -1745,10 +1608,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 		}
 
 		if err := o.router.RouteOutbound(ctx, chatJID, payload.Text); err != nil {
-			// Outbound routing failed — do NOT advance the confirmed cursor
-			// so the message remains eligible for retry on the next agent
-			// invocation. Skip storing the bot reply as well, since delivery
-			// was not confirmed.
+// Outbound routing failed — do NOT advance the confirmed cu...
 			o.log.Error("failed to route outbound message; leaving cursor unadvanced for retry",
 				"group", group.Name, "error", err)
 
@@ -1769,9 +1629,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 			o.log.Error("failed to store bot reply", "group", group.Name, "error", err)
 		}
 
-		// Agent responded, so all messages sent up to the current cursor are confirmed.
-		// Mark dirty; the background flusher (confirmedCursorFlusher) will persist
-		// the cursor within 5 s, batching rapid replies into a single MySQL write.
+// Agent responded, so all messages sent up to the current c...
 		o.mu.Lock()
 		o.lastConfirmedTimestamp[chatJID] = o.lastAgentTimestamp[chatJID]
 		o.mu.Unlock()
@@ -1870,8 +1728,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 	return false
 }
 
-// hasTriggerMessage checks whether any message in the batch matches the group's
-// trigger pattern and is from an allowed sender.
+// hasTriggerMessage checks if messages match the group's trigger pattern.
 func (o *Orchestrator) hasTriggerMessage(ctx context.Context, chatJID string, group store.Group, messages []store.Message) (bool, error) {
 	for _, m := range messages {
 		if o.router.MatchesTrigger(m.Content, group.TriggerPattern) {
@@ -1889,16 +1746,12 @@ func (o *Orchestrator) hasTriggerMessage(ctx context.Context, chatJID string, gr
 	return false, nil
 }
 
-// executeScheduledTask is the TaskExecutor callback for the scheduler.
+// executeScheduledTask is the scheduler's executor callback.
 func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.ScheduledTask) error {
 	now := time.Now().UTC()
 	msgID := uuid.New().String()
 
-	// Write the prompt to MySQL first so it flows through the normal agent pipeline
-	// (processGroupMessages → GetMessagesSince → FormatMessagesForAgent).
-	// If this fails, abort without enqueuing: the agent pipeline reads message
-	// history via GetMessagesSince, so without the MySQL row the agent would
-	// wake to an empty message list.
+// Write the prompt to MySQL first so it flows through the n...
 	if err := o.store.StoreMessage(ctx, &store.Message{
 		ID:         msgID,
 		ChatJID:    task.ChatJID,
@@ -1924,9 +1777,7 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 			"chat_jid", task.ChatJID,
 			"error", err,
 		)
-		// Compensating delete: remove the stored message so a failed enqueue
-		// does not leave a phantom row unlikely to be consumed that would
-		// persist indefinitely.
+// Compensating delete: remove the stored message so a faile...
 		if delErr := o.store.DeleteMessage(ctx, msgID, task.ChatJID); delErr != nil {
 			o.log.Error("executeScheduledTask: enqueue failed and compensating delete also failed — zombie message row in MySQL",
 				"task_id", task.ID,
@@ -1945,12 +1796,7 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 	return nil
 }
 
-// reconcileActiveSet removes stale entries from the active group store.
-// On server restart, sandbox processes that completed while the server was down
-// leave their group JIDs permanently in the store.  If enough accumulate they
-// inflate ActiveCount past MaxConcurrent, silently blocking new sandbox creation.
-// This method enumerates the active store and calls MarkInactive for any JID that
-// has no corresponding running or pending K8s sandbox.
+// reconcileActiveSet cleans up stale active group entries.
 func (o *Orchestrator) reconcileActiveSet(ctx context.Context) {
 	activeJIDs, err := o.queue.ActiveJIDs(ctx)
 	if err != nil {
@@ -2063,10 +1909,7 @@ func (o *Orchestrator) recoverPendingMessages(ctx context.Context) {
 	}
 }
 
-// ensureStreamForAgentWithRetry retries EnsureStreamForAgent up to 3 times with
-// exponential backoff. JetStream stream/consumer provisioning can fail
-// transiently during broker reconnects; permanent errors (auth, malformed
-// config) still surface after the bounded retry window.
+// ensureStreamForAgentWithRetry retries EnsureStreamForAgen...
 func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group, agentID string) error {
 	var lastErr error
 
@@ -2074,9 +1917,7 @@ func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group,
 
 	for attempt := 1; attempt <= 3; attempt++ {
 		if attempt > 1 {
-			// Add jitter (up to backoff/2) to de-correlate retries across agents
-			// reconnecting to the same broker. Worst-case added latency per wait is
-			// backoff/2 (e.g. ~100ms on the final 200ms backoff).
+// Add jitter (up to backoff/2) to de-correlate retries acro...
 			jitter := time.Duration(rand.Int64N(int64(backoff / 2)))
 			select {
 			case <-time.After(backoff + jitter):
@@ -2099,28 +1940,19 @@ func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group,
 	return fmt.Errorf("ensure stream for agent failed after retries: %w", lastErr)
 }
 
-// clearSpawnStart removes a spawnStart entry under spawnStartMu. Called on every
-// spawn failure path after the timer is seeded so a failed spawn never leaves a
-// stale entry behind (the entry is otherwise only removed on first output).
+// clearSpawnStart removes a spawnStart entry under spawnSta...
 func (o *Orchestrator) clearSpawnStart(chatJID string) {
 	o.spawnStartMu.Lock()
 	delete(o.spawnStart, chatJID)
 	o.spawnStartMu.Unlock()
 }
 
-// releaseOrphanedStreams tears down the IPC stream pre-created for a fast-start
-// spawn when a spawn failure leaves no active sandbox still owning the group.
-// No-op when fast-start is disabled (no stream was pre-created). If the
-// active-sandbox check itself errors, deletion is conservatively skipped and
-// logged, so a stream a live sandbox still owns is never deleted. reason names
-// the failing spawn step for log correlation.
+// releaseOrphanedStreams tears down the IPC stream pre-crea...
 func (o *Orchestrator) releaseOrphanedStreams(ctx context.Context, group store.Group, reason string) {
 	if !o.cfg.K8s.FastStartEnabled {
 		return
 	}
-	// Detach from the (cancellable) spawn ctx so a cancelled/timed-out spawn still
-	// completes cleanup; otherwise a cancelled ctx would abort both the active-sandbox
-	// check and DeleteStreams, leaking the pre-created stream.
+// Detach from the (cancellable) spawn ctx so a cancelled/ti...
 	cleanupCtx := context.WithoutCancel(ctx)
 
 	has, hasErr := o.sandbox.HasActiveSandbox(cleanupCtx, group.Folder)
@@ -2143,9 +1975,7 @@ func (o *Orchestrator) releaseOrphanedStreams(ctx context.Context, group store.G
 
 const streamReconcileInterval = 10 * time.Minute
 
-// streamReconciler periodically reclaims IPC streams orphaned by spawn
-// failures that hit the conservative HasActiveSandbox-error skip (e.g. a
-// sustained K8s API outage that also failed the spawn).
+// streamReconciler periodically reclaims IPC streams orphan...
 func (o *Orchestrator) streamReconciler(ctx context.Context) {
 	timer := time.NewTimer(jitteredReconcileDelay())
 	defer timer.Stop()
@@ -2167,10 +1997,7 @@ func jitteredReconcileDelay() time.Duration {
 	return streamReconcileInterval - spread + rand.N(2*spread) //nolint:gosec // schedule jitter, not security-sensitive
 }
 
-// reconcileIPCStreams deletes the IPC stream of every registered group that
-// has no in-flight spawn claim, an inactive queue, and no active sandbox.
-// Any check that errors skips the group conservatively: an unreachable
-// dependency must never cause a live stream to be deleted.
+// reconcileIPCStreams deletes the IPC stream of every regis...
 func (o *Orchestrator) reconcileIPCStreams(ctx context.Context) {
 	o.mu.Lock()
 
@@ -2236,10 +2063,7 @@ func (o *Orchestrator) reconcileIPCStreams(ctx context.Context) {
 	}
 }
 
-// recordFirstOutputPhase observes the first_output cold-start phase for a
-// spawn the first time any IPC output is seen for the chatJID. The matching
-// spawnStart entry is seeded immediately before CreateSandbox; the
-// delete-on-observe makes this a one-shot per spawn cycle.
+// recordFirstOutputPhase observes the first_output cold-sta...
 func (o *Orchestrator) recordFirstOutputPhase(chatJID string) {
 	o.spawnStartMu.Lock()
 

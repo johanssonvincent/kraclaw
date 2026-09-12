@@ -333,9 +333,7 @@ func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-ch
 		return m.subscribeOutputFn(ctx, group)
 	}
 	if m.subscribeCh != nil {
-		// Return the preset channel on the first call only. Subsequent calls
-		// (e.g. from the watchGroupOutput reconnect path) fail so tests
-		// exercising reconnect reach deactivate quickly.
+// Return the preset channel on the first call only. Subsequ...
 		if m.subscribeCount > 1 {
 			return nil, nil, errors.New("mockIPCBroker: subscribeCh already consumed")
 		}
@@ -929,9 +927,7 @@ func TestMaxConcurrent_BelowLimit_ProceedsToCreateSandbox(t *testing.T) {
 	defer release()
 
 	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
-	// CreateSandbox should be called — the full happy path runs through since
-	// mockQueueWithActiveCount inherits mockQueue defaults (no injected errors).
-	// We just care that CreateSandbox was reached.
+// CreateSandbox should be called — the full happy path runs...
 	if !sb.createCalled.Load() {
 		t.Error("CreateSandbox was NOT called, want called when below MAX_CONCURRENT")
 	}
@@ -979,10 +975,6 @@ func TestMaxConcurrent_ActiveCountError_ReturnsError(t *testing.T) {
 }
 
 // TestClaimSandboxSlot_LoserReturnsNilFalse verifies that:
-//   - The first claim on a JID succeeds (non-nil release, true).
-//   - A second concurrent claim for the same JID loses (nil, false).
-//   - After the first release, a new claim succeeds (entry was deleted).
-//   - Calling release() twice is a no-op and does not panic.
 func TestClaimSandboxSlot_LoserReturnsNilFalse(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()
@@ -1265,11 +1257,7 @@ func TestHasTriggerMessage(t *testing.T) {
 }
 
 func TestHasTriggerMessage_MainGroup(t *testing.T) {
-	// Main groups skip trigger check entirely in the caller (pollMessages/processGroupMessages).
-	// hasTriggerMessage checks the trigger pattern, sender authorization (IsFromMe or
-	// allowlist), but not IsMain — a main group with IsMain=true would never call
-	// hasTriggerMessage in production. This test verifies the trigger logic still works
-	// when called directly with a non-trigger message.
+// Main groups skip trigger check entirely in the caller (po...
 	s := newMockStore()
 	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"main@g.us": true}}
 	o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
@@ -1679,9 +1667,7 @@ func TestDeactivate_PendingMessagesTriggersReprocessing(t *testing.T) {
 		},
 	}
 
-	// Hook GetMessagesSince to detect when processGroupMessages is called.
-	// The first call comes from deactivate() (pending check) — let it pass.
-	// The second call comes from processGroupMessages goroutine — signal and block.
+// Hook GetMessagesSince to detect when processGroupMessages...
 	var callCount atomic.Int32
 	processStarted := make(chan struct{}, 1)
 	processBlock := make(chan struct{})
@@ -1726,9 +1712,7 @@ func TestDeactivate_PendingMessagesTriggersReprocessing(t *testing.T) {
 	waitSlotReleased(t, o, "group1@g.us", 2*time.Second)
 }
 
-// TestDeactivate_PendingCheckFailedTriggersReprocessing verifies that when
-// GetMessagesSince returns an error during deactivation, pendingCheckFailed is
-// set and processGroupMessages is still triggered defensively.
+// TestDeactivate_PendingCheckFailedTriggersReprocessing ver...
 func TestDeactivate_PendingCheckFailedTriggersReprocessing(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()
@@ -1744,9 +1728,7 @@ func TestDeactivate_PendingCheckFailedTriggersReprocessing(t *testing.T) {
 	o.registeredGroups["group1@g.us"] = group
 	q.active["group1@g.us"] = true
 
-	// First GetMessagesSince call (from deactivate's pending check) returns an error,
-	// triggering pendingCheckFailed = true. The hook clears the error on the second
-	// call so processGroupMessages can proceed without panicking.
+// First GetMessagesSince call (from deactivate's pending ch...
 	var callCount atomic.Int32
 	processStarted := make(chan struct{}, 1)
 	processBlock := make(chan struct{})
@@ -1881,9 +1863,7 @@ func newTestOrchestratorWithSandbox(s *mockStore, q *mockQueue, b *mockIPCBroker
 }
 
 func TestWatchGroupOutput_StartupTimeoutDeactivatesGroupWhenPodNeverStarts(t *testing.T) {
-	// Simulates: SandboxClaim created, operator never creates a pod.
-	// HasActiveSandbox returns true (claim is StatePending), but no IPC messages ever arrive.
-	// After the startup timeout, the group should be deactivated and the cursor rolled back.
+// Simulates: SandboxClaim created, operator never creates a...
 
 	s := newMockStore()
 	q := newMockQueue()
@@ -2245,9 +2225,7 @@ func TestWatchGroupOutput_NilSandboxNoPanic(t *testing.T) {
 	// Use a very short startup timeout so the test doesn't hang.
 	o.cfg.K8s.SandboxStartupTimeout = 200 * time.Millisecond
 
-	// Set liveness ticker to fire quickly. Since we can't override the liveness
-	// ticker directly, we rely on the IPC channel closing to eventually trigger
-	// deactivate. The key test: sandbox==nil must not panic in the liveness tick.
+// Set liveness ticker to fire quickly. Since we can't overr...
 	go func() {
 		// Wait enough for at least one liveness tick (10s default is too long).
 		// Instead, send a shutdown message quickly.
@@ -2723,20 +2701,13 @@ func TestHandleSandboxEvent_CurrentSandboxDeletion_MarksInactive(t *testing.T) {
 	}
 }
 
-// TestWatchGroupOutput_ReconnectSuccess exercises the happy path of the
-// exponential-backoff reconnect loop: when the IPC output channel closes
-// mid-stream (as happens on an iterator error), watchGroupOutput must call
-// SubscribeOutput again, assign the returned channel to `ch`, and continue
-// consuming messages — without deactivating the group.
+// TestWatchGroupOutput_ReconnectSuccess exercises the happy...
 func TestWatchGroupOutput_ReconnectSuccess(t *testing.T) {
 	s := newMockStore()
 	q := newMockQueue()
 	b := &mockIPCBroker{}
 
-	// channel1 delivers one session_update message and then closes, simulating
-	// an iterator error mid-stream. channel2 is a fresh channel returned by the
-	// second SubscribeOutput call; it delivers a shutdown so the watcher exits
-	// cleanly.
+// channel1 delivers one session_update message and then clo...
 	channel1 := make(chan *ipc.IPCMessage, 1)
 	channel2 := make(chan *ipc.IPCMessage, 1)
 
@@ -2785,21 +2756,13 @@ func TestWatchGroupOutput_ReconnectSuccess(t *testing.T) {
 		t.Errorf("SubscribeOutput reconnect calls = %d, want 1", subCalls)
 	}
 
-	// Both session_update messages must have been processed: the latest write
-	// wins, and since shutdown is what exits the loop, the last observed
-	// session ID is the one from channel2.
+// Both session_update messages must have been processed: th...
 	got := o.sessions["test-group"]
 	if got != "sess-from-ch2" {
 		t.Errorf("session after reconnect = %q, want %q (channel2 message was not processed)", got, "sess-from-ch2")
 	}
 
-	// Ensure the session from channel1 was also processed (i.e. the earlier
-	// message before the reconnect got through) — the store would have
-	// observed an UpsertSession for "sess-from-ch1" prior to the final value.
-	// We can assert that at least one UpsertSession call landed with the
-	// channel1 value by verifying the store saw the ch2 value, which only
-	// happens if the reconnect path advanced past channel1's close.
-	// (Implicit in subCalls==1 and got=="sess-from-ch2".)
+// Ensure the session from channel1 was also processed (i.e....
 }
 
 // TestWatchGroupOutput_ReconnectExhaustedLogsLastError verifies that when all
@@ -2884,9 +2847,7 @@ func (m *mockQueueRecording) count() int {
 	return len(m.enqueued)
 }
 
-// TestRecoverPendingMessages covers the startup recovery path that checks each
-// registered group for unprocessed messages and enqueues a recovery marker
-// when any are found.
+// TestRecoverPendingMessages covers the startup recovery pa...
 func TestRecoverPendingMessages(t *testing.T) {
 	ts := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
 
@@ -2915,9 +2876,7 @@ func TestRecoverPendingMessages(t *testing.T) {
 		{
 			name: "GetMessagesSince error is logged and does not abort loop",
 			setupStore: func(s *mockStore) {
-				// Force GetMessagesSince to return an error for every group.
-				// Expectation: recoverPendingMessages logs and continues, so
-				// Enqueue is never called.
+// Force GetMessagesSince to return an error for every group.
 				s.getMessagesSinceErr = errors.New("store boom")
 			},
 			wantEnqueues: 0,
@@ -3027,9 +2986,7 @@ func TestWatchGroupOutput_ReconnectUsesGroupFolder(t *testing.T) {
 		return ch, make(chan error), nil
 	}
 
-	// A closed initial channel triggers the reconnect path immediately.
-	// Before the fix, reconnect called SubscribeOutput with chatJID instead of
-	// group.Folder, subscribing to a stream keyed on the wrong SHA-256 hash.
+// A closed initial channel triggers the reconnect path imme...
 	initialCh := make(chan *ipc.IPCMessage)
 	close(initialCh)
 
@@ -3500,10 +3457,7 @@ func TestSpawnAgent_FailurePaths(t *testing.T) {
 	}
 }
 
-// TestSpawnAgent_FastStartDisabled_LegacyPath covers the FastStartEnabled=false
-// rollout path at the orchestrator level: the stream is NOT pre-created, so the
-// happy path never calls EnsureStreamForAgent and the CreateSandbox failure path
-// never attempts the pre-created-stream DeleteStreams rollback.
+// TestSpawnAgent_FastStartDisabled_LegacyPath covers the Fa...
 func TestSpawnAgent_FastStartDisabled_LegacyPath(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
@@ -3757,12 +3711,7 @@ func TestSpawnAgent_SeedsSpawnStartBeforeCreateSandbox(t *testing.T) {
 	}
 }
 
-// TestSpawnAgent_FailurePaths_ClearSpawnStart verifies that every spawn-failure
-// path after the spawnStart timer is seeded removes the spawnStart entry, and
-// that the MarkActive failure path performs the same HasActiveSandbox-gated
-// IPC stream cleanup as the CreateSandbox failure path (closing the leak the
-// fast-start pre-creation introduced). The happy path leaves spawnStart seeded
-// (it is removed on first output, not here).
+// TestSpawnAgent_FailurePaths_ClearSpawnStart verifies that...
 func TestSpawnAgent_FailurePaths_ClearSpawnStart(t *testing.T) {
 	t.Parallel()
 	failingSubscribe := func(_ context.Context, _ string) (<-chan *ipc.IPCMessage, <-chan error, error) {
@@ -3800,12 +3749,7 @@ func TestSpawnAgent_FailurePaths_ClearSpawnStart(t *testing.T) {
 			wantDeleteStreams:     1,
 			wantSpawnStartPresent: false,
 		},
-		// The MarkActive path deletes the stream UNCONDITIONALLY (it does not use
-		// the HasActiveSandbox-gated releaseOrphanedStreams helper). StopSandbox
-		// deletes the CR asynchronously, so HasActiveSandbox would still observe
-		// this very sandbox as active and incorrectly skip the delete (TOCTOU).
-		// hasActive=true here represents that stale observation; the stream must
-		// still be deleted.
+// The MarkActive path deletes the stream UNCONDITIONALLY (i...
 		"MarkActive failure deletes stream even when HasActiveSandbox reports active (TOCTOU)": {
 			fastStart:             true,
 			markActiveErr:         errors.New("nats down"),
@@ -3884,12 +3828,7 @@ func TestSpawnAgent_FailurePaths_ClearSpawnStart(t *testing.T) {
 	}
 }
 
-// TestReleaseOrphanedStreams exercises the HasActiveSandbox-gated helper used by
-// the CreateSandbox/EnsureStream failure paths. Unlike the MarkActive path (which
-// deletes unconditionally to dodge an async-delete TOCTOU), this helper must skip
-// the delete when a genuinely-separate active sandbox still owns the group, and
-// must skip (leak rather than risk a live stream) when the active-sandbox check
-// itself errors.
+// TestReleaseOrphanedStreams exercises the HasActiveSandbox...
 func TestReleaseOrphanedStreams(t *testing.T) {
 	t.Parallel()
 

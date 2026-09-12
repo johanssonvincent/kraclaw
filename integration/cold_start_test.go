@@ -18,10 +18,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/pkg/agent"
 )
 
-// startColdStartNATS starts an embedded NATS+JetStream server for a single
-// test. Separate from the docker-based setupIntegrationEnv (which is keyed by
-// MySQL availability) — cold-start tests need only NATS, so they bypass that
-// machinery to avoid pulling a MySQL image.
+// startColdStartNATS starts an embedded NATS+JetStream serv...
 func startColdStartNATS(t *testing.T) (*nats.Conn, func()) {
 	t.Helper()
 
@@ -61,10 +58,6 @@ func startColdStartNATS(t *testing.T) (*nats.Conn, func()) {
 }
 
 // runColdStartFastStartPreCreated exercises the server-side
-// EnsureStreamForAgent → agent-side fetch contract end-to-end over a real
-// broker: with the consumer pre-created, ReadInput must succeed on the first
-// fetch attempt without hitting the bounded-retry path, and the agent must
-// receive input published through the broker.
 func runColdStartFastStartPreCreated(t *testing.T, ctx context.Context, nc *nats.Conn, broker *ipc.NATSBroker, group, agentID string) {
 	t.Helper()
 
@@ -103,10 +96,7 @@ func runColdStartFastStartPreCreated(t *testing.T, ctx context.Context, nc *nats
 	}
 }
 
-// runColdStartLegacyDefensive proves the rollback path: with the defensive env
-// set the agent re-enables its self-create ensureStream call and can attach
-// without a prior broker-side EnsureStreamForAgent (the helm legacy path when
-// sandbox.fastStart.enabled=false).
+// runColdStartLegacyDefensive proves the rollback path: wit...
 func runColdStartLegacyDefensive(t *testing.T, ctx context.Context, nc *nats.Conn, _ *ipc.NATSBroker, group, agentID string) {
 	t.Helper()
 
@@ -130,10 +120,7 @@ func runColdStartLegacyDefensive(t *testing.T, ctx context.Context, nc *nats.Con
 	}
 }
 
-// runColdStartFetchExhaustion verifies that with no server-side pre-create and
-// the defensive env unset, the agent's bounded fetch surfaces the terminal
-// "fetch input consumer ... after retries" error rather than silently creating
-// a consumer.
+// runColdStartFetchExhaustion verifies that with no server-...
 func runColdStartFetchExhaustion(t *testing.T, ctx context.Context, nc *nats.Conn, _ *ipc.NATSBroker, group, agentID string) {
 	t.Helper()
 
@@ -151,9 +138,7 @@ func runColdStartFetchExhaustion(t *testing.T, ctx context.Context, nc *nats.Con
 	}
 }
 
-// runColdStartEnsureStreamIdempotent proves repeated EnsureStreamForAgent
-// calls (e.g. across retries or restarts) do not error or double-create; the
-// orchestrator's bounded retry helper relies on this idempotence.
+// runColdStartEnsureStreamIdempotent proves repeated Ensure...
 func runColdStartEnsureStreamIdempotent(t *testing.T, _ context.Context, _ *nats.Conn, broker *ipc.NATSBroker, group, agentID string) {
 	t.Helper()
 

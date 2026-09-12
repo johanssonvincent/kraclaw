@@ -271,10 +271,7 @@ func main() {
 		}
 	}()
 
-	// Build the ChatGPT OAuth client. Its only side effect is HTTP traffic
-	// when the AuthService device-flow RPC is invoked, so it's safe to
-	// construct unconditionally; AuthService registration is gated on
-	// credStore being non-nil below.
+// Build the ChatGPT OAuth client. Its only side effect is H...
 	chatgptClient, err := chatgpt.NewClient(chatgpt.Config{
 		Issuer: cfg.OAuth.ChatGPTIssuer,
 		Logger: log.With("component", "chatgpt"),
@@ -288,10 +285,7 @@ func main() {
 	// so we have a single source of truth for provider metadata.
 	providerRegistry := provider.NewRegistry()
 
-	// Compose Auth sub-struct only when both dependencies are available.
-	// chatgptClient is always set at this point; credStore is non-nil only
-	// when per-group credential encryption is configured. Both must be present
-	// for the AuthService to register — partial config is a startup error.
+// Compose Auth sub-struct only when both dependencies are a...
 	var authCfg *server.AuthConfig
 	if chatgptClient != nil && credStore != nil {
 		authCfg = &server.AuthConfig{

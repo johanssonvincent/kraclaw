@@ -94,9 +94,7 @@ func TestCreateSandbox(t *testing.T) {
 		t.Fatalf("GROUP_FOLDER env var not set on agent container")
 	}
 
-	// With fast-start enabled (the default in newTestController), init containers
-	// are omitted. GROUP_FOLDER injection into the init container is covered by
-	// TestBuildSandbox_FastStartInitContainerGating (fast_start_disabled case).
+// With fast-start enabled (the default in newTestController...
 }
 
 // failNTimesCreateInterceptor returns an interceptor.Funcs that fails Create
@@ -466,9 +464,7 @@ func TestCleanupOrphans(t *testing.T) {
 	}
 }
 
-// deleteFailClient wraps a controller-runtime client and makes Delete return
-// NotFound for any resource whose name matches failName. This simulates the
-// race where a Sandbox is deleted between ListSandboxes and StopSandbox.
+// deleteFailClient wraps a controller-runtime client and ma...
 type deleteFailClient struct {
 	client.WithWatch
 	failName string

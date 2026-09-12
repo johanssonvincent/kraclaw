@@ -68,9 +68,7 @@ func ConnectNATS(url, user, pass string) (*nats.Conn, error) {
 	return nc, nil
 }
 
-// ensureGroupDirs creates the per-pod directories that the legacy init-dirs
-// busybox container used to create. Called from Run before NATS connect so the
-// agent process can start without depending on a separate init container.
+// ensureGroupDirs creates the per-pod directories that the ...
 func ensureGroupDirs() error {
 	home := os.Getenv("HOME")
 	if home == "" {
@@ -95,9 +93,7 @@ func ensureGroupDirs() error {
 	return nil
 }
 
-// waitForPrepullSignal blocks until SIGTERM/SIGINT. Exposed as a package-level
-// variable so tests can substitute a controllable wait without sending real
-// signals to the test process.
+// waitForPrepullSignal blocks until SIGTERM/SIGINT. Exposed...
 var waitForPrepullSignal = func() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -109,10 +105,7 @@ var waitForPrepullSignal = func() {
 func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) error) error {
 	log := slog.Default()
 
-	// --prepull: warm-keeper mode used by the DaemonSet. The image must exist
-	// on every node to satisfy ImagePullPolicy=IfNotPresent for fast cold-start;
-	// we hold the image warm by running this binary with --prepull so kubelet
-	// keeps the layers around as long as the DaemonSet pod is alive.
+// --prepull: warm-keeper mode used by the DaemonSet. The im...
 	if len(os.Args) > 1 && os.Args[1] == "--prepull" {
 		log.Info("prepull noop")
 		waitForPrepullSignal()

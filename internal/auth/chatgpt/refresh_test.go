@@ -15,9 +15,7 @@ import (
 func TestRefresh_Success(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
-		// respBody is the raw /oauth/token response body. Exactly one of
-		// respBody or respBodyFn must be set; respBodyFn lets a case mint a
-		// JWT at test time (it runs once per subtest).
+// respBody is the raw /oauth/token response body. Exactly o...
 		respBody   string
 		respBodyFn func() string
 		// reqCheck, when non-nil, runs extra request-side assertions.
@@ -145,9 +143,7 @@ func TestRefresh_Success(t *testing.T) {
 	}
 }
 
-// mintJWTNow is a test-time JWT builder usable from handler closures and case
-// builders where no *testing.T is in scope. It panics on marshal errors, which
-// cannot happen for the fixed payloads used here.
+// mintJWTNow is a test-time JWT builder usable from handler...
 func mintJWTNow(payload map[string]any) string {
 	header := map[string]string{"alg": "RS256", "typ": "JWT"}
 	headerJSON, err := json.Marshal(header)
@@ -306,9 +302,7 @@ func boolPtr(b bool) *bool { return &b }
 func TestRefresh_BodyReadError_Transient(t *testing.T) {
 	t.Parallel()
 
-	// Handler writes headers claiming 100 bytes, then sends 10 bytes and
-	// hijacks the connection to close it — io.ReadAll on the response body
-	// returns io.ErrUnexpectedEOF.
+// Handler writes headers claiming 100 bytes, then sends 10 ...
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "100")
 		w.Header().Set("Content-Type", "application/json")

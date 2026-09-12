@@ -39,10 +39,7 @@ type authClaimsJSON struct {
 	ChatGPTAccountIsFedRAMP bool   `json:"chatgpt_account_is_fedramp,omitempty"`
 }
 
-// ParseIDToken decodes the payload of a JWT id_token and extracts the claims
-// kraclaw needs. It does NOT verify the JWT signature — verification is the
-// responsibility of the issuer; this code trusts what auth.openai.com hands
-// back over TLS.
+// ParseIDToken decodes the payload of a JWT id_token and ex...
 func ParseIDToken(token string) (IDTokenClaims, error) {
 	if token == "" {
 		return IDTokenClaims{}, fmt.Errorf("chatgpt: id_token is empty")

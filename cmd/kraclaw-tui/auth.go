@@ -29,26 +29,20 @@ type oauthState struct {
 	cancel           context.CancelFunc
 }
 
-// authStartedMsg is dispatched once the AuthService stream is opened (or fails
-// to open). On success it carries the stream and its cancel func so the
-// model can drive the event loop and tear the stream down on Esc.
+// authStartedMsg is dispatched once the AuthService stream ...
 type authStartedMsg struct {
 	stream kraclawv1.AuthService_StartChatGPTDeviceAuthClient
 	cancel context.CancelFunc
 	err    error
 }
 
-// authEventMsg carries one DeviceAuthEvent off the stream, or a stream error.
-// A nil event with nil err signals server-closed-without-terminal-event,
-// which the handler treats as an error.
+// authEventMsg carries one DeviceAuthEvent off the stream, ...
 type authEventMsg struct {
 	event *kraclawv1.DeviceAuthEvent
 	err   error
 }
 
-// startOAuthCmd opens the AuthService stream. It does NOT consume events —
-// authEventLoopCmd does that one event at a time so each event becomes a
-// distinct tea.Msg and re-renders the UI.
+// startOAuthCmd opens the AuthService stream. It does NOT c...
 func (m model) startOAuthCmd(provider, groupJID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -67,9 +61,7 @@ func (m model) startOAuthCmd(provider, groupJID string) tea.Cmd {
 	}
 }
 
-// authEventLoopCmd reads exactly one event off the stream and emits it as a
-// tea.Msg. The Update loop re-issues this command after every non-terminal
-// event so each event re-renders the UI.
+// authEventLoopCmd reads exactly one event off the stream a...
 func authEventLoopCmd(stream kraclawv1.AuthService_StartChatGPTDeviceAuthClient) tea.Cmd {
 	return func() tea.Msg {
 		ev, err := stream.Recv()
@@ -104,10 +96,7 @@ func (m model) handleAuthStarted(msg authStartedMsg) (tea.Model, tea.Cmd) {
 	return m, authEventLoopCmd(msg.stream)
 }
 
-// handleAuthEvent processes one DeviceAuthEvent off the stream. DeviceCode
-// and Tick are non-terminal and re-arm the event loop. Success transitions
-// to connecting (or back to chatting on the re-auth path). Error and stream
-// errors stay on the OAuth screen with oauth.err populated.
+// handleAuthEvent processes one DeviceAuthEvent off the str...
 func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		if m.oauth.cancel != nil {
@@ -135,9 +124,7 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 		dc := e.DeviceCode
 		m.oauth.userCode = dc.GetUserCode()
 		m.oauth.verificationURL = dc.GetVerificationUrl()
-		// Best-effort browser open — failure is non-fatal because the user_code
-		// is always shown alongside. Capture the error so renderOAuth can hint
-		// the user to copy the URL manually.
+// Best-effort browser open — failure is non-fatal because t...
 		if err := OpenURL(dc.GetVerificationUrl()); err != nil {
 			m.oauth.openURLErr = err
 			slog.Warn("OpenURL failed", "err", err)
@@ -193,9 +180,7 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleEscOAuth tears down any in-flight OAuth stream and returns the model
-// to the right place: re-auth (group already exists) → chatting; new-group
-// (group not yet registered) → group picker.
+// handleEscOAuth tears down any in-flight OAuth stream and ...
 func (m model) handleEscOAuth() (tea.Model, tea.Cmd) {
 	if m.oauth.cancel != nil {
 		m.oauth.cancel()
@@ -203,9 +188,7 @@ func (m model) handleEscOAuth() (tea.Model, tea.Cmd) {
 
 	wasReauth := m.oauth.pendingGroupName == ""
 	m.oauth = oauthState{}
-	// Clear creation state unconditionally so stale context from a cancelled
-	// new-group OAuth flow does not survive into a subsequent attempt.
-	// In the re-auth path these fields are already empty, so this is a no-op.
+// Clear creation state unconditionally so stale context fro...
 	m.creationPendingGroupName = ""
 	m.creationSelectedProvider = ""
 	m.creationSelectedModelID = ""

@@ -7,9 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// PhaseSampleCount returns the observation count for a phase label on the
-// process-global sandbox spawn histogram; delta assertions on it must not run
-// in parallel with each other.
+// PhaseSampleCount returns the observation count for a phas...
 func PhaseSampleCount(t testing.TB, phase string) uint64 {
 	t.Helper()
 

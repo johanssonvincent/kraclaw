@@ -29,12 +29,6 @@ import (
 )
 
 // issuerMode selects the behaviour of the test fake issuer:
-//
-//	"approve":          usercode -> immediate authorization_code -> token bundle
-//	"deny":             usercode OK, then poll/exchange endpoint returns 400 access_denied (ErrAccessDenied)
-//	"slow_approve":     authorization_pending twice, then approves on the third poll
-//	"unknown_pending":  OpenAI nested deviceauth_authorization_unknown, then approves
-//	"5xx_during_poll":  usercode OK, then poll endpoint returns 502 (errBadStatus → INTERNAL)
 type issuerMode string
 
 const (
@@ -93,9 +87,7 @@ func newFakeIssuer(t *testing.T, mode issuerMode, idTokenJWT string, expiresIn i
 					return
 				}
 			case issuerMode5xxDuringPoll:
-				// Subsequent /api/accounts/deviceauth/token poll fails with
-				// 502; pollOnce wraps this as *errBadStatus, which falls
-				// through errCodeFor's default → INTERNAL.
+// Subsequent /api/accounts/deviceauth/token poll fails with
 				http.Error(w, "bad gateway", http.StatusBadGateway)
 				return
 			}
@@ -157,9 +149,7 @@ func startAuthGRPC(t *testing.T, svc *authService) (kraclawv1.AuthServiceClient,
 	return kraclawv1.NewAuthServiceClient(conn), cleanup
 }
 
-// collectEvents drains the stream until io.EOF or the client deadline fires
-// and returns the names of the events it saw (deviceCode/tick/success/error)
-// plus the terminal event so the caller can introspect codes.
+// collectEvents drains the stream until io.EOF or the clien...
 func collectEvents(t *testing.T, stream grpc.ServerStreamingClient[kraclawv1.DeviceAuthEvent]) (eventNames []string, terminal *kraclawv1.DeviceAuthEvent) {
 	t.Helper()
 	for {
@@ -213,9 +203,7 @@ func equalSeqIgnoringTickCount(got, want []string) bool {
 	return true
 }
 
-// equalSeqAtLeastOneTick verifies that got matches want with the constraint
-// that every "tick" entry in want must match >= 1 consecutive "tick" entries
-// in got. All other entries must match exactly.
+// equalSeqAtLeastOneTick verifies that got matches want wit...
 func equalSeqAtLeastOneTick(got, want []string) bool {
 	si, wi := 0, 0
 	for si < len(got) && wi < len(want) {
@@ -583,12 +571,7 @@ func TestStartChatGPTDeviceAuth_UpsertFailureLogsRedactedMetadata(t *testing.T) 
 	}
 }
 
-// TestStartChatGPTDeviceAuth_CredStoreErrorScrubbed verifies that the wire
-// Error.Message returned to the client when the credential store fails
-// contains a fixed, generic string and never echoes the underlying error
-// text. This is defense-in-depth: a future contributor wrapping the err
-// with token material in fmt.Errorf must not be able to leak it through
-// the gRPC stream.
+// TestStartChatGPTDeviceAuth_CredStoreErrorScrubbed verifie...
 func TestStartChatGPTDeviceAuth_CredStoreErrorScrubbed(t *testing.T) {
 	t.Parallel()
 

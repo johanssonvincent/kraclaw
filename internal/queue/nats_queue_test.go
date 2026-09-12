@@ -377,9 +377,7 @@ func TestNATSQueuePeekThenDequeue(t *testing.T) {
 	}
 }
 
-// TestNATSQueueDequeue_MalformedMessage verifies that Dequeue returns a non-nil
-// error when the queued payload is not valid JSON, and that a subsequent valid
-// message can still be dequeued successfully (gap 9).
+// TestNATSQueueDequeue_MalformedMessage verifies that Deque...
 func TestNATSQueueDequeue_MalformedMessage(t *testing.T) {
 	q, _ := setupNATSQueue(t)
 	ctx := context.Background()
@@ -586,9 +584,7 @@ func TestNATSQueueStreamCorruptionRecovery(t *testing.T) {
 				t.Errorf("Len before = %d, want 1", n)
 			}
 
-			// Simulate stream update (broker recovers from misconfiguration).
-			// ensureStream on the same queue should handle this transparently by
-			// idempotently updating the stream config.
+// Simulate stream update (broker recovers from misconfigura...
 			_, _, err = q.ensureStream(ctx, group)
 			if err != nil {
 				t.Fatalf("ensureStream (recovery): %v", err)
@@ -640,10 +636,7 @@ func TestNATSQueueStreamCorruptionRecovery(t *testing.T) {
 	}
 }
 
-// TestNATSQueueMultiGroupIsolation verifies that per-group streams are
-// isolated: enqueuing messages for two different groupJIDs on the same
-// NATSQueue must not cause cross-delivery. Each group's Dequeue returns
-// only its own message.
+// TestNATSQueueMultiGroupIsolation verifies that per-group ...
 func TestNATSQueueMultiGroupIsolation(t *testing.T) {
 	q, _ := setupNATSQueue(t)
 	ctx := context.Background()
@@ -702,9 +695,7 @@ func TestNATSQueueMultiGroupIsolation(t *testing.T) {
 	}
 }
 
-// TestNATSQueueDequeueContextCancellation verifies that Dequeue honours
-// context cancellation: a pre-cancelled context returns promptly, and a
-// Dequeue blocked on an empty queue returns when its context is cancelled.
+// TestNATSQueueDequeueContextCancellation verifies that Deq...
 func TestNATSQueueDequeueContextCancellation(t *testing.T) {
 	q, _ := setupNATSQueue(t)
 	group := "cancel-test@g.us"
@@ -734,9 +725,7 @@ func TestNATSQueueDequeueContextCancellation(t *testing.T) {
 	}
 }
 
-// TestNATSQueueDequeue_ConsumerEvictionOnDelete verifies that Dequeue self-heals
-// after the durable consumer is deleted server-side: the stale cache entry is
-// evicted on the failing call, and the consumer is recreated on the next call.
+// TestNATSQueueDequeue_ConsumerEvictionOnDelete verifies th...
 func TestNATSQueueDequeue_ConsumerEvictionOnDelete(t *testing.T) {
 	q, _ := setupNATSQueue(t)
 	ctx := context.Background()

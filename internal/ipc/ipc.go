@@ -21,22 +21,16 @@ const (
 	IPCSetModel      IPCMessageType = "set_model"
 	IPCShutdown      IPCMessageType = "shutdown"
 
-	// DefaultAgentID is the well-known agent identifier used for the primary
-	// agent in each group. All call sites must reference this constant instead
-	// of the bare string "main".
+// DefaultAgentID is the well-known agent identifier used fo...
 	DefaultAgentID = "main"
 )
 
-// StreamMaxAge is the max age for IPC JetStream streams. Exported so pkg/agent
-// and internal/ipc can share it without duplication. Set to 1 hour to limit
-// historical message retention and prevent unbounded stream growth.
+// StreamMaxAge is the max age for IPC JetStream streams. Ex...
 const (
 	StreamMaxAge = time.Hour
 )
 
-// SanitizeGroupID returns the first 16 bytes of the SHA-256 hex digest of the
-// group JID (32 hex characters). Exported so pkg/agent can reuse it without
-// duplication.
+// SanitizeGroupID returns the first 16 bytes of the SHA-256...
 func SanitizeGroupID(groupJID string) string {
 	h := sha256.Sum256([]byte(groupJID))
 
@@ -47,10 +41,7 @@ func SanitizeGroupID(groupJID string) string {
 // Compiled once at package init for performance.
 var agentIDUnsafeRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
-// SanitizeAgentID replaces any character not in [a-zA-Z0-9_-] with "_" and
-// truncates the result to 32 characters. Safe IDs (e.g. "main") are returned
-// unchanged. This prevents NATS subject and durable-name injection when an
-// agentID contains dots, slashes, spaces, or wildcards.
+// SanitizeAgentID replaces any character not in [a-zA-Z0-9_...
 func SanitizeAgentID(agentID string) string {
 	safe := agentIDUnsafeRe.ReplaceAllString(agentID, "_")
 	if len(safe) > 32 {
@@ -75,16 +66,11 @@ type IPCBroker interface {
 	SendInput(ctx context.Context, group, agentID string, msg *IPCMessage) error
 	// PublishOutput sends a message from an agent to the server.
 	PublishOutput(ctx context.Context, group, agentID string, msg *IPCMessage) error
-	// SubscribeOutput returns a channel receiving output from all agents in a group (wildcard).
-	// The second return value is an error channel that receives the terminal error when the
-	// consume goroutine exits due to an iterator failure; callers should drain it when the
-	// message channel closes to obtain the root cause before reconnecting.
+// SubscribeOutput returns a channel receiving output from a...
 	SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, <-chan error, error)
 	// ReadInput returns a channel receiving input messages for a specific agent.
 	ReadInput(ctx context.Context, group, agentID string) (<-chan *IPCMessage, error)
-	// EnsureStreamForAgent provisions the per-group stream and the per-agent
-	// input consumer before any spawn so the agent can attach without paying
-	// CreateOrUpdate round-trips on boot.
+// EnsureStreamForAgent provisions the per-group stream and ...
 	EnsureStreamForAgent(ctx context.Context, group, agentID string) error
 	// DeleteStreams removes all IPC data for a group (all agents).
 	DeleteStreams(ctx context.Context, group string) error

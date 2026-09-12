@@ -162,9 +162,7 @@ type resolvedData struct {
 	upstreamURL *url.URL
 }
 
-// Proxy is a credential-injecting reverse proxy for AI provider APIs.
-// Agent containers connect here instead of directly to the upstream API,
-// so they never see real credentials.
+// Proxy is a credential-injecting reverse proxy for AI prov...
 type Proxy struct {
 	upstream             *url.URL
 	allowedHost          string          // upstream host for credential injection validation
@@ -200,10 +198,7 @@ func New(cfg config.ProxyConfig) (*Proxy, error) {
 	}, nil
 }
 
-// NewMultiProviderProxy creates a credential proxy that supports multiple
-// upstream providers via per-group credential resolution. When the resolver
-// is set and a request includes the X-Kraclaw-Group header, credentials are
-// resolved dynamically per request.
+// NewMultiProviderProxy creates a credential proxy that sup...
 func NewMultiProviderProxy(cfg config.ProxyConfig, resolver CredentialResolver) (*Proxy, error) {
 	if cfg.AnthropicUpstreamURL == "" {
 		cfg.AnthropicUpstreamURL = "https://api.anthropic.com"
@@ -376,9 +371,7 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 			pr.Out.URL.Host = p.upstream.Host
 			pr.Out.Host = p.upstream.Host
 
-			// Safety check: verify the target host matches the allowlist.
-			// This guards against programming errors or request manipulation
-			// that could route credentials to an unintended host.
+// Safety check: verify the target host matches the allowlist.
 			if pr.Out.URL.Host != p.allowedHost {
 				p.log.Error("blocked request to non-allowed host",
 					"target_host", pr.Out.URL.Host,
@@ -496,11 +489,7 @@ func (p *Proxy) metricsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// hostGuard rejects requests with a Host header that does not match the
-// proxy's own listen address or is explicitly targeting an external host.
-// This is a defense-in-depth measure against SSRF via Host header manipulation.
-// When a resolver is configured, the guard is bypassed since the upstream
-// changes dynamically per request based on the resolved provider.
+// hostGuard rejects requests with a Host header that does n...
 func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// When a resolver is set, the upstream is determined dynamically by the
@@ -526,9 +515,7 @@ func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 	})
 }
 
-// credentialMiddleware resolves credentials before the reverse proxy Director runs.
-// This allows returning proper HTTP errors when credential resolution fails,
-// which is not possible from inside the Director function.
+// credentialMiddleware resolves credentials before the reve...
 func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		groupJID := r.Header.Get("X-Kraclaw-Group")

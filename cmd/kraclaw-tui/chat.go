@@ -389,9 +389,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			input := strings.TrimSpace(m.chatInput.Value())
-			// :auth <provider> — re-authenticate the current group's OAuth
-			// credentials in place. Useful when refresh tokens are revoked or
-			// expire mid-session. Bare ":auth" surfaces a usage error.
+// :auth <provider> — re-authenticate the current group's OAuth
 			if isAuthCommand(input) {
 				parts := strings.Fields(input)
 				if len(parts) < 2 {
@@ -480,9 +478,7 @@ func (m model) updateChat(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleLocalCommand intercepts composer text that begins with ":" so users
-// can change the theme without sending traffic to the agent. Returns true
-// when the input was consumed locally.
+// handleLocalCommand intercepts composer text that begins w...
 func (m *model) handleLocalCommand(text string) (tea.Cmd, bool) {
 	if !strings.HasPrefix(text, ":") {
 		return nil, false

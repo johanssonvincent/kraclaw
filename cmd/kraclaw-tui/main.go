@@ -272,9 +272,7 @@ type model struct {
 func (m model) calculateLayout() layoutDims {
 	d := layoutDims{}
 
-	// Vertical budget: tab bar (1) + gap (1) + key bar (1) + status bar (1) +
-	// group header (1) + composer meta (1) + composer box (5) = 11.
-	// We only reserve for chat when chatting; non-chat tabs reserve 4.
+// Vertical budget: tab bar (1) + gap (1) + key bar (1) + st...
 	reservedVertical := 4
 	if m.activeTab == tabMessages && m.chatState == chatStateChatting {
 		reservedVertical = 11

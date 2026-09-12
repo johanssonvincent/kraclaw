@@ -946,9 +946,7 @@ func TestCredentialStore_AcceptsCipherInterface(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Compile-time check: *fakeCipher must satisfy the encrypter interface so
-	// that the enc field accepts it. The assignment below fails to compile if
-	// the interface is not satisfied.
+// Compile-time check: *fakeCipher must satisfy the encrypte...
 	store := &CredentialStore{db: db, enc: &fakeCipher{}}
 	_ = store
 }

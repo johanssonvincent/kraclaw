@@ -719,9 +719,7 @@ func TestExecutorErrorOnceTaskNotRetried(t *testing.T) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	// Once-task semantics win over retry: the run is already claimed as
-	// completed, and re-firing a once-task on a timer would violate its
-	// contract. The failure lives in LastResult and the run log.
+// Once-task semantics win over retry: the run is already cl...
 	last := ms.updateCalls[len(ms.updateCalls)-1]
 	if last.Status != store.TaskCompleted {
 		t.Errorf("final Status = %q, want %q", last.Status, store.TaskCompleted)

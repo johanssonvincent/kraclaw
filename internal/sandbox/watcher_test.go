@@ -18,9 +18,7 @@ import (
 )
 
 func TestWatchSandboxes_ListBeforeWatch(t *testing.T) {
-	// Verify that WatchSandboxes uses List+Watch pattern (List first to get resourceVersion,
-	// then Watch from that point). The fake client supports this; we verify the function
-	// succeeds and that created resources are observed (proving Watch is active from List's RV).
+// Verify that WatchSandboxes uses List+Watch pattern (List ...
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
@@ -331,9 +329,7 @@ func TestWatchMapping_Lifecycle(t *testing.T) {
 	}
 }
 
-// TestRecordPhaseTransitions exercises the phase histogram recording and its
-// data-quality guards. Cases are NOT run in parallel: they assert deltas on the
-// process-global SandboxSpawnDuration histogram.
+// TestRecordPhaseTransitions exercises the phase histogram ...
 func TestRecordPhaseTransitions(t *testing.T) {
 	cond := func(typ string, status metav1.ConditionStatus, ltt time.Time) metav1.Condition {
 		c := metav1.Condition{Type: typ, Status: status}

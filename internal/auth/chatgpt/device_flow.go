@@ -14,9 +14,7 @@ import (
 	"time"
 )
 
-// DeviceCode is the result of starting the device flow. The verification URL
-// and user code go to the human; device_auth_id stays in the client and is
-// fed back to the polling endpoint.
+// DeviceCode is the result of starting the device flow. The...
 type DeviceCode struct {
 	UserCode        string
 	VerificationURL string
@@ -25,11 +23,7 @@ type DeviceCode struct {
 	deviceAuthID string
 }
 
-// AuthorizationCode is the intermediate artefact returned by the device-token
-// poll once the user has approved. It is exchanged at /oauth/token via
-// ExchangeCode for the final token bundle. CodeVerifier is the PKCE secret
-// sent during the exchange; the server-side challenge is never consumed by
-// this client.
+// AuthorizationCode is the intermediate artefact returned b...
 type AuthorizationCode struct {
 	Code         string
 	CodeVerifier string
@@ -42,22 +36,16 @@ type Tokens struct {
 	IDToken      string
 	IDClaims     IDTokenClaims
 
-	// ExpiresAt is the absolute token expiry. Zero when the server returned
-	// neither id_token.exp nor expires_in; callers must check HasExpiry
-	// rather than comparing ExpiresAt to time.Now directly.
+// ExpiresAt is the absolute token expiry. Zero when the ser...
 	ExpiresAt time.Time
 }
 
-// HasExpiry reports whether the server returned a usable expiry for these
-// tokens. False means the absolute expiry is unknown; callers should treat
-// the access token as "validity managed server-side" and refresh proactively.
+// HasExpiry reports whether the server returned a usable ex...
 func (t *Tokens) HasExpiry() bool {
 	return !t.ExpiresAt.IsZero()
 }
 
-// userCodeResponse is the device-auth/usercode JSON envelope. interval is
-// decoded via intervalString because observed responses encode it as either
-// a JSON number or string.
+// userCodeResponse is the device-auth/usercode JSON envelop...
 type userCodeResponse struct {
 	DeviceAuthID string         `json:"device_auth_id"`
 	UserCode     string         `json:"user_code"`
@@ -187,11 +175,7 @@ func (c *Client) RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	return dc, nil
 }
 
-// PollOnce performs a single poll of the device-token endpoint. It returns
-// the authorization code on success, ErrAuthorizationPending when the user
-// has not yet approved, or ErrSlowDown when the server asks the client to
-// back off. See pollPendingCode for the status codes treated as pending.
-// Any other failure is returned wrapped.
+// PollOnce performs a single poll of the device-token endpo...
 func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCode, error) {
 	if dc == nil || dc.deviceAuthID == "" || dc.UserCode == "" {
 		return nil, fmt.Errorf("chatgpt: device code is empty")
@@ -271,13 +255,7 @@ func (c *Client) PollOnce(ctx context.Context, dc *DeviceCode) (*AuthorizationCo
 	return nil, &errBadStatus{Status: resp.StatusCode, Body: string(respBody), URL: endpoint}
 }
 
-// pollTerminalCode returns ErrAccessDenied if the response body carries a
-// terminal RFC 8628 error ("access_denied" or "expired_token"); otherwise
-// returns nil. Inspected only on the same status range as pollPendingCode.
-// The second return value is the json.Unmarshal error if the body was
-// non-empty but unparseable, so callers can log it at debug. A nil second
-// return means either the body parsed cleanly or the status was outside the
-// inspected range.
+// pollTerminalCode returns ErrAccessDenied if the response ...
 func pollTerminalCode(status int, body []byte) (error, error) {
 	if !pollErrorStatus(status) {
 		return nil, nil
@@ -292,12 +270,7 @@ func pollTerminalCode(status int, body []byte) (error, error) {
 	return nil, parseErr
 }
 
-// pollPendingCode returns a pending error code from a device-token response,
-// or "" if the response is not a pending error. HTTP 400 is the RFC-conformant
-// status; 403/404 are accepted for OpenAI/Codex backends that use equivalent
-// pending bodies at different status values. The second return value is the
-// json.Unmarshal error if the body was non-empty but unparseable, so callers
-// can log it at debug.
+// pollPendingCode returns a pending error code from a devic...
 func pollPendingCode(status int, body []byte) (string, error) {
 	if !pollErrorStatus(status) {
 		return "", nil
@@ -350,10 +323,7 @@ func normalizePollErrorCode(code string) string {
 	return strings.ToLower(strings.TrimSpace(code))
 }
 
-// PollUntilCode loops PollOnce on the device-code interval until the user
-// approves, the context is cancelled, or PollTimeout elapses. The optional
-// onTick callback fires once per pending poll so callers (e.g. the gRPC
-// streaming RPC) can emit heartbeats; nil disables it.
+// PollUntilCode loops PollOnce on the device-code interval ...
 func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func()) (*AuthorizationCode, error) {
 	if dc == nil {
 		return nil, fmt.Errorf("chatgpt: device code is nil")
@@ -379,9 +349,7 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 		case errors.Is(err, ErrAuthorizationPending):
 			// fall through to pending-handling below
 		default:
-			// Parent ctx takes precedence: if the caller's ctx is already
-			// done, surface their error rather than attributing it to our
-			// internal PollTimeout.
+// Parent ctx takes precedence: if the caller's ctx is already
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -424,9 +392,7 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 	}
 }
 
-// ExchangeCode trades an AuthorizationCode for the final OAuth token bundle.
-// The token endpoint expects an x-www-form-urlencoded body matching the
-// authorization-code grant with PKCE.
+// ExchangeCode trades an AuthorizationCode for the final OA...
 func (c *Client) ExchangeCode(ctx context.Context, code *AuthorizationCode) (*Tokens, error) {
 	if code == nil || code.Code == "" || code.CodeVerifier == "" {
 		return nil, fmt.Errorf("chatgpt: authorization code is empty")

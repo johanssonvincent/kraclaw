@@ -11,9 +11,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 )
 
-// TUI implements the channel.Channel interface for the TUI client.
-// It is a passive channel activated by gRPC connections rather than
-// an external messaging platform.
+// TUI implements the channel.Channel interface for the TUI ...
 type TUI struct {
 	cfg       channel.ChannelConfig
 	mu        sync.Mutex
@@ -96,9 +94,7 @@ func (t *TUI) SendMessage(_ context.Context, jid string, text string) error {
 	return nil
 }
 
-// HandleInbound processes an inbound message from the TUI client.
-// This is NOT part of the Channel interface -- it is called by the
-// gRPC handler. Returns an error if the channel config has not been set yet.
+// HandleInbound processes an inbound message from the TUI c...
 func (t *TUI) HandleInbound(jid, sender, senderName, content string) error {
 	t.mu.Lock()
 	onMessage := t.cfg.OnMessage
@@ -128,9 +124,7 @@ func (t *TUI) HandleInbound(jid, sender, senderName, content string) error {
 	return nil
 }
 
-// Subscribe creates a buffered channel for receiving messages on the
-// given JID. It returns the receive-only channel and an unsubscribe
-// function that removes the channel from the subscriber map and closes it.
+// Subscribe creates a buffered channel for receiving messag...
 func (t *TUI) Subscribe(jid string) (<-chan string, func()) {
 	ch := make(chan string, 64)
 
@@ -158,9 +152,7 @@ func (t *TUI) Subscribe(jid string) (<-chan string, func()) {
 				break
 			}
 		}
-		// Only close if we found and removed the channel. If Disconnect
-		// already closed it (and removed it from the map), skip the close
-		// to avoid a double-close panic.
+// Only close if we found and removed the channel. If Discon...
 		if found {
 			close(ch)
 		}

@@ -99,10 +99,7 @@ func (s *Scheduler) poll(ctx context.Context) {
 		wg.Add(1)
 		go func(t store.ScheduledTask) {
 			defer wg.Done()
-			// If ctx is cancelled while waiting for a slot, Acquire returns an
-			// error and runTask is skipped. The task row is left untouched
-			// (LastRun/NextRun unchanged), so GetDueTasks will re-surface it on
-			// the next poll tick provided NextRun is still in the past.
+// If ctx is cancelled while waiting for a slot, Acquire ret...
 			if err := s.semaphore.Acquire(ctx, 1); err != nil {
 				s.log.Error("semaphore acquire cancelled", "task_id", t.ID, "error", err)
 
@@ -198,12 +195,7 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 	}
 
 	task.LastResult = &outcome
-	// Once-task semantics win over retry: the run is already claimed as
-	// completed, and re-firing a once-task on a timer would violate its
-	// contract. For recurring tasks, compensate the advance-first claim by
-	// pulling the task back into the due set after a short backoff so the
-	// failure is retried; Status stays active and LastResult records the
-	// error.
+// Once-task semantics win over retry: the run is already cl...
 	if err != nil && task.ScheduleType != store.ScheduleOnce {
 		retryAt := time.Now().Add(1 * time.Minute)
 		task.NextRun = &retryAt
