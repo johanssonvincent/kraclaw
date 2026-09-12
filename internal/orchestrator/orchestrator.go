@@ -850,12 +850,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 	}
 }
 
-// claimSandboxSlot atomically reserves an in-flight slot for chatJID.
-// Returns (release, true) if the caller won the claim; returns (nil, false)
-// if another goroutine already holds it. When ok is true, callers MUST
-// invoke release() exactly once — typically via defer — when done. When
-// ok is false, release is nil and must not be called.
-// Calling release() more than once logs an Error-level message with a "BUG:" prefix but does not panic.
+// claimSandboxSlot reserves an in-flight spawn slot.
 func (o *Orchestrator) claimSandboxSlot(chatJID string) (func(), bool) {
 	if _, loaded := o.inflightSandboxes.LoadOrStore(chatJID, struct{}{}); loaded {
 		return nil, false
@@ -1364,9 +1359,7 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 	}
 }
 
-// watchGroupOutput subscribes to IPC output for a single group and processes messages.
-// It also periodically checks that the agent Job still exists to avoid getting stuck
-// if the agent dies without sending a shutdown message.
+// watchGroupOutput monitors IPC output and agent liveness.
 func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
 	o.mu.Lock()
 	group, ok := o.registeredGroups[chatJID]
@@ -1729,8 +1722,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 	}
 }
 
-// handleIPCMessage processes a single IPC message from an agent.
-// Returns true if the agent has shut down and the watcher should stop.
+// handleIPCMessage processes IPC messages and handles agent lifecycle.
 func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, group store.Group, msg *ipc.IPCMessage) bool {
 	switch msg.Type {
 	case ipc.IPCMessageText:
@@ -1876,8 +1868,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 	return false
 }
 
-// hasTriggerMessage checks whether any message in the batch matches the group's
-// trigger pattern and is from an allowed sender.
+// hasTriggerMessage checks if messages match the group's trigger pattern.
 func (o *Orchestrator) hasTriggerMessage(ctx context.Context, chatJID string, group store.Group, messages []store.Message) (bool, error) {
 	for _, m := range messages {
 		if o.router.MatchesTrigger(m.Content, group.TriggerPattern) {
@@ -1895,7 +1886,7 @@ func (o *Orchestrator) hasTriggerMessage(ctx context.Context, chatJID string, gr
 	return false, nil
 }
 
-// executeScheduledTask is the TaskExecutor callback for the scheduler.
+// executeScheduledTask is the scheduler's executor callback.
 func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.ScheduledTask) error {
 	now := time.Now().UTC()
 	msgID := uuid.New().String()
