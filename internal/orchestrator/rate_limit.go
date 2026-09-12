@@ -7,8 +7,6 @@ import (
 )
 
 // TokenBucket implements a per-group token bucket rate limiter.
-// Tokens refill at capacity-per-second continuously; excess is capped at capacity.
-// TryAcquire is safe for concurrent use.
 type TokenBucket struct {
 	capacity     int64
 	tokens       float64

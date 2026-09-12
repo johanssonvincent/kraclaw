@@ -163,8 +163,6 @@ type resolvedData struct {
 }
 
 // Proxy is a credential-injecting reverse proxy for AI provider APIs.
-// Agent containers connect here instead of directly to the upstream API,
-// so they never see real credentials.
 type Proxy struct {
 	upstream             *url.URL
 	allowedHost          string          // upstream host for credential injection validation
@@ -200,10 +198,7 @@ func New(cfg config.ProxyConfig) (*Proxy, error) {
 	}, nil
 }
 
-// NewMultiProviderProxy creates a credential proxy that supports multiple
-// upstream providers via per-group credential resolution. When the resolver
-// is set and a request includes the X-Kraclaw-Group header, credentials are
-// resolved dynamically per request.
+// NewMultiProviderProxy creates a credential proxy that supports multiple.
 func NewMultiProviderProxy(cfg config.ProxyConfig, resolver CredentialResolver) (*Proxy, error) {
 	if cfg.AnthropicUpstreamURL == "" {
 		cfg.AnthropicUpstreamURL = "https://api.anthropic.com"
@@ -376,9 +371,7 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 			pr.Out.URL.Host = p.upstream.Host
 			pr.Out.Host = p.upstream.Host
 
-			// Safety check: verify the target host matches the allowlist.
-			// This guards against programming errors or request manipulation
-			// that could route credentials to an unintended host.
+// Safety check: verify the target host matches the allowlist.
 			if pr.Out.URL.Host != p.allowedHost {
 				p.log.Error("blocked request to non-allowed host",
 					"target_host", pr.Out.URL.Host,
@@ -421,10 +414,7 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 				_ = resp.Body.Close()
 
 				if len(body) > maxUpstreamErrorBodyBytes {
-					// Body exceeded the cap: restore the already-buffered prefix as a
-					// bounded body (the original stream is consumed) so the client
-					// still receives an error instead of an empty response, and drop
-					// Content-Length since it no longer matches.
+// Body exceeded the cap: restore the already-buffered prefix as a.
 					p.log.Warn("upstream error body exceeded buffer cap, truncating",
 						"status", resp.StatusCode,
 						"content_type", resp.Header.Get("Content-Type"),
@@ -516,20 +506,10 @@ func (p *Proxy) metricsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// hostGuard rejects requests with a Host header that does not match the
-// proxy's own listen address or is explicitly targeting an external host.
-// This is a defense-in-depth measure against SSRF via Host header manipulation.
-// When a resolver is configured, the guard still validates the upstream target
-// against the allowed hosts to prevent bypassing the allowlist via resolver mode.
+// hostGuard rejects requests with a Host header that does not match the.
 func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// When a resolver is set, the upstream is determined dynamically by the
-		// Director, which validates the resolved upstream against
-		// allowedUpstreamHosts. Here we only reject absolute-URI request
-		// targets (r.URL.Host set) pointing at hosts outside the allowlist —
-		// the Host header is NOT checked because agents address the proxy by
-		// its own hostname (e.g. kraclaw-credproxy:3001), which is never an
-		// upstream host.
+// When a resolver is set, the upstream is determined dynamically by the.
 		if p.resolver != nil && r.URL.Host != "" &&
 			len(p.allowedUpstreamHosts) > 0 && !p.allowedUpstreamHosts[r.URL.Host] {
 			p.log.Warn("rejected request with non-allowed target host in resolver mode",
@@ -557,9 +537,7 @@ func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 	})
 }
 
-// credentialMiddleware resolves credentials before the reverse proxy Director runs.
-// This allows returning proper HTTP errors when credential resolution fails,
-// which is not possible from inside the Director function.
+// credentialMiddleware resolves credentials before the reverse proxy Director...
 func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		groupJID := r.Header.Get("X-Kraclaw-Group")
