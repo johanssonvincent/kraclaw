@@ -17,8 +17,6 @@ const (
 )
 
 // Valid reports whether m is a known, non-empty auth mode.
-// Empty string is NOT valid — legacy row reads coerce "" to AuthModeAPIKey
-// inside GetCredential before this check applies.
 func (m AuthMode) Valid() bool {
 	switch m {
 	case AuthModeAPIKey, AuthModeChatGPT:
@@ -29,13 +27,9 @@ func (m AuthMode) Valid() bool {
 }
 
 // ErrNoChatGPTCredential signals that RefreshChatGPTTokens updated zero rows,
-// meaning the target group has no chatgpt-mode credential. Wrapped by the
-// refresh path only; GetCredential returns (nil, nil) for missing rows.
 var ErrNoChatGPTCredential = errors.New("no chatgpt credential for group")
 
 // encrypter is the encryption contract CredentialStore relies on. It exists so
-// tests can inject fakes that return errors from Encrypt/Decrypt — the real
-// *Encryptor satisfies this interface.
 type encrypter interface {
 	Encrypt(plaintext string) (string, error)
 	Decrypt(ciphertext string) (string, error)
@@ -52,10 +46,6 @@ type ChatGPTTokens struct {
 }
 
 // Credential represents per-group provider credentials.
-//
-// Construct via NewAPIKeyCredential or NewChatGPTCredential. The payload is
-// intentionally unexported so "both APIKey and ChatGPT populated" is
-// unrepresentable at the type level — the constructors enforce the xor.
 type Credential struct {
 	GroupJID string
 	Provider string
@@ -122,8 +112,6 @@ func (c *Credential) Validate() error {
 }
 
 // validateForRead validates structural invariants only — it does NOT reject
-// expired chatgpt tokens. An expired access token is the normal precondition
-// for a refresh, so reads must succeed for the refresh flow to work.
 func (c *Credential) validateForRead() error {
 	if c.GroupJID == "" {
 		return fmt.Errorf("credential: group JID is required")
@@ -220,9 +208,6 @@ func (t *ChatGPTTokens) validateFresh() error {
 }
 
 // validate keeps the pre-split contract for the construction path:
-// structure + freshness. Callers that read persisted rows should call
-// validateStructure directly — an expired access token is the normal
-// trigger for the refresh flow, not an error.
 func (t *ChatGPTTokens) validate() error {
 	if err := t.validateStructure(); err != nil {
 		return err
@@ -238,13 +223,6 @@ type CredentialStore struct {
 }
 
 // NewCredentialStore creates a credential store backed by MySQL.
-//
-// The DSN must include loc=UTC&parseTime=true. oauth_expires_at is stored as
-// DATETIME (timezone-naive at the SQL layer); freshness comparisons rely on
-// round-tripping through UTC. A Local-configured DSN silently shifts stored
-// expiries by the server's offset, which can mis-classify fresh vs expired
-// tokens by up to 24 hours. NewCredentialStore issues one probe query to
-// catch the most common misconfiguration early.
 func NewCredentialStore(db *sql.DB, enc *Encryptor) (*CredentialStore, error) {
 	if db == nil {
 		return nil, fmt.Errorf("credential store: database connection is required")
@@ -263,8 +241,6 @@ func NewCredentialStore(db *sql.DB, enc *Encryptor) (*CredentialStore, error) {
 }
 
 // probeTimezone verifies the DB driver returns timestamps in UTC. Any
-// non-UTC location signals a DSN misconfiguration that would silently
-// corrupt oauth_expires_at comparisons.
 func (s *CredentialStore) probeTimezone() error {
 	var got time.Time
 	if err := s.db.QueryRow("SELECT TIMESTAMP('2000-01-01 00:00:00')").Scan(&got); err != nil {
@@ -395,10 +371,7 @@ func (s *CredentialStore) decryptChatGPTTokens(
 			return nil, fmt.Errorf("decrypt id token for group %q: %w", groupJID, err)
 		}
 	}
-	// oauth_is_fedramp is declared NOT NULL DEFAULT FALSE in the up migration,
-	// so isFedRAMP.Valid is always true. We read through sql.NullBool only
-	// because the scan target must accept the DB boolean type; the .Bool value
-	// is the source of truth.
+// oauth_is_fedramp is declared NOT NULL DEFAULT FALSE in the up migration,
 	return &ChatGPTTokens{
 		AccessToken:  access,
 		RefreshToken: refresh,
@@ -425,9 +398,7 @@ func (s *CredentialStore) UpsertCredential(ctx context.Context, cred *Credential
 		if err != nil {
 			return fmt.Errorf("encrypt api key: %w", err)
 		}
-		// REPLACE is load-bearing: DELETE+INSERT clears any prior-mode oauth_* columns
-		// when a group switches from chatgpt to api_key mode. ON DUPLICATE KEY UPDATE
-		// would leave stale encrypted tokens in place.
+// REPLACE is load-bearing: DELETE+INSERT clears any prior-mode oauth_* columns
 		if _, err := s.db.ExecContext(ctx, `
             REPLACE INTO credentials (
                 group_jid, provider, auth_mode, api_key_encrypted
@@ -481,9 +452,7 @@ func (s *CredentialStore) upsertChatGPT(ctx context.Context, groupJID, provider 
 
 		idEnc = sql.NullString{String: v, Valid: true}
 	}
-	// REPLACE is load-bearing: clearing api_key_encrypted (explicit NULL below)
-	// and any oauth_* columns when the group switches modes. INSERT ...
-	// ON DUPLICATE KEY UPDATE would leave the prior api_key ciphertext in place.
+// REPLACE is load-bearing: clearing api_key_encrypted (explicit NULL below)
 	if _, err := s.db.ExecContext(ctx, `
         REPLACE INTO credentials (
             group_jid, provider, auth_mode, api_key_encrypted,
@@ -499,9 +468,7 @@ func (s *CredentialStore) upsertChatGPT(ctx context.Context, groupJID, provider 
 	return nil
 }
 
-// RefreshChatGPTTokens atomically replaces the OAuth token triple, expiry, account ID,
-// and FedRAMP flag for an existing chatgpt-mode credential. A refresh response that
-// re-issues the id_token with new claims is honoured.
+// RefreshChatGPTTokens atomically replaces the OAuth token triple, expiry, acco...
 func (s *CredentialStore) RefreshChatGPTTokens(ctx context.Context, groupJID string, tokens *ChatGPTTokens) error {
 	if groupJID == "" {
 		return fmt.Errorf("refresh chatgpt tokens: group JID is required")

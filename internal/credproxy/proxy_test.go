@@ -868,10 +868,7 @@ func TestProxy_ResolverModeSSRFProtection(t *testing.T) {
 		t.Fatalf("expected 403 for forbidden host in URL, got %d", w.Code)
 	}
 
-	// A spoofed Host header must NOT be rejected here: it cannot reroute the
-	// request (the Director sets the upstream from the resolved credential),
-	// and real agent traffic addresses the proxy by its own hostname. It
-	// should flow through and fail upstream auth if anything.
+// A spoofed Host header must NOT be rejected here: it cannot reroute the
 	req = httptest.NewRequest("POST", "/v1/messages", nil)
 	req.Header.Set("X-Kraclaw-Group", "discord:123")
 	req.Header.Set("Host", "evil.example.com")

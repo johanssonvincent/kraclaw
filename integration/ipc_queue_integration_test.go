@@ -12,8 +12,6 @@ import (
 )
 
 // mockGAS satisfies the unexported queue.groupActiveStore interface via Go
-// structural typing, allowing the integration test to create NATSQueue without
-// a real MySQL store.
 type mockGAS struct {
 	mu     sync.Mutex
 	active map[string]bool
@@ -162,12 +160,7 @@ func TestNATSIPCAndQueueRoundTrip(t *testing.T) {
 		}
 	})
 
-	// subscribe-before-publish regression: LimitsPolicy IPC streams with DeliverAllPolicy
-	// require a consumer to exist before publish, otherwise messages are lost
-	// (InterestPolicy regression). This sub-test guards that SubscribeOutput
-	// (which creates the durable consumer) is always called before PublishOutput.
-	t.Run("subscribe-before-publish regression", func(t *testing.T) {
-		broker, err := ipc.NewNATSBroker(env.natsConn, nil)
+// subscribe-before-publish regression: LimitsPolicy IPC streams with DeliverAll...
 		if err != nil {
 			t.Fatalf("NewNATSBroker: %v", err)
 		}

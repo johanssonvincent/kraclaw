@@ -17,8 +17,6 @@ type QueueMessage struct {
 }
 
 // NewQueueMessage creates a QueueMessage, validating that GroupJID is non-empty.
-// An empty GroupJID would route to a deterministic-but-wrong stream derived from
-// SanitizeGroupID(""), silently processing the wrong group's queue.
 func NewQueueMessage(groupJID, content string) (*QueueMessage, error) {
 	if groupJID == "" {
 		return nil, fmt.Errorf("queue message: GroupJID must not be empty")
@@ -28,8 +26,6 @@ func NewQueueMessage(groupJID, content string) (*QueueMessage, error) {
 }
 
 // groupActiveStore is the subset of the store package needed by NATSQueue for
-// active group tracking. Using a local interface avoids an import cycle and
-// makes NATSQueue easy to test with a mock.
 type groupActiveStore interface {
 	MarkGroupActive(ctx context.Context, jid string) error
 	MarkGroupInactive(ctx context.Context, jid string) error

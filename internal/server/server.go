@@ -31,8 +31,6 @@ import (
 )
 
 // ErrAuthConfigIncomplete signals that AuthConfig has only one of
-// ChatGPT/Credentials set. Both must be present (or both nil) so the
-// AuthService is either fully wired or absent — no silent half-config.
 var ErrAuthConfigIncomplete = errors.New("server: AuthConfig requires both ChatGPT and Credentials")
 
 // AuthConfig groups the dependencies the AuthService needs. nil disables
@@ -237,9 +235,7 @@ const grpcStopTimeout = 10 * time.Second
 func (s *Server) Stop(ctx context.Context) {
 	s.log.Info("shutting down servers")
 
-	// Run grpcServer.GracefulStop in a goroutine so a stuck streaming RPC
-	// cannot block shutdown forever: race it against a timeout and the
-	// caller's ctx, and hard-stop on either.
+// Run grpcServer.GracefulStop in a goroutine so a stuck streaming RPC
 
 	done := make(chan struct{})
 

@@ -14,16 +14,6 @@ import (
 )
 
 // authService orchestrates the ChatGPT OAuth device-code flow:
-//
-//  1. RequestDeviceCode at the issuer — emit DeviceCode to the client.
-//  2. PollUntilCode while the user approves — emit a Tick on each heartbeat.
-//  3. ExchangeCode for the token bundle.
-//  4. Persist via CredentialStore.UpsertChatGPTCredential.
-//  5. Emit Success with the parsed account_id and absolute expiry.
-//
-// On any failure between steps 1 and 4 the service emits a single terminal
-// Error event and returns nil — the stream itself is not used to surface
-// errors so a TUI never has to translate gRPC status codes into UX.
 type authService struct {
 	kraclawv1.UnimplementedAuthServiceServer
 
@@ -142,8 +132,6 @@ func (s *authService) StartChatGPTDeviceAuth(req *kraclawv1.StartChatGPTDeviceAu
 }
 
 // sendError emits an Error event terminating the stream and returns nil so
-// the gRPC layer reports the stream as cleanly closed (the error envelope is
-// in-band so the client can render it without translating status codes).
 func (s *authService) sendError(stream kraclawv1.AuthService_StartChatGPTDeviceAuthServer, code kraclawv1.DeviceAuthEvent_ErrorCode, msg string) error {
 	s.log.Warn("StartChatGPTDeviceAuth error", "code", code.String(), "msg", msg)
 
@@ -159,8 +147,6 @@ func (s *authService) sendError(stream kraclawv1.AuthService_StartChatGPTDeviceA
 }
 
 // errCodeFor maps a low-level error to the proto error code returned in a
-// terminal Error event. Order matters: ErrAccessDenied wins over context
-// errors so a wrapped sentinel still routes correctly.
 func errCodeFor(err error) kraclawv1.DeviceAuthEvent_ErrorCode {
 	switch {
 	case err == nil:

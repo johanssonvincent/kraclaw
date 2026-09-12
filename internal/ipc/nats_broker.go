@@ -33,22 +33,13 @@ func ipcOutputWildcard(sanitized string) string {
 	return "kraclaw.ipc." + sanitized + ".*.output"
 }
 
-// consumerCleanup pairs a context cancel function with its associated message iterator.
-// This ensures cleanup happens in the correct order: cancel context first (so goroutines
-// see ctx.Err() != nil), then stop iterator. Pairing them in a struct prevents accidental
-// out-of-order cleanup that could cause spurious error logs.
+// consumerCleanup pairs a context cancel function with its associated message i...
 type consumerCleanup struct {
 	cancel context.CancelFunc
 	iter   jetstream.MessagesContext
 }
 
 // NATSBroker implements IPCBroker using NATS JetStream.
-//
-// Per-group stream topology:
-//   - Stream name: KRACLAW_IPC_{sanitized_group}
-//   - Input subject:  kraclaw.ipc.{sanitized}.{sanitized_agent_id}.input
-//   - Output subject: kraclaw.ipc.{sanitized}.{sanitized_agent_id}.output
-//   - Server subscribes to wildcard: kraclaw.ipc.{sanitized}.*.output
 type NATSBroker struct {
 	nc     *nats.Conn
 	js     jetstream.JetStream
@@ -116,9 +107,6 @@ func (b *NATSBroker) ensureStream(ctx context.Context, group string) (string, er
 }
 
 // EnsureStreamForAgent provisions both the per-group IPC stream and the
-// per-agent input consumer. The orchestrator calls this before sandbox
-// creation so the agent can attach immediately on boot without paying
-// CreateOrUpdate round-trips itself.
 func (b *NATSBroker) EnsureStreamForAgent(ctx context.Context, group, agentID string) error {
 	sanitized, err := b.ensureStream(ctx, group)
 	if err != nil {
@@ -179,10 +167,6 @@ func (b *NATSBroker) SendInput(ctx context.Context, group, agentID string, msg *
 }
 
 // SubscribeOutput returns a channel that receives output from all agents in
-// the group via a durable wildcard pull consumer. The second return value is
-// an error channel that receives the terminal error when the goroutine exits
-// due to an iterator failure; callers should drain it when the message channel
-// closes to obtain the root cause.
 func (b *NATSBroker) SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, <-chan error, error) {
 	sanitized, err := b.ensureStream(ctx, group)
 	if err != nil {
@@ -260,8 +244,6 @@ func (b *NATSBroker) DeleteStreams(ctx context.Context, group string) error {
 }
 
 // StreamExists reports whether the per-group IPC stream is provisioned on the
-// broker; unlike the streamCreated cache it always consults the server, so it
-// reflects streams created before a broker restart.
 func (b *NATSBroker) StreamExists(ctx context.Context, group string) (bool, error) {
 	sanitized := sanitizeGroupID(group)
 	streamName := ipcStreamName(sanitized)
@@ -304,8 +286,6 @@ func (b *NATSBroker) Close() error {
 }
 
 // consume creates a goroutine that drains a JetStream consumer into a channel.
-// errCh receives the terminal error when the goroutine exits due to an iterator
-// failure. It is buffered (capacity 1) so the send never blocks.
 func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group string) (<-chan *IPCMessage, <-chan error, error) {
 	ch := make(chan *IPCMessage, 64)
 	errCh := make(chan error, 1)
@@ -335,10 +315,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 
 	done := make(chan struct{}) // closed when the consumer goroutine exits
 
-	// Stop the iterator when ctx is cancelled externally or when the consumer
-	// goroutine exits from an iter.Next() error. Without the done case, the
-	// watcher would block forever if the consumer exits before ctx is done —
-	// a goroutine leak per failed consumer.
+// Stop the iterator when ctx is cancelled externally or when the consumer
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -414,10 +391,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 					}
 
 					b.logger.Error("ack ipc message", "group", group, "sequence", seq, "error", err, "cause", "ack_failure")
-					// NAK so NATS redelivers promptly rather than waiting for AckWait
-					// expiry. The message was already sent on ch, so the current session
-					// has acted on it; the NAK ensures the message is redelivered to the
-					// next subscriber rather than silently dropped.
+// NAK so NATS redelivers promptly rather than waiting for AckWait
 					if nakErr := jmsg.Nak(); nakErr != nil {
 						b.logger.Error("nak after ack failure", "group", group, "sequence", seq, "error", nakErr)
 					}

@@ -228,9 +228,7 @@ func TestNATSDeleteStreams_CacheClearedOnDelete(t *testing.T) {
 		t.Fatalf("DeleteStreams: %v", err)
 	}
 
-	// Second publish must succeed. If streamCreated was not cleared, ensureStream
-	// would skip CreateOrUpdateStream, the publish would target a non-existent stream,
-	// and this call would fail — which was the bug before the fix.
+// Second publish must succeed. If streamCreated was not cleared, ensureStream
 	if err := broker.PublishOutput(ctx, group, "main", msg); err != nil {
 		t.Fatalf("PublishOutput after DeleteStreams: %v (streamCreated cache was not cleared)", err)
 	}
@@ -400,8 +398,6 @@ func TestSanitizeAgentID(t *testing.T) {
 }
 
 // TestNATSPublishBeforeConsumerDelivers verifies that a message published to
-// the input subject BEFORE a consumer calls ReadInput is still delivered.
-// This requires LimitsPolicy (not InterestPolicy) on the stream.
 func TestNATSPublishBeforeConsumerDelivers(t *testing.T) {
 	broker, _ := setupNATS(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -442,8 +438,6 @@ func TestNATSPublishBeforeConsumerDelivers(t *testing.T) {
 }
 
 // TestNATSBrokerMalformedMessageSkipped verifies that publishing non-JSON bytes
-// to the output subject does not crash the broker and that the next valid
-// message is still delivered.
 func TestNATSBrokerMalformedMessageSkipped(t *testing.T) {
 	broker, nc := setupNATS(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -709,10 +703,7 @@ func TestNATSBrokerConcurrentAgents(t *testing.T) {
 	// Track goroutine count before
 	goroutinesBefore := runtime.NumGoroutine()
 
-	// Publish input and output messages for all agents sequentially.
-	// Sequential ordering avoids triggering a data race in the embedded NATS
-	// server's internal advisory update path when multiple goroutines write to
-	// the same stream simultaneously.
+// Publish input and output messages for all agents sequentially.
 	for i := 1; i <= numAgents; i++ {
 		agentName := fmt.Sprintf("agent-%d", i)
 
@@ -795,13 +786,6 @@ func TestNATSBrokerConcurrentAgents(t *testing.T) {
 }
 
 // TestNATSBrokerMessageDeliveryAndRecovery verifies that consecutive messages
-// are delivered successfully through the broker. Historically this test was
-// framed as an "ACK failure" regression test, but embedded NATS cannot simulate
-// real ACK network failures — so the test only validates the happy-path: a
-// message is delivered, ACK'd, and a subsequent message is also delivered on
-// the same subscription. Since the C1 fix made the consume goroutine exit on
-// ACK failure (return instead of continue), any test that actually triggered
-// an ACK failure would see the channel close, not receive another message.
 func TestNATSBrokerMessageDeliveryAndRecovery(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -959,9 +943,6 @@ func (s *syncBuffer) String() string {
 }
 
 // TestNATSBrokerCloseCleanupOrdering verifies that Close() cancels contexts
-// before stopping iterators so that consume goroutines observe ctx.Err() != nil
-// when iter.Next() returns, preventing spurious "ipc message iterator error"
-// log lines. Also verifies all consume goroutines have exited after Close().
 func TestNATSBrokerCloseCleanupOrdering(t *testing.T) {
 	nc := startEmbeddedNATS(t)
 
@@ -1030,8 +1011,6 @@ func TestNATSBrokerCloseCleanupOrdering(t *testing.T) {
 }
 
 // TestNATSBrokerDeleteStreamsWithActiveConsumer verifies DeleteStreams can be
-// called while a consume goroutine is active for the target group, and that
-// the subscription channel is eventually closed.
 func TestNATSBrokerDeleteStreamsWithActiveConsumer(t *testing.T) {
 	broker, _ := setupNATS(t)
 
@@ -1126,8 +1105,6 @@ func TestNATSBroker_EnsureStreamForAgent(t *testing.T) {
 }
 
 // TestNATSBrokerSubscribeOutputErrCh verifies that when the underlying NATS
-// iterator fails with a non-context error, the errCh returned by SubscribeOutput
-// receives the terminal error and the message channel closes.
 func TestNATSBrokerSubscribeOutputErrCh(t *testing.T) {
 	// Start a NATS server we can shut down manually.
 	opts := &natserver.Options{

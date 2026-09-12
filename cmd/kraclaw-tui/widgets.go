@@ -83,8 +83,6 @@ func statusLine(cells []string, width int) string {
 }
 
 // bigMetric renders a two-line metric tile: a bold value with an optional
-// dim unit, with a dim caption beneath. Width is advisory; the returned
-// string is not padded.
 func bigMetric(value, unit, caption string) string {
 	v := bigMetricValueStyle.Render(value)
 	if unit != "" {

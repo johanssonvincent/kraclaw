@@ -1,7 +1,4 @@
 // Package chatgpt implements the OAuth 2.0 device-code flow and token refresh
-// for OpenAI's ChatGPT subscription. The public client id and endpoint paths
-// match the upstream Codex CLI (github.com/openai/codex) because there is no
-// alternative client id published for third-party integrations.
 package chatgpt
 
 import (
@@ -18,9 +15,7 @@ const (
 	// DefaultIssuer is the OAuth issuer hosting the ChatGPT auth endpoints.
 	DefaultIssuer = "https://auth.openai.com"
 
-	// ClientID is the OAuth client id shared with the Codex CLI. ChatGPT's
-	// device flow does not publish an alternative client id for third-party
-	// use.
+// ClientID is the OAuth client id shared with the Codex CLI. ChatGPT's
 	ClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 	// DefaultPollTimeout caps total polling at 15 minutes (upper bound on how
@@ -120,17 +115,11 @@ func NewClient(cfg Config) (*Client, error) {
 func (c *Client) Issuer() string { return c.issuer }
 
 // VerificationURL is the human-facing consent page where the user enters the
-// user_code. The device-flow endpoint does not return a verification_uri;
-// the path /codex/device is published out-of-band by OpenAI's auth server as
-// the approval UI bound to the Codex client id we reuse. If OpenAI rotates
-// that path, update both this method and the Codex CLI reference.
 func (c *Client) VerificationURL() string {
 	return c.issuer + "/codex/device"
 }
 
 // RedirectURI is the redirect URL the device-flow PKCE grant is bound to.
-// It mirrors the constant Codex uses; the browser is never actually sent here
-// during the device flow, but the OAuth token endpoint requires it to match.
 func (c *Client) RedirectURI() string {
 	return c.issuer + "/deviceauth/callback"
 }
@@ -147,16 +136,9 @@ func (e *errBadStatus) Error() string {
 }
 
 // ErrAuthorizationPending is returned by PollOnce while the user has not yet
-// approved the device code. Callers should sleep for the device-code interval
-// and retry.
 var ErrAuthorizationPending = errors.New("chatgpt: authorization pending")
 
 // ErrSlowDown is returned by PollOnce when the server responds with the
-// RFC 8628 "slow_down" error code. It wraps ErrAuthorizationPending, so
-// callers that only distinguish pending vs. non-pending can keep using
-// errors.Is(err, ErrAuthorizationPending). Callers that poll directly must
-// widen their interval by slowDownBackoff per RFC 8628 §3.5; PollUntilCode
-// does this automatically.
 var ErrSlowDown = fmt.Errorf("%w: slow_down", ErrAuthorizationPending)
 
 // slowDownBackoff is the RFC 8628 §3.5 mandatory interval bump applied on
@@ -164,8 +146,6 @@ var ErrSlowDown = fmt.Errorf("%w: slow_down", ErrAuthorizationPending)
 const slowDownBackoff = 5 * time.Second
 
 // ErrAccessDenied is returned by PollOnce / ExchangeCode when the issuer
-// signals that the user denied authorization or the device code has expired.
-// Maps to RFC 8628 "access_denied" and "expired_token" body codes.
 var ErrAccessDenied = errors.New("chatgpt: access denied")
 
 // ErrDeviceAuthTimeout is returned by PollUntilCode after PollTimeout elapses
@@ -181,10 +161,6 @@ func truncate(s string, n int) string {
 }
 
 // maxResponseBodySize caps HTTP response bodies read from the OAuth issuer.
-// Real OAuth payloads (device-code, poll, token-exchange, refresh) are well
-// under 4 KiB; the 1 MiB ceiling defends against a malicious or misconfigured
-// issuer streaming unbounded bytes without prematurely rejecting any legitimate
-// response the server might realistically grow.
 const maxResponseBodySize = 1 << 20
 
 // ErrResponseTooLarge is returned when an OAuth endpoint response exceeds
@@ -192,8 +168,6 @@ const maxResponseBodySize = 1 << 20
 var ErrResponseTooLarge = errors.New("chatgpt: response body exceeded 1 MiB cap")
 
 // readCappedBody reads r up to maxResponseBodySize, returning ErrResponseTooLarge
-// when the response would exceed the cap. Used to bound memory consumption
-// against hostile issuers; see maxResponseBodySize for rationale.
 func readCappedBody(r io.Reader) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(r, maxResponseBodySize+1))
 	if err != nil {

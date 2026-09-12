@@ -8,8 +8,6 @@ import (
 )
 
 // TestSpawnPhaseWireValues guards against accidental relabeling of the cold-start
-// phase constants. The wire strings are load-bearing — a change here orphans the
-// corresponding dashboard/alert series.
 func TestSpawnPhaseWireValues(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {

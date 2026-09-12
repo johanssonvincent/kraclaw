@@ -38,10 +38,6 @@ const (
 )
 
 // RefreshError describes a token-refresh failure. The type is exported so
-// callers can errors.As into it; fields are unexported because (kind, reason)
-// is a constructor-only invariant — a permanent error carries a classified
-// reason, a transient error carries RefreshFailureUnknown, and callers should
-// never forge an instance with an arbitrary combination.
 type RefreshError struct {
 	kind   RefreshErrorKind
 	reason RefreshFailureReason
@@ -91,9 +87,6 @@ func newPermanentRefresh(status int, body string, reason RefreshFailureReason) *
 }
 
 // Refresh exchanges a refresh token for a new ChatGPT OAuth bundle. The
-// returned Tokens may carry the same refresh_token as the input if the server
-// chose not to rotate it; callers should always persist the value Refresh
-// returns rather than retaining the original.
 func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, error) {
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, fmt.Errorf("chatgpt: refresh token is empty")
@@ -114,9 +107,7 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 	if err != nil {
 		return nil, fmt.Errorf("chatgpt: build refresh request: %w", err)
 	}
-	// ChatGPT's /oauth/token accepts JSON for the refresh_token grant (in contrast
-	// to the authorization_code grant at ExchangeCode, which is form-encoded).
-	// Matches the Codex CLI contract.
+// ChatGPT's /oauth/token accepts JSON for the refresh_token grant (in contrast
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
@@ -199,9 +190,6 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (*Tokens, err
 }
 
 // classifyRefreshFailure inspects the JSON error body returned by /oauth/token
-// and maps recognized OpenAI codes to a RefreshFailureReason.
-// The bool return is true iff the body was valid JSON with at least one of
-// error / error_code / error_description populated.
 func classifyRefreshFailure(body []byte) (RefreshFailureReason, bool) {
 	var parsed struct {
 		Error            string `json:"error"`
@@ -228,8 +216,6 @@ func classifyRefreshFailure(body []byte) (RefreshFailureReason, bool) {
 }
 
 // isPermanentBadRequest returns true for 400 responses whose body carries an
-// OAuth error code that indicates the refresh token itself is dead. RFC 6749
-// §5.2 uses 400 for these; any other 4xx/5xx we treat as transient.
 func isPermanentBadRequest(status int, body []byte, reason RefreshFailureReason, parsed bool) bool {
 	if status != http.StatusBadRequest || !parsed {
 		return false

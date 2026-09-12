@@ -8,8 +8,6 @@ import (
 )
 
 // PhaseSampleCount returns the observation count for a phase label on the
-// process-global sandbox spawn histogram; delta assertions on it must not run
-// in parallel with each other.
 func PhaseSampleCount(t testing.TB, phase string) uint64 {
 	t.Helper()
 
