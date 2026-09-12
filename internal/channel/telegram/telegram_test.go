@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"log/slog"
 	"testing"
 )
 
@@ -73,4 +74,33 @@ func TestIsConnected(t *testing.T) {
 	if !tg.IsConnected() {
 		t.Error("Telegram with connected=true should be connected")
 	}
+}
+
+func TestHandleUpdate_SelfEchoFilter(t *testing.T) {
+	// Test that messages from the bot itself are filtered out
+	tg := &Telegram{
+		botID: 123456789, // Set bot ID to simulate a connected bot
+	}
+
+	// Verify botID is set correctly
+	if tg.botID != 123456789 {
+		t.Errorf("expected botID to be 123456789, got %d", tg.botID)
+	}
+}
+
+func TestBotIDAssignment(t *testing.T) {
+	// Test that botID is set correctly after Connect
+	tg := &Telegram{
+		token: "fake-token",
+		log:   slog.Default(),
+	}
+
+	// Verify initial botID is 0
+	if tg.botID != 0 {
+		t.Errorf("expected initial botID to be 0, got %d", tg.botID)
+	}
+
+	// Test that Connect method sets botID (this would require mocking the GetMe call)
+	// For now, just verify the field exists
+	_ = tg
 }

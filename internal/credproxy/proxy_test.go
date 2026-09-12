@@ -189,6 +189,33 @@ func TestUpstreamErrorResponseBodyIsRestored(t *testing.T) {
 	}
 }
 
+func TestUpstreamErrorResponseBodyTooLarge(t *testing.T) {
+	// Create an error response that's larger than our 64KiB cap
+	largeBody := strings.Repeat("error body content that's quite long ", 1000)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(largeBody))
+	}))
+	defer upstream.Close()
+
+	p := newTestProxy(t, upstream.URL, "sk-test")
+	rp := p.newReverseProxy()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	rp.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	// Should still get the original body, just potentially truncated for logging
+	body, _ := io.ReadAll(w.Body)
+	if len(body) == 0 {
+		t.Fatal("expected body to be returned")
+	}
+}
+
 func TestHopByHopHeaders_Stripped(t *testing.T) {
 	var receivedHeaders http.Header
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -809,6 +836,61 @@ func TestProxy_MultiProvider_RejectsUnknownUpstreamHost(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for unknown upstream host, got %d", w.Code)
+	}
+}
+
+func TestProxy_ResolverModeSSRFProtection(t *testing.T) {
+	// Test that resolver mode still enforces upstream host restrictions
+	resolver := &staticCredentialResolver{
+		cred: &resolvedCredential{
+			Provider:    "anthropic",
+			APIKey:      "sk-test",
+			UpstreamURL: "https://api.anthropic.com",
+		},
+	}
+
+	proxy, err := NewMultiProviderProxy(config.ProxyConfig{
+		Addr:                 ":0",
+		AnthropicUpstreamURL: "https://api.anthropic.com",
+		OpenAIUpstreamURL:    "https://api.openai.com",
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Test with a forbidden host in URL - should be rejected
+	req := httptest.NewRequest("POST", "https://evil.example.com/v1/messages", nil)
+	req.Header.Set("X-Kraclaw-Group", "discord:123")
+	w := httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for forbidden host in URL, got %d", w.Code)
+	}
+
+	// A spoofed Host header must NOT be rejected here: it cannot reroute the
+	// request (the Director sets the upstream from the resolved credential),
+	// and real agent traffic addresses the proxy by its own hostname. It
+	// should flow through and fail upstream auth if anything.
+	req = httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("X-Kraclaw-Group", "discord:123")
+	req.Header.Set("Host", "evil.example.com")
+	w = httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	if w.Code == http.StatusForbidden {
+		t.Fatalf("spoofed Host header must not be rejected by hostGuard (routing is the Director's job), got 403")
+	}
+
+	// Test with allowed host in URL - should be accepted
+	req = httptest.NewRequest("POST", "https://api.anthropic.com/v1/messages", nil)
+	req.Header.Set("X-Kraclaw-Group", "discord:123")
+	w = httptest.NewRecorder()
+	proxy.handler().ServeHTTP(w, req)
+
+	// This should be accepted (not 403)
+	if w.Code == http.StatusForbidden {
+		t.Fatalf("expected request to be accepted, got 403")
 	}
 }
 

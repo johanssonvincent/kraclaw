@@ -67,6 +67,16 @@ func (t *Telegram) Connect(ctx context.Context) error {
 
 	go b.Start(botCtx)
 
+	// Get the bot's own ID after connecting
+	me, err := b.GetMe(ctx)
+	if err != nil {
+		t.log.Error("failed to get bot me", "error", err)
+	} else {
+		t.mu.Lock()
+		t.botID = me.ID
+		t.mu.Unlock()
+	}
+
 	t.log.Info("connected to Telegram")
 
 	return nil

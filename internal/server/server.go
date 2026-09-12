@@ -229,10 +229,40 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
+// grpcStopTimeout bounds how long GracefulStop may block shutdown before a
+// hard Stop is forced (e.g. when a streaming RPC never returns).
+const grpcStopTimeout = 10 * time.Second
+
 // Stop gracefully stops both servers.
 func (s *Server) Stop(ctx context.Context) {
 	s.log.Info("shutting down servers")
-	s.grpcServer.GracefulStop()
+
+	// Run grpcServer.GracefulStop in a goroutine so a stuck streaming RPC
+	// cannot block shutdown forever: race it against a timeout and the
+	// caller's ctx, and hard-stop on either.
+
+	done := make(chan struct{})
+
+	go func() {
+		s.grpcServer.GracefulStop()
+
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		s.log.Info("gRPC server stopped gracefully")
+	case <-time.After(grpcStopTimeout):
+		s.log.Warn("gRPC server graceful stop timeout, forcing stop")
+		s.grpcServer.Stop()
+	case <-ctx.Done():
+		s.log.Warn("shutdown context cancelled, forcing gRPC stop")
+		s.grpcServer.Stop()
+	}
+
+	// Ensure GracefulStop has returned before shutting down REST — after a
+	// hard Stop() the goroutine unblocks immediately.
+	<-done
 
 	if err := s.restServer.Shutdown(ctx); err != nil {
 		s.log.Error("REST server shutdown error", "error", err)

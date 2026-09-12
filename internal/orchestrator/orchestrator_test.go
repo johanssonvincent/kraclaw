@@ -2022,8 +2022,10 @@ func TestHandleIPCMessage_TaskUpdateGroupMatch(t *testing.T) {
 
 	// Agent sends a task_update with the correct group folder.
 	task := store.ScheduledTask{
-		ID:          "task-1",
-		GroupFolder: "group-a", // matches group.Folder
+		ID:            "task-1",
+		GroupFolder:   "group-a", // matches group.Folder
+		ScheduleType:  "cron",
+		ScheduleValue: "* * * * *",
 	}
 	payload, _ := json.Marshal(task)
 	msg := &ipc.IPCMessage{
@@ -2038,6 +2040,44 @@ func TestHandleIPCMessage_TaskUpdateGroupMatch(t *testing.T) {
 	}
 	if !ms.updateTaskCalled {
 		t.Error("UpdateTask should be called when group folder matches")
+	}
+}
+
+func TestHandleIPCMessage_TaskUpdateValidation(t *testing.T) {
+	ms := newMockStore()
+	o := &Orchestrator{
+		store: ms,
+		log:   slog.Default(),
+	}
+
+	group := store.Group{
+		JID:    "group1@g.us",
+		Name:   "test-group",
+		Folder: "group-a",
+	}
+
+	// Agent sends a task_update with invalid schedule type - should be rejected
+	task := store.ScheduledTask{
+		ID:            "task-1",
+		GroupFolder:   "group-a",
+		ScheduleType:  "invalid-schedule-type", // Invalid schedule type
+		ScheduleValue: "some-value",
+	}
+	payload, _ := json.Marshal(task)
+	msg := &ipc.IPCMessage{
+		Type:    ipc.IPCTaskUpdate,
+		Payload: payload,
+	}
+
+	result := o.handleIPCMessage(context.Background(), "chat@g.us", group, msg)
+
+	// Should return false because task validation should fail
+	if result {
+		t.Error("handleIPCMessage should return false for invalid schedule type")
+	}
+	// Should NOT call UpdateTask because validation should fail
+	if ms.updateTaskCalled {
+		t.Error("UpdateTask should NOT be called when task validation fails")
 	}
 }
 
