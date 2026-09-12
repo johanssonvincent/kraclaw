@@ -13,78 +13,120 @@ import (
 	natserver "github.com/nats-io/nats-server/v2/server"
 )
 
-func TestLoadConfig_RequiresGroup(t *testing.T) {
-	t.Setenv("KRACLAW_GROUP", "")
-	t.Setenv("GROUP_FOLDER", "some-folder")
-	_, err := LoadConfig()
-	if err == nil {
-		t.Fatal("expected error when KRACLAW_GROUP not set")
+func TestLoadConfig(t *testing.T) {
+	configEnvKeys := []string{
+		"NATS_URL",
+		"NATS_USER",
+		"NATS_PASSWORD",
+		"KRACLAW_GROUP",
+		"KRACLAW_AGENT_ID",
+		"KRACLAW_PROXY_URL",
+		"KRACLAW_PROVIDER",
+		"GROUP_FOLDER",
 	}
-}
 
-func TestLoadConfig_RequiresGroupFolder(t *testing.T) {
-	t.Setenv("KRACLAW_GROUP", "test@g.us")
-	t.Setenv("GROUP_FOLDER", "")
-	_, err := LoadConfig()
-	if err == nil {
-		t.Fatal("expected error when GROUP_FOLDER not set")
+	cases := []struct {
+		name    string
+		env     map[string]string
+		wantErr string
+		want    *Config
+	}{
+		{
+			name:    "missing_group",
+			env:     map[string]string{"GROUP_FOLDER": "some-folder"},
+			wantErr: "KRACLAW_GROUP is required",
+		},
+		{
+			name:    "missing_group_folder",
+			env:     map[string]string{"KRACLAW_GROUP": "test@g.us"},
+			wantErr: "GROUP_FOLDER is required",
+		},
+		{
+			name: "defaults_applied",
+			env: map[string]string{
+				"KRACLAW_GROUP": "test@g.us",
+				"GROUP_FOLDER":  "test-folder",
+			},
+			want: &Config{
+				NATSURL:  "nats://localhost:4222",
+				AgentID:  "main",
+				GroupJID: "test@g.us",
+				Group:    "test-folder",
+			},
+		},
+		{
+			name: "all_fields_set",
+			env: map[string]string{
+				"KRACLAW_GROUP":     "discord:123",
+				"GROUP_FOLDER":      "mygroup",
+				"NATS_URL":          "nats://custom:4222",
+				"KRACLAW_AGENT_ID":  "worker-1",
+				"KRACLAW_PROXY_URL": "http://proxy:3001",
+				"KRACLAW_PROVIDER":  "openai",
+			},
+			want: &Config{
+				NATSURL:  "nats://custom:4222",
+				GroupJID: "discord:123",
+				AgentID:  "worker-1",
+				ProxyURL: "http://proxy:3001",
+				Provider: "openai",
+				Group:    "mygroup",
+			},
+		},
 	}
-}
 
-func TestLoadConfig_DefaultNATSURL(t *testing.T) {
-	t.Setenv("KRACLAW_GROUP", "test@g.us")
-	t.Setenv("GROUP_FOLDER", "test-folder")
-	t.Setenv("NATS_URL", "")
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.NATSURL != "nats://localhost:4222" {
-		t.Fatalf("expected default NATS URL, got %q", cfg.NATSURL)
-	}
-}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			// Start every case from a clean slate so host environment leakage
+			// cannot satisfy a required var or break the default assertions.
+			for _, key := range configEnvKeys {
+				t.Setenv(key, "")
+			}
 
-func TestLoadConfig_DefaultAgentID(t *testing.T) {
-	t.Setenv("KRACLAW_GROUP", "test@g.us")
-	t.Setenv("GROUP_FOLDER", "test-folder")
-	t.Setenv("KRACLAW_AGENT_ID", "")
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.AgentID != "main" {
-		t.Fatalf("expected default agent ID 'main', got %q", cfg.AgentID)
-	}
-}
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
 
-func TestLoadConfig_AllFields(t *testing.T) {
-	t.Setenv("KRACLAW_GROUP", "discord:123")
-	t.Setenv("GROUP_FOLDER", "mygroup")
-	t.Setenv("NATS_URL", "nats://custom:4222")
-	t.Setenv("KRACLAW_AGENT_ID", "worker-1")
-	t.Setenv("KRACLAW_PROXY_URL", "http://proxy:3001")
-	t.Setenv("KRACLAW_PROVIDER", "openai")
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.NATSURL != "nats://custom:4222" {
-		t.Fatalf("expected custom NATS URL, got %q", cfg.NATSURL)
-	}
-	if cfg.GroupJID != "discord:123" {
-		t.Fatalf("expected discord:123, got %q", cfg.GroupJID)
-	}
-	if cfg.AgentID != "worker-1" {
-		t.Fatalf("expected worker-1, got %q", cfg.AgentID)
-	}
-	if cfg.Group != "mygroup" {
-		t.Fatalf("expected mygroup, got %q", cfg.Group)
-	}
-	if cfg.ProxyURL != "http://proxy:3001" {
-		t.Fatalf("expected proxy URL, got %q", cfg.ProxyURL)
-	}
-	if cfg.Provider != "openai" {
-		t.Fatalf("expected openai, got %q", cfg.Provider)
+			cfg, err := LoadConfig()
+
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("LoadConfig() err = nil, want %q", tt.wantErr)
+				}
+
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("LoadConfig() err = %v, want substring %q", err, tt.wantErr)
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("LoadConfig() err = %v, want nil", err)
+			}
+
+			if cfg == nil {
+				t.Fatal("LoadConfig() returned nil config without error")
+			}
+
+			fields := []struct {
+				name, got, want string
+			}{
+				{"NATSURL", cfg.NATSURL, tt.want.NATSURL},
+				{"NATSUser", cfg.NATSUser, tt.want.NATSUser},
+				{"NATSPassword", cfg.NATSPassword, tt.want.NATSPassword},
+				{"GroupJID", cfg.GroupJID, tt.want.GroupJID},
+				{"AgentID", cfg.AgentID, tt.want.AgentID},
+				{"ProxyURL", cfg.ProxyURL, tt.want.ProxyURL},
+				{"Provider", cfg.Provider, tt.want.Provider},
+				{"Group", cfg.Group, tt.want.Group},
+			}
+			for _, f := range fields {
+				if f.got != f.want {
+					t.Errorf("cfg.%s = %q, want %q", f.name, f.got, f.want)
+				}
+			}
+		})
 	}
 }
 
