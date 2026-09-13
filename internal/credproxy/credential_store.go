@@ -371,7 +371,7 @@ func (s *CredentialStore) decryptChatGPTTokens(
 			return nil, fmt.Errorf("decrypt id token for group %q: %w", groupJID, err)
 		}
 	}
-// oauth_is_fedramp is declared NOT NULL DEFAULT FALSE in the up migration,.
+	// oauth_is_fedramp is declared NOT NULL DEFAULT FALSE in the up migration,.
 	return &ChatGPTTokens{
 		AccessToken:  access,
 		RefreshToken: refresh,
@@ -398,7 +398,7 @@ func (s *CredentialStore) UpsertCredential(ctx context.Context, cred *Credential
 		if err != nil {
 			return fmt.Errorf("encrypt api key: %w", err)
 		}
-// REPLACE is load-bearing: DELETE+INSERT clears any prior-mode oauth_* columns.
+		// REPLACE is load-bearing: DELETE+INSERT clears any prior-mode oauth_* columns.
 		if _, err := s.db.ExecContext(ctx, `
             REPLACE INTO credentials (
                 group_jid, provider, auth_mode, api_key_encrypted
@@ -452,7 +452,7 @@ func (s *CredentialStore) upsertChatGPT(ctx context.Context, groupJID, provider 
 
 		idEnc = sql.NullString{String: v, Valid: true}
 	}
-// REPLACE is load-bearing: clearing api_key_encrypted (explicit NULL below).
+	// REPLACE is load-bearing: clearing api_key_encrypted (explicit NULL below).
 	if _, err := s.db.ExecContext(ctx, `
         REPLACE INTO credentials (
             group_jid, provider, auth_mode, api_key_encrypted,

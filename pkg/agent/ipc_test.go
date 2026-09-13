@@ -422,7 +422,7 @@ func TestIPCClient_ReadInput_IteratorError(t *testing.T) {
 			if e == nil {
 				continue
 			}
-// Any non-nil, non-context error is a valid iterator error for.
+			// Any non-nil, non-context error is a valid iterator error for.
 			if strings.Contains(e.Error(), "context") {
 				t.Fatalf("got context error, expected non-context iterator error: %v", e)
 			}
@@ -667,7 +667,7 @@ func (js *mockAckFailJS) Consumer(_ context.Context, _ string, _ string) (jetstr
 }
 
 func TestIPCClient_ReadInput_AckFailurePropagatesError(t *testing.T) {
-// Inject a mock JetStream that delivers one message whose Ack always fails.
+	// Inject a mock JetStream that delivers one message whose Ack always fails.
 	msg := &mockAckFailMsg{data: []byte(`{"type":"message","payload":{}}`)}
 	iter := &mockMessagesCtx{msg: msg, done: make(chan struct{})}
 	consumer := &mockAckFailConsumer{iter: iter}

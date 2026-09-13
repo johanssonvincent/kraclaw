@@ -868,7 +868,7 @@ func TestProxy_ResolverModeSSRFProtection(t *testing.T) {
 		t.Fatalf("expected 403 for forbidden host in URL, got %d", w.Code)
 	}
 
-// A spoofed Host header must NOT be rejected here: it cannot reroute the.
+	// A spoofed Host header must NOT be rejected here: it cannot reroute the.
 	req = httptest.NewRequest("POST", "/v1/messages", nil)
 	req.Header.Set("X-Kraclaw-Group", "discord:123")
 	req.Header.Set("Host", "evil.example.com")

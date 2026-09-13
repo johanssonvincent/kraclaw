@@ -148,7 +148,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 
 	msgs, err := cons.Fetch(1, jetstream.FetchMaxWait(queueFetchTimeout))
 	if err != nil {
-// Only evict the cached consumer on fatal errors that indicate the.
+		// Only evict the cached consumer on fatal errors that indicate the.
 		if errors.Is(err, jetstream.ErrConsumerNotFound) ||
 			errors.Is(err, jetstream.ErrConsumerDeleted) ||
 			errors.Is(err, jetstream.ErrStreamNotFound) {
@@ -190,7 +190,7 @@ func (q *NATSQueue) Dequeue(ctx context.Context, groupJID string) (*QueueMessage
 	}
 
 	if err := msgs.Error(); err != nil && !errors.Is(err, jetstream.ErrMsgIteratorClosed) {
-// Evict the cached consumer for the same fatal errors as the Fetch path.
+		// Evict the cached consumer for the same fatal errors as the Fetch path.
 		if errors.Is(err, jetstream.ErrConsumerNotFound) ||
 			errors.Is(err, jetstream.ErrConsumerDeleted) ||
 			errors.Is(err, jetstream.ErrStreamNotFound) ||

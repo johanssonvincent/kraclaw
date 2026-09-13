@@ -173,7 +173,7 @@ func (s *adminService) GetStatus(ctx context.Context, _ *kraclawv1.GetStatusRequ
 		ActiveTasks:       activeTasks,
 		UptimeSince:       timestamppb.New(s.startedAt),
 		MysqlConnected:    mysqlConnected,
-// TODO: remove RedisConnected from proto and TUI — field is vestigial after.
+		// TODO: remove RedisConnected from proto and TUI — field is vestigial after.
 		RedisConnected: false,
 		K8SConnected:   k8sConnected,
 	}, nil

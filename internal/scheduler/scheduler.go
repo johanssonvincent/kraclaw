@@ -99,7 +99,7 @@ func (s *Scheduler) poll(ctx context.Context) {
 		wg.Add(1)
 		go func(t store.ScheduledTask) {
 			defer wg.Done()
-// If ctx is cancelled while waiting for a slot, Acquire returns an.
+			// If ctx is cancelled while waiting for a slot, Acquire returns an.
 			if err := s.semaphore.Acquire(ctx, 1); err != nil {
 				s.log.Error("semaphore acquire cancelled", "task_id", t.ID, "error", err)
 
@@ -173,7 +173,7 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 
 		s.log.Error("task failed", "task_id", task.ID, "error", err, "duration", duration)
 
-// For recurring tasks, apply the documented compensating write:.
+		// For recurring tasks, apply the documented compensating write:.
 		if task.ScheduleType != store.ScheduleOnce {
 			nextRunIn1Min := time.Now().Add(1 * time.Minute)
 			task.NextRun = &nextRunIn1Min
@@ -201,7 +201,7 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 	}
 
 	task.LastResult = &outcome
-// Once-task semantics win over retry: the run is already claimed as.
+	// Once-task semantics win over retry: the run is already claimed as.
 	if err != nil && task.ScheduleType != store.ScheduleOnce {
 		retryAt := time.Now().Add(1 * time.Minute)
 		task.NextRun = &retryAt

@@ -94,7 +94,7 @@ func TestCreateSandbox(t *testing.T) {
 		t.Fatalf("GROUP_FOLDER env var not set on agent container")
 	}
 
-// With fast-start enabled (the default in newTestController), init containers.
+	// With fast-start enabled (the default in newTestController), init containers.
 }
 
 // failNTimesCreateInterceptor returns an interceptor.Funcs that fails Create

@@ -536,7 +536,7 @@ func TestLastResultRecorded(t *testing.T) {
 				t.Errorf("outcome UpdateTask LastResult = %v, want %q", outcomeTask.LastResult, tt.wantOutcome)
 			}
 
-// Executor error on a recurring task must apply the documented.
+			// Executor error on a recurring task must apply the documented.
 			if tt.executorErr != nil {
 				if outcomeTask.NextRun == nil {
 					t.Fatal("outcome UpdateTask NextRun = nil, want ~now+1m")
@@ -735,7 +735,7 @@ func TestExecutorErrorOnceTaskNotRetried(t *testing.T) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-// Once-task semantics win over retry: the run is already claimed as.
+	// Once-task semantics win over retry: the run is already claimed as.
 	last := ms.updateCalls[len(ms.updateCalls)-1]
 	if last.Status != store.TaskCompleted {
 		t.Errorf("final Status = %q, want %q", last.Status, store.TaskCompleted)
@@ -888,7 +888,7 @@ func TestSchedulerCompensatingWriteOnFailure(t *testing.T) {
 		ms.mu.Lock()
 		defer ms.mu.Unlock()
 
-// The compensating NextRun is folded into the final outcome write:.
+		// The compensating NextRun is folded into the final outcome write:.
 		if len(ms.updateCalls) != 2 {
 			t.Fatalf("expected 2 UpdateTask calls, got %d", len(ms.updateCalls))
 		}

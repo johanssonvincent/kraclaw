@@ -584,7 +584,7 @@ func TestNATSQueueStreamCorruptionRecovery(t *testing.T) {
 				t.Errorf("Len before = %d, want 1", n)
 			}
 
-// Simulate stream update (broker recovers from misconfiguration).
+			// Simulate stream update (broker recovers from misconfiguration).
 			_, _, err = q.ensureStream(ctx, group)
 			if err != nil {
 				t.Fatalf("ensureStream (recovery): %v", err)

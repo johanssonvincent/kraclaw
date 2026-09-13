@@ -152,7 +152,7 @@ func (t *TUI) Subscribe(jid string) (<-chan string, func()) {
 				break
 			}
 		}
-// Only close if we found and removed the channel. If Disconnect.
+		// Only close if we found and removed the channel. If Disconnect.
 		if found {
 			close(ch)
 		}

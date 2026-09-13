@@ -48,10 +48,10 @@ type IPCClient struct {
 	mu            sync.Mutex
 	streamCreated bool
 
-// defensiveStream mirrors KRACLAW_AGENT_DEFENSIVE_STREAM=="1", read once at.
+	// defensiveStream mirrors KRACLAW_AGENT_DEFENSIVE_STREAM=="1", read once at.
 	defensiveStream bool
 
-// consumerFetchBackoff is the initial sleep between bounded Consumer-fetch.
+	// consumerFetchBackoff is the initial sleep between bounded Consumer-fetch.
 	consumerFetchBackoff time.Duration
 }
 
@@ -224,7 +224,7 @@ func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage,
 		if attempt == 5 {
 			break // avoid wasted sleep after the last attempt
 		}
-// Add jitter (up to backoff/2) to de-correlate retries across agents.
+		// Add jitter (up to backoff/2) to de-correlate retries across agents.
 		var jitter time.Duration
 		if half := backoff / 2; half > 0 {
 			jitter = time.Duration(rand.Int64N(int64(half)))

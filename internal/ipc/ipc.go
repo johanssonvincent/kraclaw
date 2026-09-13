@@ -21,7 +21,7 @@ const (
 	IPCSetModel      IPCMessageType = "set_model"
 	IPCShutdown      IPCMessageType = "shutdown"
 
-// DefaultAgentID is the well-known agent identifier used for the primary.
+	// DefaultAgentID is the well-known agent identifier used for the primary.
 	DefaultAgentID = "main"
 )
 
@@ -66,11 +66,11 @@ type IPCBroker interface {
 	SendInput(ctx context.Context, group, agentID string, msg *IPCMessage) error
 	// PublishOutput sends a message from an agent to the server.
 	PublishOutput(ctx context.Context, group, agentID string, msg *IPCMessage) error
-// SubscribeOutput returns a channel receiving output from all agents in a gro...
+	// SubscribeOutput returns a channel receiving output from all agents in a gro...
 	SubscribeOutput(ctx context.Context, group string) (<-chan *IPCMessage, <-chan error, error)
 	// ReadInput returns a channel receiving input messages for a specific agent.
 	ReadInput(ctx context.Context, group, agentID string) (<-chan *IPCMessage, error)
-// EnsureStreamForAgent provisions the per-group stream and the per-agent.
+	// EnsureStreamForAgent provisions the per-group stream and the per-agent.
 	EnsureStreamForAgent(ctx context.Context, group, agentID string) error
 	// DeleteStreams removes all IPC data for a group (all agents).
 	DeleteStreams(ctx context.Context, group string) error

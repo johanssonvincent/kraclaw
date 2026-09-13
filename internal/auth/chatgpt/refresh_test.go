@@ -15,7 +15,7 @@ import (
 func TestRefresh_Success(t *testing.T) {
 	t.Parallel()
 	tests := map[string]struct {
-// respBody is the raw /oauth/token response body. Exactly one of.
+		// respBody is the raw /oauth/token response body. Exactly one of.
 		respBody   string
 		respBodyFn func() string
 		// reqCheck, when non-nil, runs extra request-side assertions.
@@ -302,7 +302,7 @@ func boolPtr(b bool) *bool { return &b }
 func TestRefresh_BodyReadError_Transient(t *testing.T) {
 	t.Parallel()
 
-// Handler writes headers claiming 100 bytes, then sends 10 bytes and.
+	// Handler writes headers claiming 100 bytes, then sends 10 bytes and.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "100")
 		w.Header().Set("Content-Type", "application/json")

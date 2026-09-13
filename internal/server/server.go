@@ -235,7 +235,7 @@ const grpcStopTimeout = 10 * time.Second
 func (s *Server) Stop(ctx context.Context) {
 	s.log.Info("shutting down servers")
 
-// Run grpcServer.GracefulStop in a goroutine so a stuck streaming RPC.
+	// Run grpcServer.GracefulStop in a goroutine so a stuck streaming RPC.
 
 	done := make(chan struct{})
 

@@ -371,7 +371,7 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 			pr.Out.URL.Host = p.upstream.Host
 			pr.Out.Host = p.upstream.Host
 
-// Safety check: verify the target host matches the allowlist.
+			// Safety check: verify the target host matches the allowlist.
 			if pr.Out.URL.Host != p.allowedHost {
 				p.log.Error("blocked request to non-allowed host",
 					"target_host", pr.Out.URL.Host,
@@ -414,7 +414,7 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 				_ = resp.Body.Close()
 
 				if len(body) > maxUpstreamErrorBodyBytes {
-// Body exceeded the cap: restore the already-buffered prefix as a.
+					// Body exceeded the cap: restore the already-buffered prefix as a.
 					p.log.Warn("upstream error body exceeded buffer cap, truncating",
 						"status", resp.StatusCode,
 						"content_type", resp.Header.Get("Content-Type"),
@@ -509,7 +509,7 @@ func (p *Proxy) metricsMiddleware(next http.Handler) http.Handler {
 // hostGuard rejects requests with a Host header that does not match the.
 func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-// When a resolver is set, the upstream is determined dynamically by the.
+		// When a resolver is set, the upstream is determined dynamically by the.
 		if p.resolver != nil && r.URL.Host != "" &&
 			len(p.allowedUpstreamHosts) > 0 && !p.allowedUpstreamHosts[r.URL.Host] {
 			p.log.Warn("rejected request with non-allowed target host in resolver mode",

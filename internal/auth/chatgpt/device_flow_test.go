@@ -479,7 +479,7 @@ func TestPollUntilCode(t *testing.T) {
 				}
 			},
 		},
-// RFC 8628 §3.5: on slow_down the client MUST widen the poll interval.
+		// RFC 8628 §3.5: on slow_down the client MUST widen the poll interval.
 		"slow_down widens the poll interval per RFC 8628 §3.5": {
 			handlerFactory: func(calls *atomic.Int32) http.HandlerFunc {
 				var slowDownAt atomic.Int64
@@ -821,7 +821,7 @@ func TestPollUntilCode_CancelDuringSleep_ReturnsPromptly(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-// Cancel ~20ms after PollUntilCode starts — the first PollOnce will.
+	// Cancel ~20ms after PollUntilCode starts — the first PollOnce will.
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		cancel()

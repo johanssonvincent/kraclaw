@@ -140,7 +140,7 @@ func (c *Config) Validate() error {
 	if c.Proxy.AnthropicAPIKey == "" && c.Proxy.OpenAIAPIKey == "" {
 		return fmt.Errorf("at least one provider credential must be set (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
 	}
-// OpenAI-based setups (OpenAI-only or mixed multi-provider) all go through.
+	// OpenAI-based setups (OpenAI-only or mixed multi-provider) all go through.
 	if c.Proxy.OpenAIAPIKey != "" && c.Proxy.CredentialEncryptionKey == "" {
 		return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY is required when OPENAI_API_KEY is configured (multi-provider proxy encrypts per-group credentials)")
 	}

@@ -160,7 +160,7 @@ func TestNATSIPCAndQueueRoundTrip(t *testing.T) {
 		}
 	})
 
-// subscribe-before-publish regression: LimitsPolicy IPC streams with DeliverA...
+	// subscribe-before-publish regression: LimitsPolicy IPC streams with DeliverA...
 	t.Run("subscribe-before-publish regression", func(t *testing.T) {
 		broker, err := ipc.NewNATSBroker(env.natsConn, nil)
 		if err != nil {

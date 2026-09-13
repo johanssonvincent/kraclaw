@@ -409,7 +409,7 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 	runAs := runAsUser
 	replicas := int32(1)
 
-// Gate the legacy init-dirs container behind the fast-start flag.
+	// Gate the legacy init-dirs container behind the fast-start flag.
 	var initContainers []corev1.Container
 	if !c.fastStartEnabled {
 		initContainers = []corev1.Container{

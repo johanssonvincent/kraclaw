@@ -18,7 +18,7 @@ import (
 )
 
 func TestWatchSandboxes_ListBeforeWatch(t *testing.T) {
-// Verify that WatchSandboxes uses List+Watch pattern (List first to get resou...
+	// Verify that WatchSandboxes uses List+Watch pattern (List first to get resou...
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)

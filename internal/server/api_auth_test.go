@@ -87,7 +87,7 @@ func newFakeIssuer(t *testing.T, mode issuerMode, idTokenJWT string, expiresIn i
 					return
 				}
 			case issuerMode5xxDuringPoll:
-// Subsequent /api/accounts/deviceauth/token poll fails with.
+				// Subsequent /api/accounts/deviceauth/token poll fails with.
 				http.Error(w, "bad gateway", http.StatusBadGateway)
 				return
 			}

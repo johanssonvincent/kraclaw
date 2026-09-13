@@ -271,7 +271,7 @@ func main() {
 		}
 	}()
 
-// Build the ChatGPT OAuth client. Its only side effect is HTTP traffic.
+	// Build the ChatGPT OAuth client. Its only side effect is HTTP traffic.
 	chatgptClient, err := chatgpt.NewClient(chatgpt.Config{
 		Issuer: cfg.OAuth.ChatGPTIssuer,
 		Logger: log.With("component", "chatgpt"),
@@ -285,7 +285,7 @@ func main() {
 	// so we have a single source of truth for provider metadata.
 	providerRegistry := provider.NewRegistry()
 
-// Compose Auth sub-struct only when both dependencies are available.
+	// Compose Auth sub-struct only when both dependencies are available.
 	var authCfg *server.AuthConfig
 	if chatgptClient != nil && credStore != nil {
 		authCfg = &server.AuthConfig{

@@ -272,7 +272,7 @@ type model struct {
 func (m model) calculateLayout() layoutDims {
 	d := layoutDims{}
 
-// Vertical budget: tab bar (1) + gap (1) + key bar (1) + status bar (1) +.
+	// Vertical budget: tab bar (1) + gap (1) + key bar (1) + status bar (1) +.
 	reservedVertical := 4
 	if m.activeTab == tabMessages && m.chatState == chatStateChatting {
 		reservedVertical = 11

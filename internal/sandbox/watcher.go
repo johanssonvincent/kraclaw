@@ -86,7 +86,7 @@ func (c *Controller) WatchSandboxes(ctx context.Context) (<-chan SandboxEvent, e
 
 				if event.Type != watch.Deleted {
 					recordPhaseTransitions(sandbox, seen, c.log)
-// Guard against unbounded growth within a single watch session.
+					// Guard against unbounded growth within a single watch session.
 					if len(seen) > 1000 {
 						seen = map[string]map[string]bool{}
 					}
@@ -123,7 +123,7 @@ func recordPhaseTransitions(sb *agentsandboxv1alpha1.Sandbox, seen map[string]ma
 
 	created := sb.CreationTimestamp.Time
 	if sb.CreationTimestamp.IsZero() {
-// Without a creation time every phase duration is measured from the zero.
+		// Without a creation time every phase duration is measured from the zero.
 		log.Warn("skipping cold-start phase samples: sandbox has zero CreationTimestamp",
 			"sandbox", sb.Name)
 

@@ -36,7 +36,7 @@ type Tokens struct {
 	IDToken      string
 	IDClaims     IDTokenClaims
 
-// ExpiresAt is the absolute token expiry. Zero when the server returned.
+	// ExpiresAt is the absolute token expiry. Zero when the server returned.
 	ExpiresAt time.Time
 }
 
@@ -349,7 +349,7 @@ func (c *Client) PollUntilCode(ctx context.Context, dc *DeviceCode, onTick func(
 		case errors.Is(err, ErrAuthorizationPending):
 			// fall through to pending-handling below
 		default:
-// Parent ctx takes precedence: if the caller's ctx is already.
+			// Parent ctx takes precedence: if the caller's ctx is already.
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}

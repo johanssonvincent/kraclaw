@@ -315,7 +315,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 
 	done := make(chan struct{}) // closed when the consumer goroutine exits
 
-// Stop the iterator when ctx is cancelled externally or when the consumer.
+	// Stop the iterator when ctx is cancelled externally or when the consumer.
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -391,7 +391,7 @@ func (b *NATSBroker) consume(ctx context.Context, cons jetstream.Consumer, group
 					}
 
 					b.logger.Error("ack ipc message", "group", group, "sequence", seq, "error", err, "cause", "ack_failure")
-// NAK so NATS redelivers promptly rather than waiting for AckWait.
+					// NAK so NATS redelivers promptly rather than waiting for AckWait.
 					if nakErr := jmsg.Nak(); nakErr != nil {
 						b.logger.Error("nak after ack failure", "group", group, "sequence", seq, "error", nakErr)
 					}

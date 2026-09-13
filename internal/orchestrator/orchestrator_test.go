@@ -333,7 +333,7 @@ func (m *mockIPCBroker) SubscribeOutput(ctx context.Context, group string) (<-ch
 		return m.subscribeOutputFn(ctx, group)
 	}
 	if m.subscribeCh != nil {
-// Return the preset channel on the first call only. Subsequent calls.
+		// Return the preset channel on the first call only. Subsequent calls.
 		if m.subscribeCount > 1 {
 			return nil, nil, errors.New("mockIPCBroker: subscribeCh already consumed")
 		}
@@ -927,7 +927,7 @@ func TestMaxConcurrent_BelowLimit_ProceedsToCreateSandbox(t *testing.T) {
 	defer release()
 
 	_, err = o.processGroupMessages(context.Background(), "group1@g.us", func() {})
-// CreateSandbox should be called — the full happy path runs through since.
+	// CreateSandbox should be called — the full happy path runs through since.
 	if !sb.createCalled.Load() {
 		t.Error("CreateSandbox was NOT called, want called when below MAX_CONCURRENT")
 	}
@@ -1257,7 +1257,7 @@ func TestHasTriggerMessage(t *testing.T) {
 }
 
 func TestHasTriggerMessage_MainGroup(t *testing.T) {
-// Main groups skip trigger check entirely in the caller (pollMessages/process...
+	// Main groups skip trigger check entirely in the caller (pollMessages/process...
 	s := newMockStore()
 	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"main@g.us": true}}
 	o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
@@ -1667,7 +1667,7 @@ func TestDeactivate_PendingMessagesTriggersReprocessing(t *testing.T) {
 		},
 	}
 
-// Hook GetMessagesSince to detect when processGroupMessages is called.
+	// Hook GetMessagesSince to detect when processGroupMessages is called.
 	var callCount atomic.Int32
 	processStarted := make(chan struct{}, 1)
 	processBlock := make(chan struct{})
@@ -1728,7 +1728,7 @@ func TestDeactivate_PendingCheckFailedTriggersReprocessing(t *testing.T) {
 	o.registeredGroups["group1@g.us"] = group
 	q.active["group1@g.us"] = true
 
-// First GetMessagesSince call (from deactivate's pending check) returns an error,.
+	// First GetMessagesSince call (from deactivate's pending check) returns an error,.
 	var callCount atomic.Int32
 	processStarted := make(chan struct{}, 1)
 	processBlock := make(chan struct{})
@@ -1863,7 +1863,7 @@ func newTestOrchestratorWithSandbox(s *mockStore, q *mockQueue, b *mockIPCBroker
 }
 
 func TestWatchGroupOutput_StartupTimeoutDeactivatesGroupWhenPodNeverStarts(t *testing.T) {
-// Simulates: SandboxClaim created, operator never creates a pod.
+	// Simulates: SandboxClaim created, operator never creates a pod.
 
 	s := newMockStore()
 	q := newMockQueue()
@@ -2265,7 +2265,7 @@ func TestWatchGroupOutput_NilSandboxNoPanic(t *testing.T) {
 	// Use a very short startup timeout so the test doesn't hang.
 	o.cfg.K8s.SandboxStartupTimeout = 200 * time.Millisecond
 
-// Set liveness ticker to fire quickly. Since we can't override the liveness.
+	// Set liveness ticker to fire quickly. Since we can't override the liveness.
 	go func() {
 		// Wait enough for at least one liveness tick (10s default is too long).
 		// Instead, send a shutdown message quickly.
@@ -2747,7 +2747,7 @@ func TestWatchGroupOutput_ReconnectSuccess(t *testing.T) {
 	q := newMockQueue()
 	b := &mockIPCBroker{}
 
-// channel1 delivers one session_update message and then closes, simulating.
+	// channel1 delivers one session_update message and then closes, simulating.
 	channel1 := make(chan *ipc.IPCMessage, 1)
 	channel2 := make(chan *ipc.IPCMessage, 1)
 
@@ -2796,13 +2796,13 @@ func TestWatchGroupOutput_ReconnectSuccess(t *testing.T) {
 		t.Errorf("SubscribeOutput reconnect calls = %d, want 1", subCalls)
 	}
 
-// Both session_update messages must have been processed: the latest write.
+	// Both session_update messages must have been processed: the latest write.
 	got := o.sessions["test-group"]
 	if got != "sess-from-ch2" {
 		t.Errorf("session after reconnect = %q, want %q (channel2 message was not processed)", got, "sess-from-ch2")
 	}
 
-// Ensure the session from channel1 was also processed (i.e. the earlier.
+	// Ensure the session from channel1 was also processed (i.e. the earlier.
 }
 
 // TestWatchGroupOutput_ReconnectExhaustedLogsLastError verifies that when all
@@ -2916,7 +2916,7 @@ func TestRecoverPendingMessages(t *testing.T) {
 		{
 			name: "GetMessagesSince error is logged and does not abort loop",
 			setupStore: func(s *mockStore) {
-// Force GetMessagesSince to return an error for every group.
+				// Force GetMessagesSince to return an error for every group.
 				s.getMessagesSinceErr = errors.New("store boom")
 			},
 			wantEnqueues: 0,
@@ -3026,7 +3026,7 @@ func TestWatchGroupOutput_ReconnectUsesGroupFolder(t *testing.T) {
 		return ch, make(chan error), nil
 	}
 
-// A closed initial channel triggers the reconnect path immediately.
+	// A closed initial channel triggers the reconnect path immediately.
 	initialCh := make(chan *ipc.IPCMessage)
 	close(initialCh)
 
@@ -3789,7 +3789,7 @@ func TestSpawnAgent_FailurePaths_ClearSpawnStart(t *testing.T) {
 			wantDeleteStreams:     1,
 			wantSpawnStartPresent: false,
 		},
-// The MarkActive path deletes the stream UNCONDITIONALLY (it does not use.
+		// The MarkActive path deletes the stream UNCONDITIONALLY (it does not use.
 		"MarkActive failure deletes stream even when HasActiveSandbox reports active (TOCTOU)": {
 			fastStart:             true,
 			markActiveErr:         errors.New("nats down"),

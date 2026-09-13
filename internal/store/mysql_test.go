@@ -390,7 +390,7 @@ func TestUpsertGroupPreservesActiveState(t *testing.T) {
 		t.Fatal("UpsertGroup missing ON DUPLICATE KEY UPDATE")
 	}
 
-// The UPDATE clause must NOT mention is_active or last_active_at.
+	// The UPDATE clause must NOT mention is_active or last_active_at.
 	if strings.Contains(source, "is_active = VALUES") {
 		t.Fatal("UpsertGroup UPDATE clause must not include is_active — managed by MarkGroupActive/Inactive")
 	}

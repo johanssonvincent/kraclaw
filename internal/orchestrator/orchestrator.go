@@ -71,20 +71,20 @@ type Orchestrator struct {
 	registeredGroups map[string]store.Group // JID -> Group
 	activeSandboxes  map[string]string      // chatJID -> current sandbox name
 
-// spawnStart tracks the CreateSandbox start time per chatJID so the first.
+	// spawnStart tracks the CreateSandbox start time per chatJID so the first.
 	spawnStart   map[string]time.Time
 	spawnStartMu sync.Mutex
 
-// inflightSandboxes tracks in-flight spawn claims (set semantics). The value.
+	// inflightSandboxes tracks in-flight spawn claims (set semantics). The value.
 	inflightSandboxes sync.Map // map[string]struct{} — keyed on chatJID
 
-// confirmedCursorDirty is set to true when lastConfirmedTimestamp advances.
+	// confirmedCursorDirty is set to true when lastConfirmedTimestamp advances.
 	confirmedCursorDirty atomic.Bool
 
 	rateLimiters   map[string]*TokenBucket
 	rateLimitersMu sync.Mutex
 
-// prevLast* fields (PERF-04) are a best-effort dedup optimisation: compared a...
+	// prevLast* fields (PERF-04) are a best-effort dedup optimisation: compared a...
 	prevLastTimestampStr string // serialized last_timestamp from last save
 	prevAgentTsJSON      string // JSON-serialized last_agent_timestamp from last save
 	prevConfirmedTsJSON  string // JSON-serialized last_confirmed_timestamp from last save
@@ -96,7 +96,7 @@ type Orchestrator struct {
 
 	marshalInitialInput func(v any) ([]byte, error)
 
-// ipcReconnectDelays controls the backoff schedule used by watchGroupOutput.
+	// ipcReconnectDelays controls the backoff schedule used by watchGroupOutput.
 	ipcReconnectDelays []time.Duration
 }
 
@@ -245,7 +245,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}
 	}
 
-// 6. Reconcile the active group set against actual K8s state.
+	// 6. Reconcile the active group set against actual K8s state.
 	o.reconcileActiveSet(ctx)
 
 	// 7. Start periodic orphan cleanup.
@@ -757,7 +757,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 				o.log.Error("failed to save state", "error", err)
 			}
 		} else {
-// Atomically claim an in-flight slot before spawning. If another.
+			// Atomically claim an in-flight slot before spawning. If another.
 			release, ok := o.claimSandboxSlot(chatJID)
 			if !ok {
 				o.log.Info("sandbox spawn skipped: already in-flight",
@@ -779,7 +779,7 @@ func (o *Orchestrator) pollMessages(ctx context.Context) {
 						o.log.Error("panic in processGroupMessages",
 							"group", g.Name, "panic", r,
 							"stack", string(debug.Stack()))
-// Cursor rollback always runs to re-deliver any messages sent to.
+						// Cursor rollback always runs to re-deliver any messages sent to.
 						o.mu.Lock()
 						_, wasActive := o.activeSandboxes[jid]
 						delete(o.activeSandboxes, jid)
@@ -867,7 +867,7 @@ func (o *Orchestrator) processGroupMessages(ctx context.Context, chatJID string,
 		}
 	}
 
-// Enforce MAX_CONCURRENT limit — reject sandbox creation when at capacity (RE...
+	// Enforce MAX_CONCURRENT limit — reject sandbox creation when at capacity (RE...
 	activeCount, err := o.queue.ActiveCount(ctx)
 	if err != nil {
 		return false, fmt.Errorf("check active count: %w", err)
@@ -1016,7 +1016,7 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 		o.releaseOrphanedStreams(ctx, sc.group, "EnsureStream")
 	})
 
-// Pre-create the IPC stream + consumer so the agent skips CreateOrUpdate.
+	// Pre-create the IPC stream + consumer so the agent skips CreateOrUpdate.
 	if o.cfg.K8s.FastStartEnabled {
 		ensureStart := time.Now()
 
@@ -1060,7 +1060,7 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 		o.mu.Unlock()
 	})
 
-// Unconditional delete: StopSandbox's CR removal is async, so the gated.
+	// Unconditional delete: StopSandbox's CR removal is async, so the gated.
 	sc.stage(func(ctx context.Context) {
 		if delErr := o.ipc.DeleteStreams(ctx, group.Folder); delErr != nil {
 			o.log.Error("failed to delete IPC streams", "group", group.Name, "error", delErr)
@@ -1077,10 +1077,10 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 		}
 	})
 
-// Release the in-flight slot now that MarkActive has landed. MySQL's.
+	// Release the in-flight slot now that MarkActive has landed. MySQL's.
 	releaseSlot()
 
-// Observability: log when concurrent-spawn races push the active count over.
+	// Observability: log when concurrent-spawn races push the active count over.
 	if postCount, postErr := o.queue.ActiveCount(ctx); postErr == nil &&
 		postCount > int64(o.cfg.Queue.MaxConcurrent) {
 		o.log.Warn("MAX_CONCURRENT exceeded after admission (concurrent-spawn race)",
@@ -1096,7 +1096,7 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 		return nil, fmt.Errorf("subscribe output: %w", err)
 	}
 
-// Spawn watchGroupOutput directly to listen for agent output (no event channel).
+	// Spawn watchGroupOutput directly to listen for agent output (no event channel).
 	go func(jid string, ch <-chan *ipc.IPCMessage, errCh <-chan error) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -1218,7 +1218,7 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 		return
 	}
 
-// If the group has a tracked sandbox and this event is for a different.
+	// If the group has a tracked sandbox and this event is for a different.
 	if currentSandbox != "" && event.Status.Name != currentSandbox {
 		o.log.Info("sandbox event: ignoring stale event for non-current sandbox",
 			"event_sandbox", event.Status.Name, "current_sandbox", currentSandbox,
@@ -1234,7 +1234,7 @@ func (o *Orchestrator) handleSandboxEvent(ctx context.Context, event sandbox.San
 		o.mu.Lock()
 		delete(o.activeSandboxes, chatJID)
 		o.mu.Unlock()
-// The sandbox is already terminal — attempt MarkInactive best-effort so.
+		// The sandbox is already terminal — attempt MarkInactive best-effort so.
 		if markErr := o.queue.MarkInactive(ctx, chatJID); markErr != nil {
 			o.log.Error("sandbox event: best-effort MarkInactive also failed after IsActive error",
 				"folder", folder, "jid", chatJID, "error", markErr)
@@ -1281,7 +1281,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 
 	deactivate := func() {
 		deactivateOnce.Do(func() {
-// Idempotency guard: bail out if the group was already marked inactive.
+			// Idempotency guard: bail out if the group was already marked inactive.
 			active, activeErr := o.queue.IsActive(ctx, chatJID)
 			if activeErr != nil {
 				o.log.Error("deactivate: IsActive check failed; skipping MarkInactive but proceeding with cursor rollback and recovery — possible double-spawn if group is still active",
@@ -1296,7 +1296,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			} else {
 				// Group is active — mark it inactive.
 				if err := o.queue.MarkInactive(ctx, chatJID); err != nil {
-// Do not delete from activeSandboxes: keeping the entry allows.
+					// Do not delete from activeSandboxes: keeping the entry allows.
 					o.log.Error("failed to mark group inactive; skipping recovery — "+
 						"messages sent to dead agent will be permanently skipped on restart "+
 						"unless the K8s sandbox completion event fires before the process exits; "+
@@ -1343,7 +1343,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 
 				pendingCheckFailed = true
 			}
-// Also drain the NATS queue for scheduled tasks.
+			// Also drain the NATS queue for scheduled tasks.
 			const maxMalformedRetries = 5
 
 			var qMsg *queue.QueueMessage
@@ -1378,7 +1378,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 			if len(pending) > 0 || qMsg != nil || pendingCheckFailed {
 				release, ok := o.claimSandboxSlot(chatJID)
 				if !ok {
-// Re-enqueue the consumed qMsg. processGroupMessages reads pending.
+					// Re-enqueue the consumed qMsg. processGroupMessages reads pending.
 					if qMsg != nil {
 						if reqErr := o.queue.Enqueue(ctx, chatJID, qMsg); reqErr != nil {
 							o.log.Error("post-deactivate: failed to re-enqueue message after slot claim failure; message lost",
@@ -1411,7 +1411,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 								o.log.Error("panic in post-deactivate processGroupMessages",
 									"group", group.Name, "panic", r,
 									"stack", string(debug.Stack()))
-// Cursor rollback always runs to re-deliver any messages sent to.
+								// Cursor rollback always runs to re-deliver any messages sent to.
 								o.mu.Lock()
 								_, wasActive := o.activeSandboxes[chatJID]
 								delete(o.activeSandboxes, chatJID)
@@ -1454,7 +1454,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 						if err != nil {
 							o.log.Error("failed to process queued messages", "group", group.Name, "error", err)
 						}
-// Re-enqueue the consumed qMsg only when no sandbox was spawned.
+						// Re-enqueue the consumed qMsg only when no sandbox was spawned.
 						if !spawned && qMsg != nil {
 							if reqErr := o.queue.Enqueue(context.Background(), chatJID, qMsg); reqErr != nil {
 								o.log.Error("post-deactivate: failed to re-enqueue message after recovery; message lost",
@@ -1472,7 +1472,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 		})
 	}
 
-// Panic recovery: if watchGroupOutput panics at any point after this,.
+	// Panic recovery: if watchGroupOutput panics at any point after this,.
 	defer func() {
 		if r := recover(); r != nil {
 			o.log.Error("panic in watchGroupOutput",
@@ -1485,7 +1485,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 	liveness := time.NewTicker(10 * time.Second)
 	defer liveness.Stop()
 
-// startupTimeout guards against the agent pod never starting (e.g. operator not.
+	// startupTimeout guards against the agent pod never starting (e.g. operator not.
 	startupTimeout := o.cfg.K8s.SandboxStartupTimeout
 	if startupTimeout <= 0 {
 		startupTimeout = 5 * time.Minute
@@ -1499,7 +1499,7 @@ func (o *Orchestrator) watchGroupOutput(ctx context.Context, chatJID string, ch 
 	for {
 		select {
 		case <-ctx.Done():
-// On shutdown we intentionally skip deactivate() and leave the MySQL.
+			// On shutdown we intentionally skip deactivate() and leave the MySQL.
 			return
 		case <-startupDeadline.C:
 			if !agentConnected {
@@ -1609,7 +1609,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 		}
 
 		if err := o.router.RouteOutbound(ctx, chatJID, payload.Text); err != nil {
-// Outbound routing failed — do NOT advance the confirmed cursor.
+			// Outbound routing failed — do NOT advance the confirmed cursor.
 			o.log.Error("failed to route outbound message; leaving cursor unadvanced for retry",
 				"group", group.Name, "error", err)
 
@@ -1630,7 +1630,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 			o.log.Error("failed to store bot reply", "group", group.Name, "error", err)
 		}
 
-// Agent responded, so all messages sent up to the current cursor are confirmed.
+		// Agent responded, so all messages sent up to the current cursor are confirmed.
 		o.mu.Lock()
 		o.lastConfirmedTimestamp[chatJID] = o.lastAgentTimestamp[chatJID]
 		o.mu.Unlock()
@@ -1759,7 +1759,7 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 	now := time.Now().UTC()
 	msgID := uuid.New().String()
 
-// Write the prompt to MySQL first so it flows through the normal agent pipeline.
+	// Write the prompt to MySQL first so it flows through the normal agent pipeline.
 	if err := o.store.StoreMessage(ctx, &store.Message{
 		ID:         msgID,
 		ChatJID:    task.ChatJID,
@@ -1785,7 +1785,7 @@ func (o *Orchestrator) executeScheduledTask(ctx context.Context, task store.Sche
 			"chat_jid", task.ChatJID,
 			"error", err,
 		)
-// Compensating delete: remove the stored message so a failed enqueue.
+		// Compensating delete: remove the stored message so a failed enqueue.
 		if delErr := o.store.DeleteMessage(ctx, msgID, task.ChatJID); delErr != nil {
 			o.log.Error("executeScheduledTask: enqueue failed and compensating delete also failed — zombie message row in MySQL",
 				"task_id", task.ID,
@@ -1925,7 +1925,7 @@ func (o *Orchestrator) ensureStreamForAgentWithRetry(ctx context.Context, group,
 
 	for attempt := 1; attempt <= 3; attempt++ {
 		if attempt > 1 {
-// Add jitter (up to backoff/2) to de-correlate retries across agents.
+			// Add jitter (up to backoff/2) to de-correlate retries across agents.
 			jitter := time.Duration(rand.Int64N(int64(backoff / 2)))
 			select {
 			case <-time.After(backoff + jitter):
@@ -1960,7 +1960,7 @@ func (o *Orchestrator) releaseOrphanedStreams(ctx context.Context, group store.G
 	if !o.cfg.K8s.FastStartEnabled {
 		return
 	}
-// Detach from the (cancellable) spawn ctx so a cancelled/timed-out spawn still.
+	// Detach from the (cancellable) spawn ctx so a cancelled/timed-out spawn still.
 	cleanupCtx := context.WithoutCancel(ctx)
 
 	has, hasErr := o.sandbox.HasActiveSandbox(cleanupCtx, group.Folder)

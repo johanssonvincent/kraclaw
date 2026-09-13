@@ -228,7 +228,7 @@ func TestNATSDeleteStreams_CacheClearedOnDelete(t *testing.T) {
 		t.Fatalf("DeleteStreams: %v", err)
 	}
 
-// Second publish must succeed. If streamCreated was not cleared, ensureStream.
+	// Second publish must succeed. If streamCreated was not cleared, ensureStream.
 	if err := broker.PublishOutput(ctx, group, "main", msg); err != nil {
 		t.Fatalf("PublishOutput after DeleteStreams: %v (streamCreated cache was not cleared)", err)
 	}
@@ -703,7 +703,7 @@ func TestNATSBrokerConcurrentAgents(t *testing.T) {
 	// Track goroutine count before
 	goroutinesBefore := runtime.NumGoroutine()
 
-// Publish input and output messages for all agents sequentially.
+	// Publish input and output messages for all agents sequentially.
 	for i := 1; i <= numAgents; i++ {
 		agentName := fmt.Sprintf("agent-%d", i)
 

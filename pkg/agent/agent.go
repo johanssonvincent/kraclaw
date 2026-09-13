@@ -105,7 +105,7 @@ var waitForPrepullSignal = func() {
 func Run(handler func(ctx context.Context, ipc *IPCClient, log *slog.Logger) error) error {
 	log := slog.Default()
 
-// --prepull: warm-keeper mode used by the DaemonSet. The image must exist.
+	// --prepull: warm-keeper mode used by the DaemonSet. The image must exist.
 	if len(os.Args) > 1 && os.Args[1] == "--prepull" {
 		log.Info("prepull noop")
 		waitForPrepullSignal()

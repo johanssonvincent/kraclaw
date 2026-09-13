@@ -124,7 +124,7 @@ func (m model) handleAuthEvent(msg authEventMsg) (tea.Model, tea.Cmd) {
 		dc := e.DeviceCode
 		m.oauth.userCode = dc.GetUserCode()
 		m.oauth.verificationURL = dc.GetVerificationUrl()
-// Best-effort browser open — failure is non-fatal because the user_code.
+		// Best-effort browser open — failure is non-fatal because the user_code.
 		if err := OpenURL(dc.GetVerificationUrl()); err != nil {
 			m.oauth.openURLErr = err
 			slog.Warn("OpenURL failed", "err", err)
@@ -188,7 +188,7 @@ func (m model) handleEscOAuth() (tea.Model, tea.Cmd) {
 
 	wasReauth := m.oauth.pendingGroupName == ""
 	m.oauth = oauthState{}
-// Clear creation state unconditionally so stale context from a cancelled.
+	// Clear creation state unconditionally so stale context from a cancelled.
 	m.creationPendingGroupName = ""
 	m.creationSelectedProvider = ""
 	m.creationSelectedModelID = ""
