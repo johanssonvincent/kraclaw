@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	charm.land/bubbles/v2 v2.2.1
-	charm.land/bubbletea/v2 v2.0.8
+	charm.land/bubbletea/v2 v2.0.9
 	charm.land/glamour/v2 v2.0.0
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/DATA-DOG/go-sqlmock v1.5.2
