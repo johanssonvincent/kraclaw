@@ -58,6 +58,11 @@ jobs:
         with:
           lint: true
           format: true
-          breaking: true
+          # buf-action derives its breaking-check baseline from the push
+          # event's `before` sha, which is all-zero on a *tag* push (a tag
+          # push has no parent commit), so `buf breaking --against
+          # ...commit=0000...` fails to clone. Non-push events (PRs, main
+          # pushes) resolve fine, so only disable breaking for tag pushes.
+          breaking: ${{ github.ref_type != 'tag' }}
           push: false
           pr_comment: false
