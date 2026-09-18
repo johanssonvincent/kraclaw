@@ -295,19 +295,16 @@ func (r *Router) selectLatencyOptimized(_ context.Context) (string, error) {
 
 // selectRoundRobin returns providers in round-robin order.
 func (r *Router) selectRoundRobin(_ context.Context) (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	providers := r.registry.Providers()
 
-	for i := 0; i < len(providers); i++ {
-		idx := r.rrIndex % len(providers)
-		r.rrIndex++
+	r.mu.Lock()
+	idx := r.rrIndex % len(providers)
+	r.rrIndex++
+	r.mu.Unlock()
 
-		name := providers[idx]
-		if r.isHealthy(name) {
-			return name, nil
-		}
+	name := providers[idx]
+	if r.isHealthy(name) {
+		return name, nil
 	}
 
 	// If no healthy providers, return first one.
