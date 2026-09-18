@@ -126,17 +126,16 @@ func (c *mcpToolClient) CallTool(ctx context.Context, name string, args map[stri
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	var lastErr error
+
 	// Try stdio clients first.
 	for _, client := range c.stdioClients {
 		result, err := client.CallTool(ctx, name, args)
 		if err == nil {
 			return result, nil
 		}
-		// Tool not found on this server, try next.
-		if strings.Contains(err.Error(), "tools/call") {
-			continue
-		}
-		return nil, err
+		// Store last error but keep trying other servers.
+		lastErr = err
 	}
 
 	// Try HTTP clients.
@@ -145,10 +144,11 @@ func (c *mcpToolClient) CallTool(ctx context.Context, name string, args map[stri
 		if err == nil {
 			return result, nil
 		}
-		if strings.Contains(err.Error(), "tools/call") {
-			continue
-		}
-		return nil, err
+		lastErr = err
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("tool %q failed on all mcp servers: %w", name, lastErr)
 	}
 
 	return nil, fmt.Errorf("tool %q not found on any mcp server", name)
@@ -312,7 +312,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					toolCall, err := parseToolCall(fullResponse)
 					if err != nil {
 						log.Warn("failed to parse tool call", "error", err)
-						break
+						continue
 					}
 
 					log.Info("calling mcp tool", "name", toolCall.Name, "args", toolCall.Args)
@@ -398,13 +398,30 @@ type toolCall struct {
 }
 
 func parseToolCall(text string) (*toolCall, error) {
-	parts := strings.SplitN(text, ":", 3)
-	if len(parts) < 3 {
-		return nil, fmt.Errorf("invalid tool call format")
+	// Format: TOOL_CALL:<name>:<json_args>
+	// Trim whitespace first.
+	text = strings.TrimSpace(text)
+
+	// Check prefix.
+	const prefix = "TOOL_CALL:"
+	if !strings.HasPrefix(text, prefix) {
+		return nil, fmt.Errorf("invalid tool call format: missing prefix")
 	}
 
-	name := parts[1]
-	argsJSON := parts[2]
+	rest := strings.TrimPrefix(text, prefix)
+
+	// Split on first colon to get name.
+	colonIdx := strings.Index(rest, ":")
+	if colonIdx < 0 {
+		return nil, fmt.Errorf("invalid tool call format: missing arguments")
+	}
+
+	name := rest[:colonIdx]
+	argsJSON := rest[colonIdx+1:]
+
+	if name == "" {
+		return nil, fmt.Errorf("invalid tool call format: empty name")
+	}
 
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
