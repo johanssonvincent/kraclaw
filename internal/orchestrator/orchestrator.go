@@ -24,6 +24,7 @@ import (
 	"github.com/johanssonvincent/kraclaw/internal/router"
 	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 	"github.com/johanssonvincent/kraclaw/internal/scheduler"
+	"github.com/johanssonvincent/kraclaw/internal/skills"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 )
 
@@ -1717,6 +1718,88 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 		// Always scope delete to agent's own group — mismatched IDs result in 0 rows deleted.
 		if err := o.store.DeleteTask(ctx, payload.ID, group.Folder); err != nil {
 			o.log.Error("failed to delete task", "group", group.Name, "error", err)
+		}
+
+	case ipc.IPCSkillCreate:
+		var payload struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Content     string `json:"content"`
+		}
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			o.log.Error("failed to unmarshal skill_create payload", "error", err)
+
+			return false
+		}
+
+		if payload.Name == "" || payload.Content == "" {
+			o.log.Error("skill_create rejected: name and content required", "group", group.Name)
+
+			return false
+		}
+
+		skill := skills.Skill{
+			Name:        payload.Name,
+			Description: payload.Description,
+			Content:     payload.Content,
+		}
+
+		if err := skills.Save(skill, o.cfg.K8s.GroupsPVCPath(group.Folder)); err != nil {
+			o.log.Error("failed to save skill", "group", group.Name, "skill", payload.Name, "error", err)
+		} else {
+			o.log.Info("skill created", "group", group.Name, "skill", payload.Name)
+		}
+
+	case ipc.IPCSkillUpdate:
+		var payload struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Content     string `json:"content"`
+		}
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			o.log.Error("failed to unmarshal skill_update payload", "error", err)
+
+			return false
+		}
+
+		if payload.Name == "" || payload.Content == "" {
+			o.log.Error("skill_update rejected: name and content required", "group", group.Name)
+
+			return false
+		}
+
+		skill := skills.Skill{
+			Name:        payload.Name,
+			Description: payload.Description,
+			Content:     payload.Content,
+		}
+
+		if err := skills.Save(skill, o.cfg.K8s.GroupsPVCPath(group.Folder)); err != nil {
+			o.log.Error("failed to update skill", "group", group.Name, "skill", payload.Name, "error", err)
+		} else {
+			o.log.Info("skill updated", "group", group.Name, "skill", payload.Name)
+		}
+
+	case ipc.IPCSkillDelete:
+		var payload struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			o.log.Error("failed to unmarshal skill_delete payload", "error", err)
+
+			return false
+		}
+
+		if payload.Name == "" {
+			o.log.Error("skill_delete rejected: name required", "group", group.Name)
+
+			return false
+		}
+
+		if err := skills.Delete(payload.Name, o.cfg.K8s.GroupsPVCPath(group.Folder)); err != nil {
+			o.log.Error("failed to delete skill", "group", group.Name, "skill", payload.Name, "error", err)
+		} else {
+			o.log.Info("skill deleted", "group", group.Name, "skill", payload.Name)
 		}
 
 	case ipc.IPCShutdown:

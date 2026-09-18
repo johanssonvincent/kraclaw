@@ -20,6 +20,9 @@ const (
 	IPCTaskDelete    IPCMessageType = "task_delete"
 	IPCSetModel      IPCMessageType = "set_model"
 	IPCShutdown      IPCMessageType = "shutdown"
+	IPCSkillCreate   IPCMessageType = "skill_create"
+	IPCSkillUpdate   IPCMessageType = "skill_update"
+	IPCSkillDelete   IPCMessageType = "skill_delete"
 
 	// DefaultAgentID is the well-known agent identifier used for the primary.
 	DefaultAgentID = "main"
