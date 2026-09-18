@@ -24,12 +24,16 @@ type StdioTransport struct {
 
 // NewStdioTransport creates a transport that runs an MCP server as a subprocess.
 func NewStdioTransport(command string, args []string, env []string, log Logger) *StdioTransport {
+	// Default to inheriting parent environment if none specified.
+	if env == nil {
+		env = os.Environ()
+	}
+
 	return &StdioTransport{
 		cmd: &exec.Cmd{
-			Path:   command,
-			Args:   append([]string{command}, args...),
-			Env:    env,
-			Stderr: os.Stderr,
+			Path: command,
+			Args: append([]string{command}, args...),
+			Env:  env,
 		},
 		log: log,
 	}
@@ -158,8 +162,8 @@ func (t *StdioTransport) Receive(ctx context.Context) (json.RawMessage, error) {
 
 // lineReader provides line-by-line reading with context support.
 type lineReader struct {
-	r    io.Reader
-	buf  []byte
+	r   io.Reader
+	buf []byte
 }
 
 func (lr *lineReader) ReadLine() ([]byte, error) {
@@ -174,6 +178,19 @@ func (lr *lineReader) ReadLine() ([]byte, error) {
 		if len(lr.buf) >= 1024*1024 {
 			// Line too long.
 			return nil, fmt.Errorf("stdio: line exceeds 1MB")
+		}
+
+		// Grow buffer if needed.
+		if len(lr.buf) == cap(lr.buf) {
+			newCap := cap(lr.buf)
+			if newCap == 0 {
+				newCap = 4096
+			} else {
+				newCap *= 2
+			}
+			newBuf := make([]byte, len(lr.buf), newCap)
+			copy(newBuf, lr.buf)
+			lr.buf = newBuf
 		}
 
 		n, err := lr.r.Read(lr.buf[len(lr.buf):cap(lr.buf)])
