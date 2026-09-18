@@ -23,6 +23,7 @@ const (
 	IPCSkillCreate   IPCMessageType = "skill_create"
 	IPCSkillUpdate   IPCMessageType = "skill_update"
 	IPCSkillDelete   IPCMessageType = "skill_delete"
+	IPCSkillReload   IPCMessageType = "skill_reload"
 
 	// DefaultAgentID is the well-known agent identifier used for the primary.
 	DefaultAgentID = "main"

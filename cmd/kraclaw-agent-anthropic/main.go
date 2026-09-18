@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -67,8 +68,41 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 	var history []anthropic.MessageParam
 
-	// Build system prompt with skills info.
-	systemPrompt := buildSystemPrompt(skillList)
+	// Protected skill list for hot-reload.
+	var (
+		skillMu     sync.RWMutex
+		skillCache  = skillList
+		workspace   = workspacePath
+	)
+
+	reloadSkills := func() {
+		list, err := skills.LoadAll(workspace)
+		if err != nil {
+			log.Warn("failed to reload skills", "error", err)
+			return
+		}
+
+		skillMu.Lock()
+		skillCache = list
+		skillMu.Unlock()
+
+		if len(list) > 0 {
+			log.Info("skills reloaded", "count", len(list))
+		}
+	}
+
+	buildSystemPrompt := func() string {
+		skillMu.RLock()
+		defer skillMu.RUnlock()
+
+		prompt := "You are an AI assistant running in a Kraclaw sandbox."
+		skillsSummary := skills.FormatPromptSummary(skillCache)
+		if skillsSummary != "" {
+			prompt += "\n\n" + skillsSummary
+		}
+
+		return prompt
+	}
 
 	inputCh, ipcErrCh, err := ipc.ReadInput(ctx)
 	if err != nil {
@@ -103,7 +137,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					MaxTokens: maxTokens,
 					Messages:  msgs,
 					System: []anthropic.TextBlockParam{
-						{Type: "text", Text: systemPrompt},
+						{Type: "text", Text: buildSystemPrompt()},
 					},
 				})
 
@@ -163,6 +197,9 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					log.Info("model updated", "model", model)
 				}
 
+			case "skill_reload":
+				reloadSkills()
+
 			case "shutdown":
 				log.Info("shutdown signal received")
 				return nil
@@ -172,17 +209,6 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 			}
 		}
 	}
-}
-
-func buildSystemPrompt(skillList []skills.Skill) string {
-	prompt := "You are an AI assistant running in a Kraclaw sandbox."
-
-	skillsSummary := skills.FormatPromptSummary(skillList)
-	if skillsSummary != "" {
-		prompt += "\n\n" + skillsSummary
-	}
-
-	return prompt
 }
 
 func extractMessageText(payload json.RawMessage) (string, error) {
