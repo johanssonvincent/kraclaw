@@ -7,12 +7,185 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/johanssonvincent/kraclaw/internal/mcp"
+	"github.com/johanssonvincent/kraclaw/internal/store"
 	"github.com/johanssonvincent/kraclaw/pkg/agent"
 )
+
+type slogAdapter struct{}
+
+func (s slogAdapter) Info(msg string, fields ...any) {
+	slog.Info(msg, fields...)
+}
+
+func (s slogAdapter) Error(msg string, fields ...any) {
+	slog.Error(msg, fields...)
+}
+
+func (s slogAdapter) Debug(msg string, fields ...any) {
+	slog.Debug(msg, fields...)
+}
+
+type mcpToolClient struct {
+	stdioClients []*mcp.Client
+	httpClients  []*mcp.HTTPClient
+	mu           sync.RWMutex
+	tools        []mcp.ToolInfo
+}
+
+func newMCPToolClient(ctx context.Context) (*mcpToolClient, error) {
+	serversJSON := os.Getenv("KRACLAW_MCP_SERVERS")
+	if serversJSON == "" {
+		return &mcpToolClient{}, nil
+	}
+
+	servers, err := store.UnmarshalJSONFromEnv(serversJSON)
+	if err != nil {
+		return nil, fmt.Errorf("parse mcp servers: %w", err)
+	}
+
+	client := &mcpToolClient{}
+	logger := slogAdapter{}
+
+	for _, srv := range servers {
+		if !srv.Enabled {
+			continue
+		}
+
+		if err := srv.Validate(); err != nil {
+			slog.Warn("mcp server config invalid, skipping", "id", srv.ID, "error", err)
+			continue
+		}
+
+		switch srv.Transport {
+		case "stdio":
+			transport := mcp.NewStdioTransport(srv.Command, srv.Args, nil, logger)
+			c := mcp.New(transport, logger)
+			if err := c.Connect(ctx); err != nil {
+				slog.Warn("mcp stdio connect failed, skipping", "id", srv.ID, "error", err)
+				continue
+			}
+			client.stdioClients = append(client.stdioClients, c)
+			slog.Info("mcp stdio connected", "id", srv.ID, "name", srv.Name)
+		case "http":
+			c := mcp.NewHTTPClient(srv.URL, srv.Headers, logger)
+			if err := c.Connect(ctx); err != nil {
+				slog.Warn("mcp http connect failed, skipping", "id", srv.ID, "error", err)
+				continue
+			}
+			client.httpClients = append(client.httpClients, c)
+			slog.Info("mcp http connected", "id", srv.ID, "name", srv.Name)
+		}
+	}
+
+	// Discover all tools.
+	if err := client.discoverTools(ctx); err != nil {
+		slog.Error("mcp tool discovery failed", "error", err)
+	}
+
+	slog.Info("mcp tools loaded", "count", len(client.tools))
+
+	return client, nil
+}
+
+func (c *mcpToolClient) discoverTools(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var allTools []mcp.ToolInfo
+
+	for _, client := range c.stdioClients {
+		tools, err := client.ListTools(ctx)
+		if err != nil {
+			slog.Warn("mcp list tools failed", "error", err)
+			continue
+		}
+		allTools = append(allTools, tools...)
+	}
+
+	for _, client := range c.httpClients {
+		tools, err := client.ListTools(ctx)
+		if err != nil {
+			slog.Warn("mcp list tools failed", "error", err)
+			continue
+		}
+		allTools = append(allTools, tools...)
+	}
+
+	c.tools = allTools
+
+	return nil
+}
+
+func (c *mcpToolClient) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.ToolResult, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Try stdio clients first.
+	for _, client := range c.stdioClients {
+		result, err := client.CallTool(ctx, name, args)
+		if err == nil {
+			return result, nil
+		}
+		// Tool not found on this server, try next.
+		if strings.Contains(err.Error(), "tools/call") {
+			continue
+		}
+		return nil, err
+	}
+
+	// Try HTTP clients.
+	for _, client := range c.httpClients {
+		result, err := client.CallTool(ctx, name, args)
+		if err == nil {
+			return result, nil
+		}
+		if strings.Contains(err.Error(), "tools/call") {
+			continue
+		}
+		return nil, err
+	}
+
+	return nil, fmt.Errorf("tool %q not found on any mcp server", name)
+}
+
+func (c *mcpToolClient) Close() {
+	for _, client := range c.stdioClients {
+		client.Disconnect()
+	}
+	for _, client := range c.httpClients {
+		client.Disconnect()
+	}
+}
+
+func formatMCPToolsAsPrompt(tools []mcp.ToolInfo) string {
+	if len(tools) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Available MCP Tools\n\n")
+	sb.WriteString("You have access to the following tools via MCP servers. Use them when relevant to the user's request.\n\n")
+
+	for _, tool := range tools {
+		sb.WriteString(fmt.Sprintf("### %s\n", tool.Name))
+		if tool.Description != "" {
+			sb.WriteString(fmt.Sprintf("%s\n\n", tool.Description))
+		}
+		if len(tool.InputSchema) > 0 {
+			sb.WriteString("Input schema:\n")
+			sb.WriteString(string(tool.InputSchema))
+			sb.WriteString("\n\n")
+		}
+	}
+
+	return sb.String()
+}
 
 func main() {
 	if err := agent.Run(runAnthropic); err != nil {
@@ -39,6 +212,13 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 	maxTokens := int64(8192)
 
+	// Initialize MCP tool client.
+	mcpClient, err := newMCPToolClient(ctx)
+	if err != nil {
+		return fmt.Errorf("init mcp client: %w", err)
+	}
+	defer mcpClient.Close()
+
 	// Create Anthropic client pointing at the credential proxy.
 	client := anthropic.NewClient(
 		option.WithAPIKey("placeholder"), // Proxy injects real key.
@@ -49,6 +229,13 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 	log.Info("anthropic agent ready", "model", model, "proxy", proxyURL)
 
 	var history []anthropic.MessageParam
+
+	// Build system prompt with MCP tools info if available.
+	mcpToolsPrompt := formatMCPToolsAsPrompt(mcpClient.tools)
+	systemPrompt := "You are an AI assistant running in a Kraclaw sandbox."
+	if mcpToolsPrompt != "" {
+		systemPrompt += " When a user request can be fulfilled using an MCP tool, respond with a tool call in the format: TOOL_CALL:<tool_name>:<json_args>\n\n" + mcpToolsPrompt
+	}
 
 	inputCh, ipcErrCh, err := ipc.ReadInput(ctx)
 	if err != nil {
@@ -71,8 +258,13 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 				text, err := extractMessageText(msg.Payload)
 				if err != nil {
 					log.Warn("failed to extract message text", "error", err)
-
 					continue
+				}
+
+				// Check if this is a tool result callback.
+				if strings.HasPrefix(text, "TOOL_RESULT:") {
+					// For now, just include it in the conversation.
+					// A more sophisticated implementation would track pending tool calls.
 				}
 
 				msgs := make([]anthropic.MessageParam, len(history)+1)
@@ -83,6 +275,9 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					Model:     model,
 					MaxTokens: maxTokens,
 					Messages:  msgs,
+					System: []anthropic.TextBlockParam{
+						{Type: "text", Text: systemPrompt},
+					},
 				})
 
 				var buf strings.Builder
@@ -112,6 +307,50 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					continue
 				}
 
+				// Check for MCP tool call.
+				if strings.HasPrefix(fullResponse, "TOOL_CALL:") {
+					toolCall, err := parseToolCall(fullResponse)
+					if err != nil {
+						log.Warn("failed to parse tool call", "error", err)
+						break
+					}
+
+					log.Info("calling mcp tool", "name", toolCall.Name, "args", toolCall.Args)
+
+					result, err := mcpClient.CallTool(ctx, toolCall.Name, toolCall.Args)
+					if err != nil {
+						log.Error("mcp tool call failed", "tool", toolCall.Name, "error", err)
+
+						if sendErr := ipc.SendOutput(ctx, &agent.OutboundMessage{
+							Type: "message",
+							Text: fmt.Sprintf("Tool %s failed: %v", toolCall.Name, err),
+						}); sendErr != nil {
+							log.Error("failed to send error message", "error", sendErr)
+						}
+
+						continue
+					}
+
+					// Format tool result.
+					resultText := formatToolResult(result)
+
+					// Send result back to user.
+					if err := ipc.SendOutput(ctx, &agent.OutboundMessage{
+						Type: "message",
+						Text: resultText,
+					}); err != nil {
+						log.Error("failed to send tool result", "error", err)
+						continue
+					}
+
+					// Append tool interaction to history.
+					history = append(history, anthropic.NewUserMessage(anthropic.NewTextBlock(text)))
+					history = append(history, anthropic.NewAssistantMessage(anthropic.NewTextBlock(fullResponse)))
+					history = append(history, anthropic.NewUserMessage(anthropic.NewTextBlock("Tool result: " + resultText)))
+
+					continue
+				}
+
 				if fullResponse == "" {
 					log.Warn("anthropic returned empty response", "model", model)
 
@@ -123,7 +362,6 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					Text: fullResponse,
 				}); err != nil {
 					log.Error("failed to send response, discarding from history", "error", err)
-
 					continue
 				}
 				// Only append to history after successful send.
@@ -145,7 +383,6 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 			case "shutdown":
 				log.Info("shutdown signal received")
-
 				return nil
 
 			default:
@@ -153,6 +390,44 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 			}
 		}
 	}
+}
+
+type toolCall struct {
+	Name string
+	Args map[string]any
+}
+
+func parseToolCall(text string) (*toolCall, error) {
+	parts := strings.SplitN(text, ":", 3)
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("invalid tool call format")
+	}
+
+	name := parts[1]
+	argsJSON := parts[2]
+
+	var args map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return nil, fmt.Errorf("parse tool args: %w", err)
+	}
+
+	return &toolCall{Name: name, Args: args}, nil
+}
+
+func formatToolResult(result *mcp.ToolResult) string {
+	var sb strings.Builder
+	if result.IsError {
+		sb.WriteString("Error: ")
+	}
+
+	for i, block := range result.Content {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString(block.Text)
+	}
+
+	return sb.String()
 }
 
 func extractMessageText(payload json.RawMessage) (string, error) {
