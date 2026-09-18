@@ -234,7 +234,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 	mcpToolsPrompt := formatMCPToolsAsPrompt(mcpClient.tools)
 	systemPrompt := "You are an AI assistant running in a Kraclaw sandbox."
 	if mcpToolsPrompt != "" {
-		systemPrompt += " When a user request can be fulfilled using an MCP tool, respond with a tool call in the format: TOOL_CALL:<tool_name>:<json_args>\n\n" + mcpToolsPrompt
+		systemPrompt += "\n\nWhen you need to use a tool, respond ONLY with a tool call line and nothing else. Use this exact format:\nTOOL_CALL:<tool_name>:<json_args>\n\nExample: TOOL_CALL:get_weather:{\"city\": \"London\"}\n\nDo not include any other text before or after the tool call.\n\n" + mcpToolsPrompt
 	}
 
 	inputCh, ipcErrCh, err := ipc.ReadInput(ctx)
@@ -308,13 +308,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 				}
 
 				// Check for MCP tool call.
-				if strings.HasPrefix(fullResponse, "TOOL_CALL:") {
-					toolCall, err := parseToolCall(fullResponse)
-					if err != nil {
-						log.Warn("failed to parse tool call", "error", err)
-						continue
-					}
-
+				if toolCall, ok := extractToolCall(fullResponse); ok {
 					log.Info("calling mcp tool", "name", toolCall.Name, "args", toolCall.Args)
 
 					result, err := mcpClient.CallTool(ctx, toolCall.Name, toolCall.Args)
@@ -395,6 +389,26 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 type toolCall struct {
 	Name string
 	Args map[string]any
+}
+
+// extractToolCall finds a TOOL_CALL: line in the response and parses it.
+// Returns the parsed tool call and true if found, or nil and false if not.
+func extractToolCall(response string) (*toolCall, bool) {
+	for _, line := range strings.Split(response, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "TOOL_CALL:") {
+			continue
+		}
+
+		tc, err := parseToolCall(line)
+		if err != nil {
+			return nil, false
+		}
+
+		return tc, true
+	}
+
+	return nil, false
 }
 
 func parseToolCall(text string) (*toolCall, error) {
