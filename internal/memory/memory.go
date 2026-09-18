@@ -70,6 +70,17 @@ type Config struct {
 	ImportanceThreshold float64 `envconfig:"MEMORY_IMPORTANCE_THRESHOLD" default:"0.5"`
 }
 
+// defaultConfig returns a config with sensible defaults (used when not loaded via envconfig).
+func defaultConfig() Config {
+	return Config{
+		Enabled:             true,
+		StoragePath:         "/data/memories",
+		MaxMemoriesPerGroup: 1000,
+		RecallLimit:         10,
+		ImportanceThreshold: 0.5,
+	}
+}
+
 // Store manages memory operations.
 type Store struct {
 	cfg Config
@@ -86,6 +97,14 @@ type Store struct {
 
 // New creates a new memory store.
 func New(cfg Config) *Store {
+	// Apply defaults for zero values.
+	if cfg.MaxMemoriesPerGroup <= 0 {
+		cfg.MaxMemoriesPerGroup = 1000
+	}
+	if cfg.RecallLimit <= 0 {
+		cfg.RecallLimit = 10
+	}
+
 	s := &Store{
 		cfg:      cfg,
 		memories: make(map[string][]*Memory),
@@ -390,6 +409,9 @@ func (s *Store) FormatPrompt(memories []*Memory) string {
 // evictOldest removes the oldest/least important memories from a group.
 func (s *Store) evictOldest(groupJID string) {
 	mems := s.memories[groupJID]
+	if len(mems) == 0 {
+		return
+	}
 
 	// Sort by relevance (oldest/least accessed first).
 	s.sortByRelevanceAsc(mems)
@@ -399,8 +421,11 @@ func (s *Store) evictOldest(groupJID string) {
 	if removeCount < 1 {
 		removeCount = 1
 	}
+	if removeCount >= len(mems) {
+		removeCount = len(mems) - 1
+	}
 
-	for i := 0; i < removeCount && i < len(mems); i++ {
+	for i := 0; i < removeCount; i++ {
 		s.index.remove(mems[i].ID)
 	}
 
