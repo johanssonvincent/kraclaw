@@ -11,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/johanssonvincent/kraclaw/internal/skills"
 	"github.com/johanssonvincent/kraclaw/pkg/agent"
 )
 
@@ -39,6 +40,22 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 	maxTokens := int64(8192)
 
+	// Determine workspace path.
+	workspacePath := os.Getenv("KRACLAW_WORKSPACE_PATH")
+	if workspacePath == "" {
+		workspacePath = "/workspace"
+	}
+
+	// Load skills from workspace.
+	skillList, err := skills.LoadAll(workspacePath)
+	if err != nil {
+		log.Warn("failed to load skills", "error", err)
+	}
+
+	if len(skillList) > 0 {
+		log.Info("skills loaded", "count", len(skillList))
+	}
+
 	// Create Anthropic client pointing at the credential proxy.
 	client := anthropic.NewClient(
 		option.WithAPIKey("placeholder"), // Proxy injects real key.
@@ -49,6 +66,9 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 	log.Info("anthropic agent ready", "model", model, "proxy", proxyURL)
 
 	var history []anthropic.MessageParam
+
+	// Build system prompt with skills info.
+	systemPrompt := buildSystemPrompt(skillList)
 
 	inputCh, ipcErrCh, err := ipc.ReadInput(ctx)
 	if err != nil {
@@ -71,7 +91,6 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 				text, err := extractMessageText(msg.Payload)
 				if err != nil {
 					log.Warn("failed to extract message text", "error", err)
-
 					continue
 				}
 
@@ -83,6 +102,9 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					Model:     model,
 					MaxTokens: maxTokens,
 					Messages:  msgs,
+					System: []anthropic.TextBlockParam{
+						{Type: "text", Text: systemPrompt},
+					},
 				})
 
 				var buf strings.Builder
@@ -114,7 +136,6 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 				if fullResponse == "" {
 					log.Warn("anthropic returned empty response", "model", model)
-
 					fullResponse = "I received an empty response from the model. Please try again."
 				}
 
@@ -123,7 +144,6 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					Text: fullResponse,
 				}); err != nil {
 					log.Error("failed to send response, discarding from history", "error", err)
-
 					continue
 				}
 				// Only append to history after successful send.
@@ -145,7 +165,6 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 			case "shutdown":
 				log.Info("shutdown signal received")
-
 				return nil
 
 			default:
@@ -153,6 +172,17 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 			}
 		}
 	}
+}
+
+func buildSystemPrompt(skillList []skills.Skill) string {
+	prompt := "You are an AI assistant running in a Kraclaw sandbox."
+
+	skillsSummary := skills.FormatPromptSummary(skillList)
+	if skillsSummary != "" {
+		prompt += "\n\n" + skillsSummary
+	}
+
+	return prompt
 }
 
 func extractMessageText(payload json.RawMessage) (string, error) {
