@@ -1802,6 +1802,14 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 			o.log.Info("skill deleted", "group", group.Name, "skill", payload.Name)
 		}
 
+		// Broadcast reload to agents.
+		o.broadcastSkillReload(ctx, group.Folder)
+
+	case ipc.IPCSkillReload:
+		o.log.Info("skill_reload received", "group", group.Name)
+
+		o.broadcastSkillReload(ctx, group.Folder)
+
 	case ipc.IPCShutdown:
 		o.log.Info("agent shutdown received", "group", group.Name)
 
@@ -2169,4 +2177,14 @@ func (o *Orchestrator) recordFirstOutputPhase(chatJID string) {
 	}
 
 	metrics.ObserveSpawnPhase(metrics.PhaseFirstOutput, time.Since(start))
+}
+
+// broadcastSkillReload sends a skill_reload IPC message to the agent in a group.
+func (o *Orchestrator) broadcastSkillReload(ctx context.Context, groupFolder string) {
+	if err := o.ipc.SendInput(ctx, groupFolder, ipc.DefaultAgentID, &ipc.IPCMessage{
+		Type:    ipc.IPCSkillReload,
+		Payload: []byte("{}"),
+	}); err != nil {
+		o.log.Error("failed to broadcast skill_reload", "group", groupFolder, "error", err)
+	}
 }
