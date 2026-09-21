@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,20 +33,20 @@ const (
 
 // Subagent represents a spawned subagent for parallel work.
 type Subagent struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Prompt      string    `json:"prompt"`
-	Context     string    `json:"context,omitempty"`
-	ParentID    string    `json:"parent_id,omitempty"`
-	GroupJID    string    `json:"group_jid"`
-	Status      Status    `json:"status"`
-	Result      *string   `json:"result,omitempty"`
-	Error       *string   `json:"error,omitempty"`
-	Group       string    `json:"group,omitempty"` // For grouped completions.
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Prompt      string        `json:"prompt"`
+	Context     string        `json:"context,omitempty"`
+	ParentID    string        `json:"parent_id,omitempty"`
+	GroupJID    string        `json:"group_jid"`
+	Status      Status        `json:"status"`
+	Result      *string       `json:"result,omitempty"`
+	Error       *string       `json:"error,omitempty"`
+	Group       string        `json:"group,omitempty"` // For grouped completions.
 	Timeout     time.Duration `json:"timeout,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	CreatedAt   time.Time     `json:"created_at"`
+	StartedAt   *time.Time    `json:"started_at,omitempty"`
+	CompletedAt *time.Time    `json:"completed_at,omitempty"`
 }
 
 // AgentClient is the interface for spawning and communicating with agents.
@@ -79,12 +78,11 @@ type Config struct {
 
 // Manager manages subagent lifecycle.
 type Manager struct {
-	cfg     Config
-	client  AgentClient
-	mu      sync.RWMutex
-	agents  map[string]*Subagent
-	log     *slog.Logger
-	counter atomic.Int64
+	cfg    Config
+	client AgentClient
+	mu     sync.RWMutex
+	agents map[string]*Subagent
+	log    *slog.Logger
 }
 
 // New creates a new subagent manager.
@@ -103,6 +101,7 @@ func (m *Manager) Delegate(ctx context.Context, task *DelegationTask) (*Subagent
 
 	// Check concurrency limit.
 	running := 0
+
 	for _, a := range m.agents {
 		if a.Status == StatusRunning || a.Status == StatusPending {
 			running++
@@ -111,6 +110,7 @@ func (m *Manager) Delegate(ctx context.Context, task *DelegationTask) (*Subagent
 
 	if running >= m.cfg.MaxConcurrent {
 		m.mu.Unlock()
+
 		return nil, fmt.Errorf("subagent concurrency limit reached (%d/%d)", running, m.cfg.MaxConcurrent)
 	}
 
@@ -167,6 +167,7 @@ func (m *Manager) runSubagent(ctx context.Context, subagent *Subagent) {
 	agentID, err := m.client.Spawn(taskCtx, subagent.GroupJID, fullPrompt)
 	if err != nil {
 		m.completeSubagent(subagent, StatusFailed, nil, fmt.Errorf("spawn agent: %w", err))
+
 		return
 	}
 
@@ -179,9 +180,9 @@ func (m *Manager) runSubagent(ctx context.Context, subagent *Subagent) {
 
 	// Wait for result.
 	result, err := m.waitForResult(taskCtx, subagent, agentID)
-
 	if err != nil {
 		m.completeSubagent(subagent, StatusFailed, nil, err)
+
 		return
 	}
 
@@ -206,6 +207,7 @@ func (m *Manager) completeSubagent(subagent *Subagent, status Status, result *st
 
 	subagent.Status = status
 	subagent.Result = result
+
 	if err != nil {
 		subagent.Error = stringPtr(err.Error())
 	}
@@ -213,9 +215,10 @@ func (m *Manager) completeSubagent(subagent *Subagent, status Status, result *st
 	completed := time.Now()
 	subagent.CompletedAt = &completed
 
-	if status == StatusCompleted {
+	switch status {
+	case StatusCompleted:
 		m.log.Info("subagent completed", "id", subagent.ID, "duration", time.Since(*subagent.StartedAt).Round(time.Second))
-	} else if status == StatusFailed {
+	case StatusFailed:
 		m.log.Error("subagent failed", "id", subagent.ID, "error", err)
 	}
 }
@@ -223,7 +226,9 @@ func (m *Manager) completeSubagent(subagent *Subagent, status Status, result *st
 // DelegateBatch spawns multiple subagents in parallel and collects results.
 func (m *Manager) DelegateBatch(ctx context.Context, tasks []*DelegationTask) []*SubagentResult {
 	results := make([]*SubagentResult, len(tasks))
+
 	var wg sync.WaitGroup
+
 	var mu sync.Mutex
 
 	sem := make(chan struct{}, m.cfg.MaxConcurrent)
@@ -244,6 +249,7 @@ func (m *Manager) DelegateBatch(ctx context.Context, tasks []*DelegationTask) []
 					Error: err,
 				}
 				mu.Unlock()
+
 				return
 			}
 
@@ -389,13 +395,13 @@ func (m *Manager) Count() map[Status]int {
 
 // DelegationTask represents a task to delegate to a subagent.
 type DelegationTask struct {
-	Name      string
-	Prompt    string
-	Context   string
-	GroupJID  string
-	ParentID  string
-	Group     string // For grouped completions.
-	Timeout   time.Duration
+	Name     string
+	Prompt   string
+	Context  string
+	GroupJID string
+	ParentID string
+	Group    string // For grouped completions.
+	Timeout  time.Duration
 }
 
 // SubagentResult represents the result of a subagent execution.
@@ -410,6 +416,7 @@ func (r *SubagentResult) GetResult() string {
 	if r.Result != nil {
 		return *r.Result
 	}
+
 	return ""
 }
 
@@ -417,7 +424,7 @@ func (r *SubagentResult) GetResult() string {
 func FormatResults(results []*SubagentResult) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("## Subagent Results (%d total)\n\n", len(results)))
+	fmt.Fprintf(&sb, "## Subagent Results (%d total)\n\n", len(results))
 
 	success := 0
 	failed := 0
@@ -425,15 +432,17 @@ func FormatResults(results []*SubagentResult) string {
 	for i, r := range results {
 		if r.Error != nil {
 			failed++
-			sb.WriteString(fmt.Sprintf("%d. ❌ **%s**: %v\n\n", i+1, r.Subagent.Name, r.Error))
+
+			fmt.Fprintf(&sb, "%d. ❌ **%s**: %v\n\n", i+1, r.Subagent.Name, r.Error)
 		} else {
 			success++
-			sb.WriteString(fmt.Sprintf("%d. ✅ **%s**\n", i+1, r.Subagent.Name))
-			sb.WriteString(fmt.Sprintf("   %s\n\n", r.GetResult()))
+
+			fmt.Fprintf(&sb, "%d. ✅ **%s**\n", i+1, r.Subagent.Name)
+			fmt.Fprintf(&sb, "   %s\n\n", r.GetResult())
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf("\n**Summary**: %d succeeded, %d failed\n", success, failed))
+	fmt.Fprintf(&sb, "\n**Summary**: %d succeeded, %d failed\n", success, failed)
 
 	return sb.String()
 }
@@ -448,5 +457,6 @@ func errorFromString(s *string) error {
 	if s == nil {
 		return nil
 	}
+
 	return fmt.Errorf("%s", *s)
 }
