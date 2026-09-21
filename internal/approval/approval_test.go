@@ -93,8 +93,8 @@ func TestRequestApproval_ContextCancel(t *testing.T) {
 
 func TestRequestApproval_AutoApprove(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
-		Actions: []Action{ActionFileWrite},
+		Enabled:             true,
+		Actions:             []Action{ActionFileWrite},
 		AutoApprovePatterns: []string{"test"},
 	}
 	g := New(cfg)

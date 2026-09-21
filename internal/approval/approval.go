@@ -150,11 +150,13 @@ func (g *Gate) RequestApproval(ctx context.Context, req *Request) (*Request, err
 	if g.shouldAutoApprove(req) {
 		req.Status = StatusApproved
 		req.ApprovedBy = "auto-approval"
+
 		g.mu.Lock()
 		g.history = append(g.history, req)
 		g.mu.Unlock()
 
 		g.log.Info("approval auto-approved", "id", req.ID, "action", req.Action)
+
 		return req, nil
 	}
 
@@ -188,10 +190,13 @@ func (g *Gate) waitForApproval(id string) <-chan *Request {
 
 		// Start expiry timer.
 		var req *Request
+
 		g.mu.RLock()
+
 		if r, ok := g.pending[id]; ok {
 			req = r
 		}
+
 		g.mu.RUnlock()
 
 		if req == nil {
@@ -213,12 +218,15 @@ func (g *Gate) waitForApproval(id string) <-chan *Request {
 			switch r.Status {
 			case StatusApproved:
 				ch <- r
+
 				return
 			case StatusDenied:
 				ch <- r
+
 				return
 			case StatusExpired:
 				ch <- r
+
 				return
 			}
 
@@ -227,6 +235,7 @@ func (g *Gate) waitForApproval(id string) <-chan *Request {
 				g.mu.Lock()
 				if r, ok := g.pending[id]; ok {
 					r.Status = StatusExpired
+
 					delete(g.pending, id)
 					g.history = append(g.history, r)
 				}
@@ -237,6 +246,7 @@ func (g *Gate) waitForApproval(id string) <-chan *Request {
 				}
 
 				g.log.Info("approval expired", "id", id)
+
 				return
 			case <-time.After(100 * time.Millisecond):
 				// Poll for status change.
@@ -259,6 +269,7 @@ func (g *Gate) Approve(id string, approvedBy string) error {
 
 	req.Status = StatusApproved
 	req.ApprovedBy = approvedBy
+
 	delete(g.pending, id)
 	g.history = append(g.history, req)
 
@@ -283,6 +294,7 @@ func (g *Gate) Deny(id string, approvedBy string) error {
 
 	req.Status = StatusDenied
 	req.ApprovedBy = approvedBy
+
 	delete(g.pending, id)
 	g.history = append(g.history, req)
 
@@ -301,6 +313,7 @@ func (g *Gate) PendingRequests(groupJID string) []*Request {
 	defer g.mu.RUnlock()
 
 	var requests []*Request
+
 	for _, req := range g.pending {
 		if req.GroupJID == groupJID {
 			requests = append(requests, req)
@@ -368,6 +381,7 @@ func (g *Gate) HandleIPCMessage(msg *IPCMessage) error {
 	case "approval_request":
 		// Forward the request to the user for approval.
 		g.log.Info("approval ipc request", "id", msg.ID)
+
 		return nil
 
 	case "approval_approve":
