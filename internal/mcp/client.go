@@ -52,9 +52,9 @@ type Client struct {
 	transport Transport
 	log       Logger
 
-	mu        sync.RWMutex
-	initialized bool
-	serverName  string
+	mu            sync.RWMutex
+	initialized   bool
+	serverName    string
 	serverVersion string
 
 	// Pending requests: id -> chan response
@@ -161,7 +161,9 @@ func (c *Client) Disconnect() error {
 			Method:  "notifications/closed",
 		}
 
-		c.transport.Send(ctx, mustMarshal(notif))
+		if err := c.transport.Send(ctx, mustMarshal(notif)); err != nil {
+			c.log.Error("mcp: failed to send close notification", "error", err)
+		}
 	}
 
 	return c.transport.Close()
@@ -170,10 +172,13 @@ func (c *Client) Disconnect() error {
 // ListTools returns all tools exposed by the server.
 func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
 	c.mu.RLock()
+
 	if !c.initialized {
 		c.mu.RUnlock()
+
 		return nil, fmt.Errorf("mcp: not initialized")
 	}
+
 	c.mu.RUnlock()
 
 	req := jsonrpcRequest{
@@ -201,10 +206,13 @@ func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
 // CallTool invokes a tool on the server.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResult, error) {
 	c.mu.RLock()
+
 	if !c.initialized {
 		c.mu.RUnlock()
+
 		return nil, fmt.Errorf("mcp: not initialized")
 	}
+
 	c.mu.RUnlock()
 
 	req := jsonrpcRequest{
@@ -234,10 +242,13 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 // ListResources returns all resources exposed by the server.
 func (c *Client) ListResources(ctx context.Context) ([]ResourceInfo, error) {
 	c.mu.RLock()
+
 	if !c.initialized {
 		c.mu.RUnlock()
+
 		return nil, fmt.Errorf("mcp: not initialized")
 	}
+
 	c.mu.RUnlock()
 
 	req := jsonrpcRequest{
@@ -266,6 +277,7 @@ func (c *Client) ListResources(ctx context.Context) ([]ResourceInfo, error) {
 func (c *Client) ServerInfo() (name, version string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+
 	return c.serverName, c.serverVersion
 }
 
@@ -309,6 +321,7 @@ func (c *Client) receiveLoop(ctx context.Context) {
 		msg, err := c.transport.Receive(ctx)
 		if err != nil {
 			c.log.Error("mcp: receive error", "error", err)
+
 			return
 		}
 
@@ -325,6 +338,7 @@ func (c *Client) handleMessage(msg json.RawMessage) {
 
 	if err := json.Unmarshal(msg, &envelope); err != nil {
 		c.log.Debug("mcp: failed to parse message envelope", "error", err)
+
 		return
 	}
 
@@ -351,7 +365,9 @@ func (c *Client) handleMessage(msg json.RawMessage) {
 func (c *Client) nextRequestID() int64 {
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
+
 	c.nextID++
+
 	return c.nextID
 }
 
@@ -374,5 +390,6 @@ func mustMarshal(v any) json.RawMessage {
 	if err != nil {
 		panic(fmt.Sprintf("mcp: marshal: %v", err))
 	}
+
 	return b
 }

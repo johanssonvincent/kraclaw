@@ -59,26 +59,34 @@ func newMCPToolClient(ctx context.Context) (*mcpToolClient, error) {
 
 		if err := srv.Validate(); err != nil {
 			slog.Warn("mcp server config invalid, skipping", "id", srv.ID, "error", err)
+
 			continue
 		}
 
 		switch srv.Transport {
 		case "stdio":
 			transport := mcp.NewStdioTransport(srv.Command, srv.Args, nil, logger)
+
 			c := mcp.New(transport, logger)
 			if err := c.Connect(ctx); err != nil {
 				slog.Warn("mcp stdio connect failed, skipping", "id", srv.ID, "error", err)
+
 				continue
 			}
+
 			client.stdioClients = append(client.stdioClients, c)
+
 			slog.Info("mcp stdio connected", "id", srv.ID, "name", srv.Name)
 		case "http":
 			c := mcp.NewHTTPClient(srv.URL, srv.Headers, logger)
 			if err := c.Connect(ctx); err != nil {
 				slog.Warn("mcp http connect failed, skipping", "id", srv.ID, "error", err)
+
 				continue
 			}
+
 			client.httpClients = append(client.httpClients, c)
+
 			slog.Info("mcp http connected", "id", srv.ID, "name", srv.Name)
 		}
 	}
@@ -103,8 +111,10 @@ func (c *mcpToolClient) discoverTools(ctx context.Context) error {
 		tools, err := client.ListTools(ctx)
 		if err != nil {
 			slog.Warn("mcp list tools failed", "error", err)
+
 			continue
 		}
+
 		allTools = append(allTools, tools...)
 	}
 
@@ -112,8 +122,10 @@ func (c *mcpToolClient) discoverTools(ctx context.Context) error {
 		tools, err := client.ListTools(ctx)
 		if err != nil {
 			slog.Warn("mcp list tools failed", "error", err)
+
 			continue
 		}
+
 		allTools = append(allTools, tools...)
 	}
 
@@ -135,6 +147,7 @@ func (c *mcpToolClient) CallTool(ctx context.Context, name string, args map[stri
 			return result, nil
 		}
 		// Store last error but keep trying other servers.
+
 		lastErr = err
 	}
 
@@ -144,6 +157,7 @@ func (c *mcpToolClient) CallTool(ctx context.Context, name string, args map[stri
 		if err == nil {
 			return result, nil
 		}
+
 		lastErr = err
 	}
 
@@ -156,10 +170,11 @@ func (c *mcpToolClient) CallTool(ctx context.Context, name string, args map[stri
 
 func (c *mcpToolClient) Close() {
 	for _, client := range c.stdioClients {
-		client.Disconnect()
+		_ = client.Disconnect()
 	}
+
 	for _, client := range c.httpClients {
-		client.Disconnect()
+		_ = client.Disconnect()
 	}
 }
 
@@ -173,10 +188,12 @@ func formatMCPToolsAsPrompt(tools []mcp.ToolInfo) string {
 	sb.WriteString("You have access to the following tools via MCP servers. Use them when relevant to the user's request.\n\n")
 
 	for _, tool := range tools {
-		sb.WriteString(fmt.Sprintf("### %s\n", tool.Name))
+		fmt.Fprintf(&sb, "### %s\n", tool.Name)
+
 		if tool.Description != "" {
-			sb.WriteString(fmt.Sprintf("%s\n\n", tool.Description))
+			fmt.Fprintf(&sb, "%s\n\n", tool.Description)
 		}
+
 		if len(tool.InputSchema) > 0 {
 			sb.WriteString("Input schema:\n")
 			sb.WriteString(string(tool.InputSchema))
@@ -232,6 +249,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 	// Build system prompt with MCP tools info if available.
 	mcpToolsPrompt := formatMCPToolsAsPrompt(mcpClient.tools)
+
 	systemPrompt := "You are an AI assistant running in a Kraclaw sandbox."
 	if mcpToolsPrompt != "" {
 		systemPrompt += "\n\nWhen you need to use a tool, respond ONLY with a tool call line and nothing else. Use this exact format:\nTOOL_CALL:<tool_name>:<json_args>\n\nExample: TOOL_CALL:get_weather:{\"city\": \"London\"}\n\nDo not include any other text before or after the tool call.\n\n" + mcpToolsPrompt
@@ -258,14 +276,12 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 				text, err := extractMessageText(msg.Payload)
 				if err != nil {
 					log.Warn("failed to extract message text", "error", err)
+
 					continue
 				}
 
-				// Check if this is a tool result callback.
-				if strings.HasPrefix(text, "TOOL_RESULT:") {
-					// For now, just include it in the conversation.
-					// A more sophisticated implementation would track pending tool calls.
-				}
+				// Tool result callbacks are handled by the conversation flow.
+				// A more sophisticated implementation would track pending tool calls.
 
 				msgs := make([]anthropic.MessageParam, len(history)+1)
 				copy(msgs, history)
@@ -334,13 +350,14 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 						Text: resultText,
 					}); err != nil {
 						log.Error("failed to send tool result", "error", err)
+
 						continue
 					}
 
 					// Append tool interaction to history.
 					history = append(history, anthropic.NewUserMessage(anthropic.NewTextBlock(text)))
 					history = append(history, anthropic.NewAssistantMessage(anthropic.NewTextBlock(fullResponse)))
-					history = append(history, anthropic.NewUserMessage(anthropic.NewTextBlock("Tool result: " + resultText)))
+					history = append(history, anthropic.NewUserMessage(anthropic.NewTextBlock("Tool result: "+resultText)))
 
 					continue
 				}
@@ -356,6 +373,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					Text: fullResponse,
 				}); err != nil {
 					log.Error("failed to send response, discarding from history", "error", err)
+
 					continue
 				}
 				// Only append to history after successful send.
@@ -377,6 +395,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 			case "shutdown":
 				log.Info("shutdown signal received")
+
 				return nil
 
 			default:
@@ -455,6 +474,7 @@ func formatToolResult(result *mcp.ToolResult) string {
 		if i > 0 {
 			sb.WriteString("\n\n")
 		}
+
 		sb.WriteString(block.Text)
 	}
 
