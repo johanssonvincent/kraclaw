@@ -17,15 +17,15 @@ import (
 
 // Memory represents a single memory entry.
 type Memory struct {
-	ID          string    `json:"id"`
-	GroupJID    string    `json:"group_jid"`
-	Content     string    `json:"content"`
-	Tags        []string  `json:"tags,omitempty"`
-	Category    string    `json:"category,omitempty"`
-	Importance  float64   `json:"importance,omitempty"` // 0.0 to 1.0
-	AccessCount int       `json:"access_count,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	GroupJID     string    `json:"group_jid"`
+	Content      string    `json:"content"`
+	Tags         []string  `json:"tags,omitempty"`
+	Category     string    `json:"category,omitempty"`
+	Importance   float64   `json:"importance,omitempty"` // 0.0 to 1.0
+	AccessCount  int       `json:"access_count,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 	LastAccessed time.Time `json:"last_accessed,omitempty"`
 }
 
@@ -70,17 +70,6 @@ type Config struct {
 	ImportanceThreshold float64 `envconfig:"MEMORY_IMPORTANCE_THRESHOLD" default:"0.5"`
 }
 
-// defaultConfig returns a config with sensible defaults (used when not loaded via envconfig).
-func defaultConfig() Config {
-	return Config{
-		Enabled:             true,
-		StoragePath:         "/data/memories",
-		MaxMemoriesPerGroup: 1000,
-		RecallLimit:         10,
-		ImportanceThreshold: 0.5,
-	}
-}
-
 // Store manages memory operations.
 type Store struct {
 	cfg Config
@@ -101,6 +90,7 @@ func New(cfg Config) *Store {
 	if cfg.MaxMemoriesPerGroup <= 0 {
 		cfg.MaxMemoriesPerGroup = 1000
 	}
+
 	if cfg.RecallLimit <= 0 {
 		cfg.RecallLimit = 10
 	}
@@ -123,6 +113,7 @@ func (s *Store) Load(ctx context.Context) error {
 	entries, err := filepath.Glob(filepath.Join(s.cfg.StoragePath, "*.json"))
 	if err != nil {
 		s.log.Warn("failed to glob memory files", "error", err)
+
 		return nil // Not fatal.
 	}
 
@@ -173,6 +164,7 @@ func (s *Store) Save() error {
 
 	// Group memories by groupJID.
 	groups := make(map[string][]*Memory)
+
 	for _, mem := range s.memories {
 		for _, m := range mem {
 			groups[m.GroupJID] = append(groups[m.GroupJID], m)
@@ -319,6 +311,7 @@ func (s *Store) Update(ctx context.Context, mem *Memory) error {
 				s.index.update(mem)
 
 				s.log.Debug("memory updated", "id", mem.ID)
+
 				return nil
 			}
 		}
@@ -339,6 +332,7 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 				s.index.remove(id)
 
 				s.log.Debug("memory deleted", "id", id)
+
 				return nil
 			}
 		}
@@ -394,10 +388,10 @@ func (s *Store) FormatPrompt(memories []*Memory) string {
 	sb.WriteString("## Relevant Memories\n\n")
 
 	for i, mem := range memories {
-		sb.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, mem.Category, mem.Content))
+		fmt.Fprintf(&sb, "%d. [%s] %s\n", i+1, mem.Category, mem.Content)
 
 		if len(mem.Tags) > 0 {
-			sb.WriteString(fmt.Sprintf("   Tags: %s\n", strings.Join(mem.Tags, ", ")))
+			fmt.Fprintf(&sb, "   Tags: %s\n", strings.Join(mem.Tags, ", "))
 		}
 
 		sb.WriteString("\n")
@@ -421,6 +415,7 @@ func (s *Store) evictOldest(groupJID string) {
 	if removeCount < 1 {
 		removeCount = 1
 	}
+
 	if removeCount >= len(mems) {
 		removeCount = len(mems) - 1
 	}
@@ -504,6 +499,7 @@ func (idx *searchIndex) remove(id string) {
 
 	for term, ids := range idx.termIndex {
 		delete(ids, id)
+
 		if len(ids) == 0 {
 			delete(idx.termIndex, term)
 		}
@@ -540,6 +536,7 @@ func (idx *searchIndex) search(query string, candidates []*Memory) []*Memory {
 
 	// Build result list.
 	var results []*Memory
+
 	for _, mem := range candidates {
 		if _, ok := scores[mem.ID]; ok {
 			results = append(results, mem)
