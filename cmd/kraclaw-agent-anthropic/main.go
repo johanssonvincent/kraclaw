@@ -81,6 +81,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 				text, err := extractMessageText(msg.Payload)
 				if err != nil {
 					log.Warn("failed to extract message text", "error", err)
+
 					continue
 				}
 
@@ -132,13 +133,14 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 							Text: resultText,
 						}); sendErr != nil {
 							log.Error("failed to send tool result", "error", sendErr)
+
 							continue
 						}
 
 						// Append tool interaction to history.
 						history = append(history, anthropic.NewUserMessage(anthropic.NewTextBlock(text)))
 						history = append(history, anthropic.NewAssistantMessage(anthropic.NewTextBlock(fullResponse)))
-						history = append(history, anthropic.NewUserMessage(anthropic.NewTextBlock("Tool result: " + resultText)))
+						history = append(history, anthropic.NewUserMessage(anthropic.NewTextBlock("Tool result: "+resultText)))
 
 						continue
 					}
@@ -155,6 +157,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					Text: fullResponse,
 				}); err != nil {
 					log.Error("failed to send response, discarding from history", "error", err)
+
 					continue
 				}
 				// Only append to history after successful send.
@@ -176,6 +179,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 			case "shutdown":
 				log.Info("shutdown signal received")
+
 				return nil
 
 			default:
@@ -199,6 +203,7 @@ func initSearchClient() *tools.SearchClient {
 	}
 
 	engineID := os.Getenv("KRACLAW_SEARCH_ENGINE_ID") // For Google Custom Search.
+
 	return tools.NewSearchClient(tools.Provider(provider), apiKey, engineID)
 }
 
