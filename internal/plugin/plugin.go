@@ -28,15 +28,15 @@ type Manifest struct {
 
 // ToolManifest describes a tool provided by the plugin.
 type ToolManifest struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	InputSchema map[string]any         `json:"input_schema,omitempty"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
 }
 
 // HookManifest describes a hook provided by the plugin.
 type HookManifest struct {
-	Name   string `json:"name"` // e.g., "on_message", "on_response", "on_tool_call"
-	Order  int    `json:"order,omitempty"` // Lower runs first.
+	Name  string `json:"name"`            // e.g., "on_message", "on_response", "on_tool_call"
+	Order int    `json:"order,omitempty"` // Lower runs first.
 }
 
 // CommandManifest describes a command provided by the plugin.
@@ -47,13 +47,13 @@ type CommandManifest struct {
 
 // Plugin represents a loaded plugin.
 type Plugin struct {
-	Manifest  Manifest
-	Path      string
-	Enabled   bool
-	Tools     map[string]ToolFunc
-	Hooks     map[string][]HookFunc
-	Commands  map[string]CommandFunc
-	Instance  any // Plugin instance for stateful plugins.
+	Manifest Manifest
+	Path     string
+	Enabled  bool
+	Tools    map[string]ToolFunc
+	Hooks    map[string][]HookFunc
+	Commands map[string]CommandFunc
+	Instance any // Plugin instance for stateful plugins.
 }
 
 // ToolFunc is a function that implements a tool.
@@ -89,8 +89,8 @@ type Manager struct {
 	cfg      Config
 	mu       sync.RWMutex
 	plugins  map[string]*Plugin
-	tools    map[string]*PluginTool // tool name -> (plugin, func)
-	hooks    map[string][]*PluginHook // hook name -> list
+	tools    map[string]*PluginTool    // tool name -> (plugin, func)
+	hooks    map[string][]*PluginHook  // hook name -> list
 	commands map[string]*PluginCommand // command name -> (plugin, func)
 	log      *slog.Logger
 }
@@ -153,6 +153,7 @@ func (m *Manager) loadDirectory(ctx context.Context, dir string) error {
 		if os.IsNotExist(err) {
 			return nil // Directory doesn't exist, that's fine.
 		}
+
 		return fmt.Errorf("read plugin directory: %w", err)
 	}
 
@@ -192,6 +193,7 @@ func (m *Manager) loadPlugin(ctx context.Context, path string) error {
 	m.mu.Lock()
 	if _, exists := m.plugins[manifest.Name]; exists {
 		m.mu.Unlock()
+
 		return fmt.Errorf("plugin %q already loaded", manifest.Name)
 	}
 	m.mu.Unlock()
@@ -199,6 +201,7 @@ func (m *Manager) loadPlugin(ctx context.Context, path string) error {
 	// Check required env vars.
 	if err := m.checkRequirements(manifest.Requires); err != nil {
 		m.log.Warn("plugin requirements not met, skipping", "name", manifest.Name, "error", err)
+
 		return nil
 	}
 
@@ -206,7 +209,7 @@ func (m *Manager) loadPlugin(ctx context.Context, path string) error {
 	plugin := &Plugin{
 		Manifest: manifest,
 		Path:     path,
-		Enabled:  manifest.Enabled || manifest.Enabled == false, // Default to enabled.
+		Enabled:  true, // Default to enabled.
 		Tools:    make(map[string]ToolFunc),
 		Hooks:    make(map[string][]HookFunc),
 		Commands: make(map[string]CommandFunc),
@@ -343,12 +346,14 @@ func (m *Manager) RunHook(ctx context.Context, name string, data any) (any, erro
 	})
 
 	result := data
+
 	for _, hook := range hooks {
 		if !hook.Plugin.Enabled {
 			continue
 		}
 
 		var err error
+
 		result, err = hook.Func(ctx, result)
 		if err != nil {
 			m.log.Error("hook failed", "name", name, "plugin", hook.Plugin.Manifest.Name, "error", err)
@@ -454,9 +459,10 @@ func (m *Manager) FormatToolsPrompt() string {
 	sb.WriteString("You have access to the following tools from plugins:\n\n")
 
 	for name, pt := range tools {
-		sb.WriteString(fmt.Sprintf("### %s (%s)\n", name, pt.Plugin.Manifest.Name))
+		fmt.Fprintf(&sb, "### %s (%s)\n", name, pt.Plugin.Manifest.Name)
+
 		if pt.Plugin.Manifest.Description != "" {
-			sb.WriteString(fmt.Sprintf("%s\n\n", pt.Plugin.Manifest.Description))
+			fmt.Fprintf(&sb, "%s\n\n", pt.Plugin.Manifest.Description)
 		}
 	}
 
