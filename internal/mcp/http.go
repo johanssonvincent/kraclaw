@@ -50,7 +50,9 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return fmt.Errorf("http: connect to %s: %w", t.url, err)
 	}
 
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.log.Debug("http: failed to close body", "error", err)
+	}
 
 	t.log.Debug("http transport started", "url", t.url)
 
@@ -104,7 +106,11 @@ func (t *HTTPTransport) CallHTTP(ctx context.Context, req jsonrpcRequest) (json.
 		return nil, fmt.Errorf("http: do request: %w", err)
 	}
 
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.log.Debug("http: failed to close body", "error", err)
+		}
+	}()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -127,9 +133,9 @@ type HTTPClient struct {
 	transport *HTTPTransport
 	log       Logger
 
-	mu          sync.RWMutex
-	initialized bool
-	serverName  string
+	mu            sync.RWMutex
+	initialized   bool
+	serverName    string
 	serverVersion string
 
 	nextID int64
@@ -213,10 +219,13 @@ func (c *HTTPClient) Disconnect() error {
 // ListTools returns all tools exposed by the server.
 func (c *HTTPClient) ListTools(ctx context.Context) ([]ToolInfo, error) {
 	c.mu.RLock()
+
 	if !c.initialized {
 		c.mu.RUnlock()
+
 		return nil, fmt.Errorf("mcp:http: not initialized")
 	}
+
 	c.mu.RUnlock()
 
 	req := jsonrpcRequest{
@@ -244,10 +253,13 @@ func (c *HTTPClient) ListTools(ctx context.Context) ([]ToolInfo, error) {
 // CallTool invokes a tool on the server.
 func (c *HTTPClient) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResult, error) {
 	c.mu.RLock()
+
 	if !c.initialized {
 		c.mu.RUnlock()
+
 		return nil, fmt.Errorf("mcp:http: not initialized")
 	}
+
 	c.mu.RUnlock()
 
 	req := jsonrpcRequest{
@@ -277,10 +289,13 @@ func (c *HTTPClient) CallTool(ctx context.Context, name string, args map[string]
 // ListResources returns all resources exposed by the server.
 func (c *HTTPClient) ListResources(ctx context.Context) ([]ResourceInfo, error) {
 	c.mu.RLock()
+
 	if !c.initialized {
 		c.mu.RUnlock()
+
 		return nil, fmt.Errorf("mcp:http: not initialized")
 	}
+
 	c.mu.RUnlock()
 
 	req := jsonrpcRequest{
@@ -309,11 +324,13 @@ func (c *HTTPClient) ListResources(ctx context.Context) ([]ResourceInfo, error) 
 func (c *HTTPClient) ServerInfo() (name, version string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+
 	return c.serverName, c.serverVersion
 }
 
 // nextRequestID generates the next request ID.
 func (c *HTTPClient) nextRequestID() int64 {
 	c.nextID++
+
 	return c.nextID
 }

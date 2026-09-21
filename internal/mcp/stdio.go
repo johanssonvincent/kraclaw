@@ -94,7 +94,9 @@ func (t *StdioTransport) Close() error {
 		case <-time.After(5 * time.Second):
 			// Force kill.
 			if t.cmd.Process != nil {
-				t.cmd.Process.Kill()
+				if err := t.cmd.Process.Kill(); err != nil {
+					errs = append(errs, fmt.Errorf("stdio: kill: %w", err))
+				}
 			}
 
 			<-done
@@ -151,8 +153,10 @@ func (t *StdioTransport) Receive(ctx context.Context) (json.RawMessage, error) {
 
 		// Validate JSON.
 		var _ json.RawMessage
+
 		if !json.Valid(line) {
 			t.log.Debug("stdio: non-JSON line, skipping", "line", string(line))
+
 			continue
 		}
 
@@ -172,6 +176,7 @@ func (lr *lineReader) ReadLine() ([]byte, error) {
 		if i >= 0 {
 			line := lr.buf[:i]
 			lr.buf = lr.buf[i+1:]
+
 			return line, nil
 		}
 
@@ -188,6 +193,7 @@ func (lr *lineReader) ReadLine() ([]byte, error) {
 			} else {
 				newCap *= 2
 			}
+
 			newBuf := make([]byte, len(lr.buf), newCap)
 			copy(newBuf, lr.buf)
 			lr.buf = newBuf
