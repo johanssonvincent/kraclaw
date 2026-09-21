@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -253,8 +254,16 @@ func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate path is within workspace.
+	absPath, err := s.validatePath(req.Path)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid path: %v", err), http.StatusBadRequest)
+
+		return
+	}
+
 	// Read file.
-	data, err := readFile(req.Path, s.cfg.MaxFileSize)
+	data, err := readFile(absPath, s.cfg.MaxFileSize)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("read file: %v", err), http.StatusInternalServerError)
 
@@ -302,8 +311,16 @@ func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate path is within workspace.
+	absPath, err := s.validatePath(req.Path)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid path: %v", err), http.StatusBadRequest)
+
+		return
+	}
+
 	// Write file.
-	if err := writeFile(req.Path, req.Content); err != nil {
+	if err := writeFile(absPath, req.Content); err != nil {
 		http.Error(w, fmt.Sprintf("write file: %v", err), http.StatusInternalServerError)
 
 		return
@@ -340,7 +357,15 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 		req.Path = "."
 	}
 
-	entries, err := listDirectory(req.Path)
+	// Validate path is within workspace.
+	absPath, err := s.validatePath(req.Path)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid path: %v", err), http.StatusBadRequest)
+
+		return
+	}
+
+	entries, err := listDirectory(absPath)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("list directory: %v", err), http.StatusInternalServerError)
 
@@ -386,11 +411,19 @@ func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
 		req.Path = "."
 	}
 
+	// Validate path is within workspace.
+	absPath, err := s.validatePath(req.Path)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid path: %v", err), http.StatusBadRequest)
+
+		return
+	}
+
 	if req.Limit <= 0 {
 		req.Limit = 50
 	}
 
-	results, err := searchFiles(req.Path, req.Pattern, req.Limit)
+	results, err := searchFiles(absPath, req.Pattern, req.Limit)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("search files: %v", err), http.StatusInternalServerError)
 
@@ -436,6 +469,18 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "command is required", http.StatusBadRequest)
 
 		return
+	}
+
+	// Validate workdir is within workspace.
+	if req.Workdir != "" {
+		absWorkdir, err := s.validatePath(req.Workdir)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid workdir: %v", err), http.StatusBadRequest)
+
+			return
+		}
+
+		req.Workdir = absWorkdir
 	}
 
 	if req.Timeout <= 0 {
@@ -510,6 +555,30 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// validatePath ensures the path is within the workspace.
+func (s *Server) validatePath(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("invalid path %q: %w", path, err)
+	}
+
+	workspace := s.cfg.WorkspacePath
+	if workspace == "" {
+		workspace = "."
+	}
+
+	absWorkspace, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", fmt.Errorf("invalid workspace path %q: %w", workspace, err)
+	}
+
+	if !strings.HasPrefix(absPath, absWorkspace) {
+		return "", fmt.Errorf("path %q is outside workspace %q", path, workspace)
+	}
+
+	return absPath, nil
 }
 
 // readFile reads a file with size limit.
