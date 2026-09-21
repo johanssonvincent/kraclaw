@@ -11,7 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
-	kraclawctx "github.com/johanssonvincent/kraclaw/internal/context"
+	"github.com/johanssonvincent/kraclaw/internal/contextfiles"
 	"github.com/johanssonvincent/kraclaw/pkg/agent"
 )
 
@@ -46,7 +46,7 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 		workspacePath = "/workspace"
 	}
 
-	contextFiles, err := kraclawctx.Load(workspacePath)
+	contextFiles, err := contextfiles.Load(workspacePath)
 	if err != nil {
 		log.Warn("failed to load context files", "error", err)
 	}
