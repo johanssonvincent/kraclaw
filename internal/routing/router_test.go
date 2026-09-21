@@ -18,8 +18,8 @@ func TestNew(t *testing.T) {
 
 func TestSelectProvider_FailoverOnly(t *testing.T) {
 	cfg := Config{
-		Strategy:        StrategyFailoverOnly,
-		PrimaryProvider: "anthropic",
+		Strategy:          StrategyFailoverOnly,
+		PrimaryProvider:   "anthropic",
 		FailoverProviders: "openai",
 	}
 	reg := provider.NewRegistry()
@@ -65,7 +65,7 @@ func TestSelectProvider_RoundRobin(t *testing.T) {
 
 func TestRecordSuccess(t *testing.T) {
 	cfg := Config{
-		Strategy: StrategyFailoverOnly,
+		Strategy:         StrategyFailoverOnly,
 		HealthyThreshold: 2,
 	}
 	reg := provider.NewRegistry()
@@ -83,7 +83,7 @@ func TestRecordSuccess(t *testing.T) {
 
 func TestRecordFailure(t *testing.T) {
 	cfg := Config{
-		Strategy:         StrategyFailoverOnly,
+		Strategy:           StrategyFailoverOnly,
 		UnhealthyThreshold: 3,
 	}
 	reg := provider.NewRegistry()
