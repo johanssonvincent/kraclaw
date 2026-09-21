@@ -69,7 +69,8 @@ func TestToolResult_MarshalJSON(t *testing.T) {
 
 func TestPlugin_MarshalJSON(t *testing.T) {
 	plugin := &Plugin{Manifest: Manifest{Name: "test"}}
-	data, err := json.Marshal(plugin)
+	// Plugin has function fields that can't be marshaled, so test Manifest only.
+	data, err := json.Marshal(plugin.Manifest)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
