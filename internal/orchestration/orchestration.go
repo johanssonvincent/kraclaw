@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,17 +42,17 @@ const (
 
 // Task represents a unit of work for an agent.
 type Task struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Prompt      string    `json:"prompt"`
-	AgentID     string    `json:"agent_id,omitempty"`
-	AgentRole   AgentRole `json:"agent_role,omitempty"`
-	DependsOn   []string  `json:"depends_on,omitempty"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Prompt      string     `json:"prompt"`
+	AgentID     string     `json:"agent_id,omitempty"`
+	AgentRole   AgentRole  `json:"agent_role,omitempty"`
+	DependsOn   []string   `json:"depends_on,omitempty"`
 	Status      TaskStatus `json:"status"`
-	Result      *string   `json:"result,omitempty"`
-	Error       *string   `json:"error,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	Result      *string    `json:"result,omitempty"`
+	Error       *string    `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
@@ -80,18 +79,18 @@ const (
 
 // Workflow represents a multi-agent workflow.
 type Workflow struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Pattern       Pattern   `json:"pattern"`
-	GroupJID      string    `json:"group_jid"`
-	Tasks         []*Task   `json:"tasks"`
-	Status        WorkflowStatus `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
-	CompletedAt   *time.Time `json:"completed_at,omitempty"`
-	Error         *string   `json:"error,omitempty"`
-	MaxRetries    int       `json:"max_retries,omitempty"`
-	Timeout       time.Duration `json:"timeout,omitempty"`
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Pattern     Pattern        `json:"pattern"`
+	GroupJID    string         `json:"group_jid"`
+	Tasks       []*Task        `json:"tasks"`
+	Status      WorkflowStatus `json:"status"`
+	CreatedAt   time.Time      `json:"created_at"`
+	StartedAt   *time.Time     `json:"started_at,omitempty"`
+	CompletedAt *time.Time     `json:"completed_at,omitempty"`
+	Error       *string        `json:"error,omitempty"`
+	MaxRetries  int            `json:"max_retries,omitempty"`
+	Timeout     time.Duration  `json:"timeout,omitempty"`
 }
 
 // WorkflowStatus represents the status of a workflow.
@@ -140,36 +139,35 @@ type Config struct {
 
 // Orchestrator manages multi-agent workflows.
 type Orchestrator struct {
-	cfg         Config
-	client      AgentClient
-	mu          sync.RWMutex
-	workflows   map[string]*Workflow
-	log         *slog.Logger
-	taskCounter atomic.Int64
+	cfg       Config
+	client    AgentClient
+	mu        sync.RWMutex
+	workflows map[string]*Workflow
+	log       *slog.Logger
 }
 
 // New creates a new orchestrator.
 func New(cfg Config, client AgentClient) *Orchestrator {
 	return &Orchestrator{
-		cfg:     cfg,
-		client:  client,
+		cfg:       cfg,
+		client:    client,
 		workflows: make(map[string]*Workflow),
-		log:     slog.With("component", "orchestration"),
+		log:       slog.With("component", "orchestration"),
 	}
 }
 
 // CreateWorkflow creates a new workflow with the specified pattern.
 func (o *Orchestrator) CreateWorkflow(ctx context.Context, name string, pattern Pattern, groupJID string, tasks []*Task) (*Workflow, error) {
 	w := &Workflow{
-		ID:        uuid.New().String(),
-		Name:      name,
-		Pattern:   pattern,
-		GroupJID:  groupJID,
-		Tasks:     tasks,
-		Status:    WorkflowStatusPending,
-		CreatedAt: time.Now(),
+		ID:         uuid.New().String(),
+		Name:       name,
+		Pattern:    pattern,
+		GroupJID:   groupJID,
+		Tasks:      tasks,
+		Status:     WorkflowStatusPending,
+		CreatedAt:  time.Now(),
 		MaxRetries: o.cfg.MaxRetries,
-		Timeout:   o.cfg.DefaultTimeout,
+		Timeout:    o.cfg.DefaultTimeout,
 	}
 
 	// Assign IDs to tasks.
@@ -237,13 +235,17 @@ func (o *Orchestrator) Run(ctx context.Context, workflowID string) (*Workflow, e
 	if err != nil {
 		workflow.Status = WorkflowStatusFailed
 		workflow.Error = stringPtr(err.Error())
+
 		now := time.Now()
 		workflow.CompletedAt = &now
+
 		o.log.Error("workflow failed", "id", workflowID, "error", err)
 	} else {
 		workflow.Status = WorkflowStatusCompleted
+
 		now := time.Now()
 		workflow.CompletedAt = &now
+
 		o.log.Info("workflow completed", "id", workflowID)
 	}
 
@@ -315,8 +317,11 @@ func (o *Orchestrator) runFanOutFanIn(ctx context.Context, workflow *Workflow) e
 
 	// Limit parallelism.
 	sem := make(chan struct{}, o.cfg.ParallelLimit)
+
 	var wg sync.WaitGroup
+
 	var mu sync.Mutex
+
 	var firstErr error
 
 	// Fan out: execute all tasks in parallel.
@@ -334,6 +339,7 @@ func (o *Orchestrator) runFanOutFanIn(ctx context.Context, workflow *Workflow) e
 				if firstErr == nil {
 					firstErr = err
 				}
+
 				t.Status = StatusFailed
 				t.Error = stringPtr(err.Error())
 				mu.Unlock()
@@ -392,6 +398,7 @@ func (o *Orchestrator) executeTask(ctx context.Context, workflow *Workflow, task
 
 	// Send to agent.
 	var result string
+
 	var err error
 
 	if task.AgentID != "" {
@@ -410,6 +417,7 @@ func (o *Orchestrator) executeTask(ctx context.Context, workflow *Workflow, task
 		o.mu.Unlock()
 
 		o.log.Error("task failed", "task_id", task.ID, "error", err)
+
 		return "", err
 	}
 
@@ -489,13 +497,14 @@ func parseTaskAssignments(output string) ([]taskAssignment, error) {
 	}
 
 	// Try JSON array in markdown block.
-	var lines []string
 	inBlock := false
+
 	var block strings.Builder
 
 	for _, line := range strings.Split(output, "\n") {
 		if strings.Contains(line, "```json") || strings.Contains(line, "```") {
 			inBlock = !inBlock
+
 			continue
 		}
 
@@ -503,8 +512,6 @@ func parseTaskAssignments(output string) ([]taskAssignment, error) {
 			block.WriteString(line)
 			block.WriteString("\n")
 		}
-
-		lines = append(lines, line)
 	}
 
 	if block.Len() > 0 {
@@ -537,7 +544,7 @@ func (w *Workflow) indexOfTask(task *Task) int {
 func FormatWorkflowPrompt(workflow *Workflow) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("You are the supervisor for workflow: %s\n\n", workflow.Name))
+	fmt.Fprintf(&sb, "You are the supervisor for workflow: %s\n\n", workflow.Name)
 	sb.WriteString("Your job is to analyze the task and decompose it into subtasks for worker agents.\n\n")
 
 	sb.WriteString("## Available Tasks\n\n")
@@ -547,7 +554,7 @@ func FormatWorkflowPrompt(workflow *Workflow) string {
 			continue
 		}
 
-		sb.WriteString(fmt.Sprintf("%d. %s: %s\n", i, task.Name, task.Description))
+		fmt.Fprintf(&sb, "%d. %s: %s\n", i, task.Name, task.Description)
 	}
 
 	sb.WriteString("\n## Output Format\n\n")

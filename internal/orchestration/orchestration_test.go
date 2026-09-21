@@ -80,8 +80,12 @@ func TestListWorkflows(t *testing.T) {
 	m := New(cfg, nil)
 	ctx := context.Background()
 
-	m.CreateWorkflow(ctx, "wf1", PatternFanOutFanIn, "group", nil)
-	m.CreateWorkflow(ctx, "wf2", PatternSequentialPipeline, "group", nil)
+	if _, err := m.CreateWorkflow(ctx, "wf1", PatternFanOutFanIn, "group", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CreateWorkflow(ctx, "wf2", PatternSequentialPipeline, "group", nil); err != nil {
+		t.Fatal(err)
+	}
 
 	workflows := m.ListWorkflows(ctx)
 	if len(workflows) != 2 {
