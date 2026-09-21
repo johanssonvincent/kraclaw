@@ -65,12 +65,12 @@ type Config struct {
 
 // ProviderCost holds cost information for a provider/model.
 type ProviderCost struct {
-	Provider    string
-	Model       string
-	InputCost   float64 // Cost per 1M input tokens
-	OutputCost  float64 // Cost per 1M output tokens
-	MinTokens   int
-	MaxTokens   int
+	Provider   string
+	Model      string
+	InputCost  float64 // Cost per 1M input tokens
+	OutputCost float64 // Cost per 1M output tokens
+	MinTokens  int
+	MaxTokens  int
 }
 
 // ProviderHealth tracks health status of a provider.
@@ -103,16 +103,16 @@ const (
 
 // Router handles provider selection and failover.
 type Router struct {
-	cfg           Config
-	registry      *provider.Registry
-	health        map[string]*ProviderHealth
-	costs         []ProviderCost
-	mu            sync.RWMutex
-	rrIndex       int
-	log           *slog.Logger
-	healthTicker  *time.Ticker
-	ctx           context.Context
-	cancel        context.CancelFunc
+	cfg          Config
+	registry     *provider.Registry
+	health       map[string]*ProviderHealth
+	costs        []ProviderCost
+	mu           sync.RWMutex
+	rrIndex      int
+	log          *slog.Logger
+	healthTicker *time.Ticker
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // New creates a new provider router.
@@ -338,9 +338,11 @@ func (r *Router) RecordSuccess(provider string, latencyMs float64) {
 	// Check if provider should be marked healthy.
 	if health.Status == StatusUnhealthy && health.ConsecutiveOK >= r.cfg.HealthyThreshold {
 		health.Status = StatusHealthy
+
 		r.log.Info("provider recovered", "provider", provider)
 	} else if health.Status == StatusUnknown && health.ConsecutiveOK >= r.cfg.HealthyThreshold {
 		health.Status = StatusHealthy
+
 		r.log.Info("provider marked healthy", "provider", provider)
 	}
 }
@@ -488,6 +490,7 @@ func (h *RetryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			selected, err := h.router.SelectProvider(r.Context(), groupJID)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("failed to select provider: %v", err), http.StatusBadGateway)
+
 				return
 			}
 
@@ -511,6 +514,7 @@ func (h *RetryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Record result.
 		if rec.statusCode < 500 {
 			h.router.RecordSuccess(provider, latencyMs)
+
 			return
 		}
 
