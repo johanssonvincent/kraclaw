@@ -40,27 +40,27 @@ func (c *SearchClient) Provider() string {
 
 // SearchResult is a single search result.
 type SearchResult struct {
-	Title       string `json:"title"`
-	URL         string `json:"url"`
-	Snippet     string `json:"snippet"`
-	Content     string `json:"content,omitempty"`
-	Score       float64 `json:"score,omitempty"`
-	PublishedDate string `json:"published_date,omitempty"`
+	Title         string  `json:"title"`
+	URL           string  `json:"url"`
+	Snippet       string  `json:"snippet"`
+	Content       string  `json:"content,omitempty"`
+	Score         float64 `json:"score,omitempty"`
+	PublishedDate string  `json:"published_date,omitempty"`
 }
 
 // SearchParams holds search parameters.
 type SearchParams struct {
-	Query       string
-	MaxResults  int
+	Query          string
+	MaxResults     int
 	IncludeContent bool
-	TimeRange   string // "day", "week", "month", "year"
+	TimeRange      string // "day", "week", "month", "year"
 }
 
 // DefaultParams returns default search parameters.
 func DefaultParams(query string) SearchParams {
 	return SearchParams{
-		Query:       query,
-		MaxResults:  5,
+		Query:          query,
+		MaxResults:     5,
 		IncludeContent: false,
 	}
 }
@@ -114,8 +114,8 @@ func (c *SearchClient) Search(ctx context.Context, params SearchParams) ([]Searc
 // searchTavily performs a search using Tavily API.
 func (c *SearchClient) searchTavily(ctx context.Context, params SearchParams) ([]SearchResult, error) {
 	reqBody := map[string]any{
-		"query":    params.Query,
-		"max_results": params.MaxResults,
+		"query":          params.Query,
+		"max_results":    params.MaxResults,
 		"include_answer": false,
 	}
 
@@ -145,26 +145,31 @@ func (c *SearchClient) searchTavily(ctx context.Context, params SearchParams) ([
 	if err != nil {
 		return nil, fmt.Errorf("execute search request: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
 		return nil, fmt.Errorf("search API returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
 		Results []struct {
-			Title         string `json:"title"`
-			URL           string `json:"url"`
-			Snippet       string `json:"content"`
+			Title         string  `json:"title"`
+			URL           string  `json:"url"`
+			Snippet       string  `json:"content"`
 			Score         float64 `json:"score"`
-			PublishedDate string `json:"published_date"`
+			PublishedDate string  `json:"published_date"`
 		} `json:"results"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		_ = resp.Body.Close()
+
 		return nil, fmt.Errorf("decode search response: %w", err)
 	}
+
+	_ = resp.Body.Close()
 
 	searchResults := make([]SearchResult, len(result.Results))
 	for i, r := range result.Results {
@@ -183,7 +188,7 @@ func (c *SearchClient) searchTavily(ctx context.Context, params SearchParams) ([
 // searchExa performs a search using Exa API.
 func (c *SearchClient) searchExa(ctx context.Context, params SearchParams) ([]SearchResult, error) {
 	reqBody := map[string]any{
-		"query": params.Query,
+		"query":      params.Query,
 		"numResults": params.MaxResults,
 	}
 
@@ -214,27 +219,32 @@ func (c *SearchClient) searchExa(ctx context.Context, params SearchParams) ([]Se
 	if err != nil {
 		return nil, fmt.Errorf("execute search request: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
 		return nil, fmt.Errorf("search API returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
 		Results []struct {
-			Title         string `json:"title"`
-			URL           string `json:"url"`
-			Snippet       string `json:"snippet"`
-			Text          string `json:"text"`
+			Title         string  `json:"title"`
+			URL           string  `json:"url"`
+			Snippet       string  `json:"snippet"`
+			Text          string  `json:"text"`
 			Score         float64 `json:"score"`
-			PublishedDate string `json:"publishedDate"`
+			PublishedDate string  `json:"publishedDate"`
 		} `json:"results"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		_ = resp.Body.Close()
+
 		return nil, fmt.Errorf("decode search response: %w", err)
 	}
+
+	_ = resp.Body.Close()
 
 	searchResults := make([]SearchResult, len(result.Results))
 	for i, r := range result.Results {
@@ -259,10 +269,10 @@ func (c *SearchClient) searchGoogle(ctx context.Context, params SearchParams) ([
 
 	endpoint := "https://www.googleapis.com/customsearch/v1"
 	paramsMap := url.Values{
-		"key":       {c.apiKey},
-		"cx":        {c.engineID},
-		"q":         {params.Query},
-		"num":       {fmt.Sprintf("%d", params.MaxResults)},
+		"key": {c.apiKey},
+		"cx":  {c.engineID},
+		"q":   {params.Query},
+		"num": {fmt.Sprintf("%d", params.MaxResults)},
 	}
 
 	if params.TimeRange != "" {
@@ -278,10 +288,11 @@ func (c *SearchClient) searchGoogle(ctx context.Context, params SearchParams) ([
 	if err != nil {
 		return nil, fmt.Errorf("execute search request: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
 		return nil, fmt.Errorf("search API returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -294,8 +305,12 @@ func (c *SearchClient) searchGoogle(ctx context.Context, params SearchParams) ([
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		_ = resp.Body.Close()
+
 		return nil, fmt.Errorf("decode search response: %w", err)
 	}
+
+	_ = resp.Body.Close()
 
 	searchResults := make([]SearchResult, len(result.Items))
 	for i, item := range result.Items {
@@ -312,6 +327,7 @@ func (c *SearchClient) searchGoogle(ctx context.Context, params SearchParams) ([
 // timeRangeToDates converts a time range string to start/end dates for Exa.
 func timeRangeToDates(timeRange string) (string, string) {
 	now := time.Now()
+
 	var start time.Time
 
 	switch timeRange {
@@ -353,25 +369,30 @@ func FormatAsPrompt(results []SearchResult) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Found %d results:\n\n", len(results)))
+	fmt.Fprintf(&sb, "Found %d results:\n\n", len(results))
 
 	for i, r := range results {
-		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, r.Title))
+		fmt.Fprintf(&sb, "%d. %s\n", i+1, r.Title)
+
 		if r.URL != "" {
-			sb.WriteString(fmt.Sprintf("   URL: %s\n", r.URL))
+			fmt.Fprintf(&sb, "   URL: %s\n", r.URL)
 		}
+
 		if r.PublishedDate != "" {
-			sb.WriteString(fmt.Sprintf("   Published: %s\n", r.PublishedDate))
+			fmt.Fprintf(&sb, "   Published: %s\n", r.PublishedDate)
 		}
+
 		if r.Content != "" {
 			content := r.Content
 			if len(content) > 500 {
 				content = content[:500] + "..."
 			}
-			sb.WriteString(fmt.Sprintf("   Content: %s\n", content))
+
+			fmt.Fprintf(&sb, "   Content: %s\n", content)
 		} else if r.Snippet != "" {
-			sb.WriteString(fmt.Sprintf("   %s\n", r.Snippet))
+			fmt.Fprintf(&sb, "   %s\n", r.Snippet)
 		}
+
 		sb.WriteString("\n")
 	}
 

@@ -116,13 +116,13 @@ func TestSearchParams_MaxResultsBounds(t *testing.T) {
 
 func TestFormatAsPrompt(t *testing.T) {
 	tests := []struct {
-		name     string
-		results  []SearchResult
+		name         string
+		results      []SearchResult
 		wantNonEmpty bool
 	}{
 		{
-			name:     "empty results",
-			results:  nil,
+			name:         "empty results",
+			results:      nil,
 			wantNonEmpty: true, // Returns "No search results found."
 		},
 		{
