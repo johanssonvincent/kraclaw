@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -58,7 +57,6 @@ type Config struct {
 // Client manages voice operations (TTS and STT).
 type Client struct {
 	cfg    Config
-	mu     sync.RWMutex
 	log    *slog.Logger
 	client *http.Client
 }
@@ -137,10 +135,14 @@ func (c *Client) synthesizeOpenAI(ctx context.Context, text string) ([]byte, err
 	if err != nil {
 		return nil, fmt.Errorf("execute tts request: %w", err)
 	}
-	defer resp.Body.Close()
+
+	if err := resp.Body.Close(); err != nil {
+		return nil, fmt.Errorf("close tts response body: %w", err)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+
 		return nil, fmt.Errorf("tts API returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -154,12 +156,12 @@ func (c *Client) synthesizeElevenLabs(ctx context.Context, text string) ([]byte,
 	}
 
 	reqBody := map[string]any{
-		"text":          text,
-		"model_id":      "eleven_turbo_v2",
+		"text":     text,
+		"model_id": "eleven_turbo_v2",
 		"voice_settings": map[string]any{
-			"stability": 0.5,
+			"stability":  0.5,
 			"similarity": 0.8,
-			"speed": c.cfg.TTSSpeed,
+			"speed":      c.cfg.TTSSpeed,
 		},
 	}
 
@@ -182,10 +184,14 @@ func (c *Client) synthesizeElevenLabs(ctx context.Context, text string) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("execute tts request: %w", err)
 	}
-	defer resp.Body.Close()
+
+	if err := resp.Body.Close(); err != nil {
+		return nil, fmt.Errorf("close tts response body: %w", err)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+
 		return nil, fmt.Errorf("tts API returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -196,7 +202,6 @@ func (c *Client) synthesizeElevenLabs(ctx context.Context, text string) ([]byte,
 func (c *Client) synthesizeEdge(ctx context.Context, text string) ([]byte, error) {
 	// Edge TTS uses a different protocol — we'll use a simple HTTP approach.
 	// This is a simplified implementation; production use should use the official SDK.
-
 	voice := c.cfg.VoiceID
 	if voice == "" || voice == "alloy" {
 		voice = "en-US-GuyNeural"
@@ -210,7 +215,7 @@ func (c *Client) synthesizeEdge(ctx context.Context, text string) ([]byte, error
 	reqBody := map[string]any{
 		"input": text,
 		"voice": voice,
-		"lang": lang,
+		"lang":  lang,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -230,10 +235,14 @@ func (c *Client) synthesizeEdge(ctx context.Context, text string) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("execute tts request: %w", err)
 	}
-	defer resp.Body.Close()
+
+	if err := resp.Body.Close(); err != nil {
+		return nil, fmt.Errorf("close tts response body: %w", err)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+
 		return nil, fmt.Errorf("tts API returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -306,10 +315,14 @@ func (c *Client) recognizeOpenAI(ctx context.Context, audio []byte) (string, err
 	if err != nil {
 		return "", fmt.Errorf("execute stt request: %w", err)
 	}
-	defer resp.Body.Close()
+
+	if err := resp.Body.Close(); err != nil {
+		return "", fmt.Errorf("close stt response body: %w", err)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+
 		return "", fmt.Errorf("stt API returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -342,19 +355,23 @@ func isFLAC(audio []byte) bool {
 // randomString generates a random string.
 func randomString(n int) string {
 	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+
 	b := make([]byte, n)
+
 	for i := range b {
 		b[i] = chars[int(time.Now().UnixNano())%len(chars)]
+
 		time.Sleep(time.Nanosecond)
 	}
+
 	return string(b)
 }
 
 // AudioMessage represents a voice message.
 type AudioMessage struct {
-	Audio []byte
+	Audio  []byte
 	Format string
-	Text  string // Optional transcript.
+	Text   string // Optional transcript.
 }
 
 // FormatAudioPrompt formats an audio message for display.
