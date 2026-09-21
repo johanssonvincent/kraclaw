@@ -69,7 +69,7 @@ func (c *K8sConfig) GroupsPVCPath(groupFolder string) string {
 }
 
 type ProxyConfig struct {
-	Addr string `envconfig:"PROXY_ADDR" default:":3001"`
+	Addr                 string `envconfig:"PROXY_ADDR" default:":3001"`
 	AnthropicUpstreamURL string `envconfig:"ANTHROPIC_UPSTREAM_URL" default:"https://api.anthropic.com"`
 	AnthropicAPIKey      string `envconfig:"ANTHROPIC_API_KEY"`
 	AnthropicAPIVersion  string `envconfig:"ANTHROPIC_VERSION" default:"2023-06-01"`
