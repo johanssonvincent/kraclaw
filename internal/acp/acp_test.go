@@ -25,7 +25,9 @@ func TestConfig_Disabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	s.Stop(ctx)
+	if err := s.Stop(ctx); err != nil {
+		t.Logf("failed to stop server: %v", err)
+	}
 }
 
 func TestHandleRoot(t *testing.T) {
@@ -37,7 +39,9 @@ func TestHandleRoot(t *testing.T) {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
 	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
 	if resp["status"] != "running" {
 		t.Errorf("status = %v, want running", resp["status"])
 	}
@@ -77,7 +81,9 @@ func TestHandleSessions_Post(t *testing.T) {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
 	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
 	if resp["session_id"] == "" {
 		t.Error("session_id should not be empty")
 	}
