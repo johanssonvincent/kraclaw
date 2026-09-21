@@ -275,11 +275,13 @@ func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.EnableFileOperations {
 		http.Error(w, "File operations disabled", http.StatusForbidden)
+
 		return
 	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
 		return
 	}
 
@@ -320,6 +322,7 @@ func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
 		return
 	}
 
@@ -357,6 +360,7 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
 		return
 	}
 
@@ -374,6 +378,7 @@ func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
 
 	if req.Pattern == "" {
 		http.Error(w, "pattern is required", http.StatusBadRequest)
+
 		return
 	}
 
@@ -388,6 +393,7 @@ func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
 	results, err := searchFiles(req.Path, req.Pattern, req.Limit)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("search files: %v", err), http.StatusInternalServerError)
+
 		return
 	}
 
@@ -404,11 +410,13 @@ func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.EnableTerminal {
 		http.Error(w, "Terminal operations disabled", http.StatusForbidden)
+
 		return
 	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
 		return
 	}
 
@@ -426,6 +434,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 
 	if req.Command == "" {
 		http.Error(w, "command is required", http.StatusBadRequest)
+
 		return
 	}
 
@@ -436,6 +445,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	output, err := runCommand(req.Command, req.Workdir, req.Timeout)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("run command: %v", err), http.StatusInternalServerError)
+
 		return
 	}
 
@@ -452,6 +462,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
 		return
 	}
 
@@ -468,6 +479,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if req.Message == "" {
 		http.Error(w, "message is required", http.StatusBadRequest)
+
 		return
 	}
 
@@ -492,6 +504,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
+
 			return
 		}
 
@@ -647,6 +660,7 @@ func runCommandFallback(ctx context.Context, cmd string, workdir string) (string
 		if stderr.Len() > 0 {
 			output += "\n" + stderr.String()
 		}
+
 		return "", fmt.Errorf("exit %d: %s", c.ProcessState.ExitCode(), output)
 	}
 
