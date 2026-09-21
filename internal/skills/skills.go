@@ -101,10 +101,12 @@ func FormatPromptSummary(skills []Skill) string {
 	sb.WriteString("You have the following skills. Use them when relevant to the user's request.\n\n")
 
 	for _, skill := range skills {
-		sb.WriteString(fmt.Sprintf("- **%s**: %s", skill.Name, skill.Description))
+		fmt.Fprintf(&sb, "- **%s**: %s", skill.Name, skill.Description)
+
 		if len(skill.Triggers) > 0 {
-			sb.WriteString(fmt.Sprintf(" (triggers: %s)", strings.Join(skill.Triggers, ", ")))
+			fmt.Fprintf(&sb, " (triggers: %s)", strings.Join(skill.Triggers, ", "))
 		}
+
 		sb.WriteString("\n")
 	}
 
@@ -121,6 +123,7 @@ func MatchTriggers(skills []Skill, query string) []Skill {
 		for _, trigger := range skill.Triggers {
 			if strings.Contains(queryLower, strings.ToLower(trigger)) {
 				matches = append(matches, skill)
+
 				break
 			}
 		}
@@ -132,7 +135,7 @@ func MatchTriggers(skills []Skill, query string) []Skill {
 // parseSkill extracts frontmatter and content from a SKILL.md file.
 func parseSkill(name, content string) (*Skill, error) {
 	skill := &Skill{
-		Name:   name,
+		Name:    name,
 		Content: content,
 	}
 
@@ -158,6 +161,7 @@ func parseSkill(name, content string) (*Skill, error) {
 			skill.Description = strings.TrimSpace(strings.TrimPrefix(line, "description:"))
 		} else if strings.HasPrefix(line, "triggers:") {
 			triggersStr := strings.TrimSpace(strings.TrimPrefix(line, "triggers:"))
+
 			triggersStr = strings.Trim(triggersStr, "[]")
 			for _, t := range strings.Split(triggersStr, ",") {
 				t = strings.TrimSpace(t)
