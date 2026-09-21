@@ -50,12 +50,12 @@ type Server struct {
 
 // Session represents an ACP client session.
 type Session struct {
-	ID          string    `json:"id"`
-	ClientName  string    `json:"client_name"`
-	ClientVersion string `json:"client_version,omitempty"`
-	Workspace   string    `json:"workspace,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	LastActive  time.Time `json:"last_active"`
+	ID            string    `json:"id"`
+	ClientName    string    `json:"client_name"`
+	ClientVersion string    `json:"client_version,omitempty"`
+	Workspace     string    `json:"workspace,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	LastActive    time.Time `json:"last_active"`
 }
 
 // New creates a new ACP server.
@@ -71,6 +71,7 @@ func New(cfg Config) *Server {
 func (s *Server) Start(ctx context.Context) error {
 	if !s.cfg.Enabled {
 		s.log.Info("ACP server disabled")
+
 		return nil
 	}
 
@@ -103,6 +104,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	go func() {
 		<-ctx.Done()
+
 		if err := s.Stop(context.Background()); err != nil {
 			s.log.Error("ACP server shutdown error", "error", err)
 		}
@@ -129,6 +131,7 @@ func (s *Server) Stop(ctx context.Context) error {
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
 		return
 	}
 
@@ -139,7 +142,10 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.log.Error("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -167,6 +173,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+
 		return
 	}
 
@@ -190,33 +197,43 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("ACP session created", "id", session.ID, "client", req.ClientName)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"session_id": session.ID,
-	})
+	}); err != nil {
+		s.log.Error("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	sessions := make([]*Session, 0, len(s.sessions))
+
 	for _, sess := range s.sessions {
 		sessions = append(sessions, sess)
 	}
+
 	s.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"sessions": sessions,
-	})
+	}); err != nil {
+		s.log.Error("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.EnableFileOperations {
 		http.Error(w, "File operations disabled", http.StatusForbidden)
+
 		return
 	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
 		return
 	}
 
@@ -226,11 +243,13 @@ func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+
 		return
 	}
 
 	if req.Path == "" {
 		http.Error(w, "path is required", http.StatusBadRequest)
+
 		return
 	}
 
@@ -238,15 +257,19 @@ func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 	data, err := readFile(req.Path, s.cfg.MaxFileSize)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("read file: %v", err), http.StatusInternalServerError)
+
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"path": req.Path,
+
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"path":    req.Path,
 		"content": string(data),
-		"size": len(data),
-	})
+		"size":    len(data),
+	}); err != nil {
+		s.log.Error("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
@@ -267,25 +290,31 @@ func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+
 		return
 	}
 
 	if req.Path == "" {
 		http.Error(w, "path is required", http.StatusBadRequest)
+
 		return
 	}
 
 	// Write file.
 	if err := writeFile(req.Path, req.Content); err != nil {
 		http.Error(w, fmt.Sprintf("write file: %v", err), http.StatusInternalServerError)
+
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"path": req.Path,
+
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"path":   req.Path,
 		"status": "ok",
-	})
+	}); err != nil {
+		s.log.Error("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
@@ -300,6 +329,7 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+
 		return
 	}
 
@@ -310,14 +340,18 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 	entries, err := listDirectory(req.Path)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("list directory: %v", err), http.StatusInternalServerError)
+
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"path": req.Path,
+
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"path":    req.Path,
 		"entries": entries,
-	})
+	}); err != nil {
+		s.log.Error("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
@@ -334,6 +368,7 @@ func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+
 		return
 	}
 
@@ -357,10 +392,13 @@ func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"pattern": req.Pattern,
 		"results": results,
-	})
+	}); err != nil {
+		s.log.Error("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
@@ -382,6 +420,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+
 		return
 	}
 
@@ -401,10 +440,13 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"command": req.Command,
-		"output": output,
-	})
+		"output":  output,
+	}); err != nil {
+		s.log.Error("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -420,6 +462,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+
 		return
 	}
 
@@ -433,9 +476,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	response := fmt.Sprintf("Received: %s\n\n(ACP chat integration pending — wire to Kraclaw agent IPC)", req.Message)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"response": response,
-	})
+	}); err != nil {
+		s.log.Error("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
@@ -494,9 +540,9 @@ func listDirectory(path string) ([]map[string]any, error) {
 		}
 
 		result = append(result, map[string]any{
-			"name": entry.Name(),
-			"is_dir": entry.IsDir(),
-			"size": info.Size(),
+			"name":     entry.Name(),
+			"is_dir":   entry.IsDir(),
+			"size":     info.Size(),
 			"modified": info.ModTime().Format(time.RFC3339),
 		})
 	}
@@ -592,6 +638,7 @@ func runCommandFallback(ctx context.Context, cmd string, workdir string) (string
 	}
 
 	var stdout, stderr bytes.Buffer
+
 	c.Stdout = &stdout
 	c.Stderr = &stderr
 
