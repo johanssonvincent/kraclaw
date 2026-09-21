@@ -90,9 +90,15 @@ func TestSearch(t *testing.T) {
 	s := New(Config{Enabled: true})
 	ctx := context.Background()
 
-	s.Add(ctx, &Memory{GroupJID: "test", Content: "Hello world"})
-	s.Add(ctx, &Memory{GroupJID: "test", Content: "Goodbye world"})
-	s.Add(ctx, &Memory{GroupJID: "test", Content: "Different content"})
+	if err := s.Add(ctx, &Memory{GroupJID: "test", Content: "Hello world"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(ctx, &Memory{GroupJID: "test", Content: "Goodbye world"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(ctx, &Memory{GroupJID: "test", Content: "Different content"}); err != nil {
+		t.Fatal(err)
+	}
 
 	results := s.Search(ctx, "test", "hello")
 	if len(results) == 0 {
@@ -110,7 +116,9 @@ func TestDelete(t *testing.T) {
 	ctx := context.Background()
 
 	mem := &Memory{GroupJID: "test", Content: "To be deleted"}
-	s.Add(ctx, mem)
+	if err := s.Add(ctx, mem); err != nil {
+		t.Fatal(err)
+	}
 
 	err := s.Delete(ctx, mem.ID)
 	if err != nil {
@@ -135,9 +143,15 @@ func TestCount(t *testing.T) {
 	s := New(Config{Enabled: true})
 	ctx := context.Background()
 
-	s.Add(ctx, &Memory{GroupJID: "group-a", Content: "A"})
-	s.Add(ctx, &Memory{GroupJID: "group-a", Content: "B"})
-	s.Add(ctx, &Memory{GroupJID: "group-b", Content: "C"})
+	if err := s.Add(ctx, &Memory{GroupJID: "group-a", Content: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(ctx, &Memory{GroupJID: "group-a", Content: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(ctx, &Memory{GroupJID: "group-b", Content: "C"}); err != nil {
+		t.Fatal(err)
+	}
 
 	if s.Count("group-a") != 2 {
 		t.Errorf("Count(group-a) = %d, want 2", s.Count("group-a"))
@@ -154,8 +168,12 @@ func TestClear(t *testing.T) {
 	s := New(Config{Enabled: true})
 	ctx := context.Background()
 
-	s.Add(ctx, &Memory{GroupJID: "test", Content: "A"})
-	s.Add(ctx, &Memory{GroupJID: "test", Content: "B"})
+	if err := s.Add(ctx, &Memory{GroupJID: "test", Content: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(ctx, &Memory{GroupJID: "test", Content: "B"}); err != nil {
+		t.Fatal(err)
+	}
 
 	err := s.Clear(ctx, "test")
 	if err != nil {
@@ -192,8 +210,12 @@ func TestRecall(t *testing.T) {
 	s := New(Config{Enabled: true})
 	ctx := context.Background()
 
-	s.Add(ctx, &Memory{GroupJID: "test", Content: "Important fact about testing"})
-	s.Add(ctx, &Memory{GroupJID: "test", Content: "Unrelated memory"})
+	if err := s.Add(ctx, &Memory{GroupJID: "test", Content: "Important fact about testing"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(ctx, &Memory{GroupJID: "test", Content: "Unrelated memory"}); err != nil {
+		t.Fatal(err)
+	}
 
 	results := s.Recall(ctx, "test", "testing")
 	if len(results) == 0 {
@@ -253,11 +275,15 @@ func TestLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MkdirTemp() error = %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Logf("failed to clean up temp dir: %v", err)
+		}
+	}()
 
 	cfg := Config{
-		Enabled:       true,
-		StoragePath:   tmpDir,
+		Enabled:             true,
+		StoragePath:         tmpDir,
 		MaxMemoriesPerGroup: 100,
 	}
 	s := New(cfg)
@@ -265,7 +291,9 @@ func TestLoad(t *testing.T) {
 	// Add memory.
 	ctx := context.Background()
 	mem := &Memory{GroupJID: "test", Content: "Test content"}
-	s.Add(ctx, mem)
+	if err := s.Add(ctx, mem); err != nil {
+		t.Fatal(err)
+	}
 
 	// Save.
 	if err := s.Save(); err != nil {
