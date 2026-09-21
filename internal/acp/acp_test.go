@@ -90,7 +90,7 @@ func TestHandleSessions_Post(t *testing.T) {
 }
 
 func TestHandleFilesRead(t *testing.T) {
-	s := New(Config{EnableFileOperations: true})
+	s := New(Config{EnableFileOperations: true, WorkspacePath: "/tmp"})
 	body := `{"path":"/tmp/test.txt"}`
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/files/read", strings.NewReader(body))
@@ -102,7 +102,7 @@ func TestHandleFilesRead(t *testing.T) {
 }
 
 func TestHandleFilesWrite(t *testing.T) {
-	s := New(Config{EnableFileOperations: true})
+	s := New(Config{EnableFileOperations: true, WorkspacePath: "/tmp"})
 	body := `{"path":"/tmp/test.txt","content":"test"}`
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/files/write", strings.NewReader(body))
@@ -114,7 +114,7 @@ func TestHandleFilesWrite(t *testing.T) {
 }
 
 func TestHandleFilesList(t *testing.T) {
-	s := New(Config{})
+	s := New(Config{WorkspacePath: "/tmp"})
 	body := `{"path":"/tmp"}`
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/files/list", strings.NewReader(body))
@@ -126,7 +126,7 @@ func TestHandleFilesList(t *testing.T) {
 }
 
 func TestHandleFilesSearch(t *testing.T) {
-	s := New(Config{})
+	s := New(Config{WorkspacePath: "/tmp"})
 	body := `{"path":"/tmp","pattern":"test"}`
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/files/search", strings.NewReader(body))
@@ -227,7 +227,7 @@ func TestHandleFilesWrite_MissingPath(t *testing.T) {
 }
 
 func TestHandleFilesWrite_MissingContent(t *testing.T) {
-	s := New(Config{EnableFileOperations: true})
+	s := New(Config{EnableFileOperations: true, WorkspacePath: "/tmp"})
 	body := `{"path":"/tmp/test.txt"}`
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/files/write", strings.NewReader(body))
@@ -273,7 +273,7 @@ func TestHandleFilesSearch_BadJSON(t *testing.T) {
 }
 
 func TestHandleFilesSearch_MissingPath(t *testing.T) {
-	s := New(Config{})
+	s := New(Config{WorkspacePath: "."})
 	body := `{"pattern":"test"}`
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/files/search", strings.NewReader(body))
