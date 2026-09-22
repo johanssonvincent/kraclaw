@@ -89,18 +89,23 @@ func (c *Client) Connect(ctx context.Context) error {
 	go c.receiveLoop(ctx)
 
 	// Send initialize request.
+	params, err := marshal(map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
+		"clientInfo": map[string]any{
+			"name":    "kraclaw-agent",
+			"version": "1.0.0",
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("mcp: marshal initialize params: %w", err)
+	}
+
 	req := jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      c.nextRequestID(),
 		Method:  "initialize",
-		Params: mustMarshal(map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{},
-			"clientInfo": map[string]any{
-				"name":    "kraclaw-agent",
-				"version": "1.0.0",
-			},
-		}),
+		Params:  params,
 	}
 
 	resp, err := c.call(ctx, req)
@@ -138,7 +143,12 @@ func (c *Client) Connect(ctx context.Context) error {
 		Method:  "notifications/initialized",
 	}
 
-	if err := c.transport.Send(ctx, mustMarshal(notif)); err != nil {
+	notifBytes, err := marshal(notif)
+	if err != nil {
+		return fmt.Errorf("mcp: marshal initialized notification: %w", err)
+	}
+
+	if err := c.transport.Send(ctx, notifBytes); err != nil {
 		c.log.Error("mcp: failed to send initialized notification", "error", err)
 	}
 
@@ -161,7 +171,10 @@ func (c *Client) Disconnect() error {
 			Method:  "notifications/closed",
 		}
 
-		if err := c.transport.Send(ctx, mustMarshal(notif)); err != nil {
+		notifBytes, err := marshal(notif)
+		if err != nil {
+			c.log.Error("mcp: failed to marshal close notification", "error", err)
+		} else if err := c.transport.Send(ctx, notifBytes); err != nil {
 			c.log.Error("mcp: failed to send close notification", "error", err)
 		}
 	}
@@ -215,14 +228,19 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 
 	c.mu.RUnlock()
 
+	params, err := marshal(map[string]any{
+		"name":      name,
+		"arguments": args,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mcp: marshal tool call params: %w", err)
+	}
+
 	req := jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      c.nextRequestID(),
 		Method:  "tools/call",
-		Params: mustMarshal(map[string]any{
-			"name":      name,
-			"arguments": args,
-		}),
+		Params:  params,
 	}
 
 	resp, err := c.call(ctx, req)
@@ -297,7 +315,12 @@ func (c *Client) call(ctx context.Context, req jsonrpcRequest) (json.RawMessage,
 		c.pendingMu.Unlock()
 	}()
 
-	if err := c.transport.Send(ctx, mustMarshal(req)); err != nil {
+	reqBytes, err := marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: marshal request: %w", err)
+	}
+
+	if err := c.transport.Send(ctx, reqBytes); err != nil {
 		return nil, fmt.Errorf("mcp: send request: %w", err)
 	}
 
@@ -385,11 +408,11 @@ type jsonrpcNotification struct {
 	Params  any    `json:"params,omitempty"`
 }
 
-func mustMarshal(v any) json.RawMessage {
+func marshal(v any) (json.RawMessage, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		panic(fmt.Sprintf("mcp: marshal: %v", err))
+		return nil, fmt.Errorf("mcp: marshal: %w", err)
 	}
 
-	return b
+	return b, nil
 }

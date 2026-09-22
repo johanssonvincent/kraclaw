@@ -68,15 +68,9 @@ func (t *HTTPTransport) Close() error {
 	return nil
 }
 
-// Send is not used for HTTP transport (requests are synchronous).
-func (t *HTTPTransport) Send(ctx context.Context, msg json.RawMessage) error {
-	return fmt.Errorf("http: send not supported (use call directly)")
-}
-
-// Receive is not used for HTTP transport (responses are synchronous).
-func (t *HTTPTransport) Receive(ctx context.Context) (json.RawMessage, error) {
-	return nil, fmt.Errorf("http: receive not supported")
-}
+// HTTPTransport does not implement the Transport interface. HTTP is
+// request/response, not a persistent bidirectional stream. HTTPClient
+// wraps HTTPTransport and provides the same API as Client for HTTP servers.
 
 // CallHTTP performs a synchronous HTTP request to the MCP server.
 // This is used instead of Send/Receive for HTTP transport.
@@ -156,18 +150,23 @@ func (c *HTTPClient) Connect(ctx context.Context) error {
 	}
 
 	// Send initialize request.
+	params, err := marshal(map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
+		"clientInfo": map[string]any{
+			"name":    "kraclaw-agent",
+			"version": "1.0.0",
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("mcp:http: marshal initialize params: %w", err)
+	}
+
 	req := jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      c.nextRequestID(),
 		Method:  "initialize",
-		Params: mustMarshal(map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{},
-			"clientInfo": map[string]any{
-				"name":    "kraclaw-agent",
-				"version": "1.0.0",
-			},
-		}),
+		Params:  params,
 	}
 
 	resp, err := c.transport.CallHTTP(ctx, req)
@@ -262,14 +261,19 @@ func (c *HTTPClient) CallTool(ctx context.Context, name string, args map[string]
 
 	c.mu.RUnlock()
 
+	params, err := marshal(map[string]any{
+		"name":      name,
+		"arguments": args,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mcp:http: marshal tool call params: %w", err)
+	}
+
 	req := jsonrpcRequest{
 		JSONRPC: "2.0",
 		ID:      c.nextRequestID(),
 		Method:  "tools/call",
-		Params: mustMarshal(map[string]any{
-			"name":      name,
-			"arguments": args,
-		}),
+		Params:  params,
 	}
 
 	resp, err := c.transport.CallHTTP(ctx, req)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -31,11 +32,18 @@ func (s slogAdapter) Debug(msg string, fields ...any) {
 	slog.Debug(msg, fields...)
 }
 
+type serverInfo struct {
+	name  string
+	stdio *mcp.Client
+	http  *mcp.HTTPClient
+}
+
 type mcpToolClient struct {
-	stdioClients []*mcp.Client
-	httpClients  []*mcp.HTTPClient
-	mu           sync.RWMutex
-	tools        []mcp.ToolInfo
+	servers        []*serverInfo
+	mu             sync.RWMutex
+	tools          []mcp.ToolInfo
+	toolMap        map[string]*serverInfo
+	sanitizedNames map[string]string
 }
 
 func newMCPToolClient(ctx context.Context) (*mcpToolClient, error) {
@@ -74,7 +82,7 @@ func newMCPToolClient(ctx context.Context) (*mcpToolClient, error) {
 				continue
 			}
 
-			client.stdioClients = append(client.stdioClients, c)
+			client.servers = append(client.servers, &serverInfo{name: srv.Name, stdio: c})
 
 			slog.Info("mcp stdio connected", "id", srv.ID, "name", srv.Name)
 		case "http":
@@ -85,7 +93,7 @@ func newMCPToolClient(ctx context.Context) (*mcpToolClient, error) {
 				continue
 			}
 
-			client.httpClients = append(client.httpClients, c)
+			client.servers = append(client.servers, &serverInfo{name: srv.Name, http: c})
 
 			slog.Info("mcp http connected", "id", srv.ID, "name", srv.Name)
 		}
@@ -107,23 +115,31 @@ func (c *mcpToolClient) discoverTools(ctx context.Context) error {
 
 	var allTools []mcp.ToolInfo
 
-	for _, client := range c.stdioClients {
-		tools, err := client.ListTools(ctx)
+	c.toolMap = make(map[string]*serverInfo)
+	c.sanitizedNames = make(map[string]string)
+
+	for _, srv := range c.servers {
+		var (
+			tools []mcp.ToolInfo
+			err   error
+		)
+
+		if srv.stdio != nil {
+			tools, err = srv.stdio.ListTools(ctx)
+		} else if srv.http != nil {
+			tools, err = srv.http.ListTools(ctx)
+		}
+
 		if err != nil {
-			slog.Warn("mcp list tools failed", "error", err)
+			slog.Warn("mcp list tools failed", "server", srv.name, "error", err)
 
 			continue
 		}
 
-		allTools = append(allTools, tools...)
-	}
-
-	for _, client := range c.httpClients {
-		tools, err := client.ListTools(ctx)
-		if err != nil {
-			slog.Warn("mcp list tools failed", "error", err)
-
-			continue
+		for _, tool := range tools {
+			c.toolMap[tool.Name] = srv
+			safeName := sanitizeToolName(tool.Name)
+			c.sanitizedNames[safeName] = tool.Name
 		}
 
 		allTools = append(allTools, tools...)
@@ -136,46 +152,70 @@ func (c *mcpToolClient) discoverTools(ctx context.Context) error {
 
 func (c *mcpToolClient) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.ToolResult, error) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 
-	var lastErr error
-
-	// Try stdio clients first.
-	for _, client := range c.stdioClients {
-		result, err := client.CallTool(ctx, name, args)
-		if err == nil {
-			return result, nil
-		}
-		// Store last error but keep trying other servers.
-
-		lastErr = err
+	originalName, ok := c.sanitizedNames[name]
+	if !ok {
+		originalName = name
 	}
 
-	// Try HTTP clients.
-	for _, client := range c.httpClients {
-		result, err := client.CallTool(ctx, name, args)
-		if err == nil {
-			return result, nil
-		}
+	srv, ok := c.toolMap[originalName]
+	c.mu.RUnlock()
 
-		lastErr = err
+	if !ok {
+		return nil, fmt.Errorf("tool %q not found on any mcp server", name)
 	}
 
-	if lastErr != nil {
-		return nil, fmt.Errorf("tool %q failed on all mcp servers: %w", name, lastErr)
+	// 30s timeout to prevent hung MCP servers from blocking the agent.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if srv.stdio != nil {
+		return srv.stdio.CallTool(ctx, originalName, args)
 	}
 
-	return nil, fmt.Errorf("tool %q not found on any mcp server", name)
+	return srv.http.CallTool(ctx, originalName, args)
 }
 
 func (c *mcpToolClient) Close() {
-	for _, client := range c.stdioClients {
-		_ = client.Disconnect()
+	for _, srv := range c.servers {
+		if srv.stdio != nil {
+			_ = srv.stdio.Disconnect()
+		}
+
+		if srv.http != nil {
+			_ = srv.http.Disconnect()
+		}
+	}
+}
+
+func sanitizeToolName(name string) string {
+	var sb strings.Builder
+
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			sb.WriteRune(r)
+		} else {
+			sb.WriteRune('_')
+		}
 	}
 
-	for _, client := range c.httpClients {
-		_ = client.Disconnect()
+	return sb.String()
+}
+
+func sanitizeDescription(desc string) string {
+	desc = strings.TrimSpace(desc)
+	desc = strings.ReplaceAll(desc, "\n", " ")
+	desc = strings.ReplaceAll(desc, "\r", " ")
+
+	for strings.Contains(desc, "  ") {
+		desc = strings.ReplaceAll(desc, "  ", " ")
 	}
+
+	if len(desc) > 500 {
+		desc = desc[:500] + "..."
+	}
+
+	return desc
 }
 
 func formatMCPToolsAsPrompt(tools []mcp.ToolInfo) string {
@@ -188,10 +228,12 @@ func formatMCPToolsAsPrompt(tools []mcp.ToolInfo) string {
 	sb.WriteString("You have access to the following tools via MCP servers. Use them when relevant to the user's request.\n\n")
 
 	for _, tool := range tools {
-		fmt.Fprintf(&sb, "### %s\n", tool.Name)
+		safeName := sanitizeToolName(tool.Name)
+		fmt.Fprintf(&sb, "### %s\n", safeName)
 
 		if tool.Description != "" {
-			fmt.Fprintf(&sb, "%s\n\n", tool.Description)
+			safeDesc := sanitizeDescription(tool.Description)
+			fmt.Fprintf(&sb, "%s\n\n", safeDesc)
 		}
 
 		if len(tool.InputSchema) > 0 {
@@ -421,7 +463,9 @@ func extractToolCall(response string) (*toolCall, bool) {
 
 		tc, err := parseToolCall(line)
 		if err != nil {
-			return nil, false
+			slog.Warn("malformed tool call line", "line", line, "error", err)
+
+			continue
 		}
 
 		return tc, true
