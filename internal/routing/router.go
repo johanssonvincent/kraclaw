@@ -297,6 +297,10 @@ func (r *Router) selectLatencyOptimized(_ context.Context) (string, error) {
 func (r *Router) selectRoundRobin(_ context.Context) (string, error) {
 	providers := r.registry.Providers()
 
+	if len(providers) == 0 {
+		return r.cfg.PrimaryProvider, nil
+	}
+
 	r.mu.Lock()
 	idx := r.rrIndex % len(providers)
 	r.rrIndex++
