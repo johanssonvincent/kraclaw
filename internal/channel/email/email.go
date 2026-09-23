@@ -73,6 +73,7 @@ func (e *Email) SendMessage(_ context.Context, jid string, text string) error {
 
 	smtpHost := os.Getenv("EMAIL_SMTP_HOST")
 	smtpPort := os.Getenv("EMAIL_SMTP_PORT")
+
 	if smtpPort == "" {
 		smtpPort = "587"
 	}

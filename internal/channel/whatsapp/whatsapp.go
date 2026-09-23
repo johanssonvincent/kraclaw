@@ -30,23 +30,23 @@ func init() {
 
 // WhatsApp implements the channel.Channel interface for WhatsApp Business API.
 type WhatsApp struct {
-	accessToken string
+	accessToken   string
 	phoneNumberID string
-	apiVersion  string
-	connected   bool
-	cfg         channel.ChannelConfig
-	mu          sync.RWMutex
-	log         *slog.Logger
+	apiVersion    string
+	connected     bool
+	cfg           channel.ChannelConfig
+	mu            sync.RWMutex
+	log           *slog.Logger
 }
 
 // New creates a new WhatsApp channel.
 func New(cfg channel.ChannelConfig) *WhatsApp {
 	return &WhatsApp{
-		accessToken: os.Getenv("WHATSAPP_ACCESS_TOKEN"),
+		accessToken:   os.Getenv("WHATSAPP_ACCESS_TOKEN"),
 		phoneNumberID: os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
-		apiVersion:  os.Getenv("WHATSAPP_API_VERSION"),
-		cfg:         cfg,
-		log:         slog.With("channel", "whatsapp"),
+		apiVersion:    os.Getenv("WHATSAPP_API_VERSION"),
+		cfg:           cfg,
+		log:           slog.With("channel", "whatsapp"),
 	}
 }
 
@@ -77,6 +77,7 @@ func (w *WhatsApp) HandleWebhook(req *http.Request) error {
 
 	if mode == "subscribe" && token == verifyToken {
 		w.log.Info("whatsapp webhook verified", "challenge", challenge)
+
 		return nil
 	}
 
@@ -96,10 +97,10 @@ func (w *WhatsApp) HandleWebhook(req *http.Request) error {
 					} `json:"profile"`
 				} `json:"contact"`
 				Messages []struct {
-					ID    string `json:"id"`
+					ID        string `json:"id"`
 					Timestamp string `json:"timestamp"`
-					Type  string `json:"type"`
-					Text  struct {
+					Type      string `json:"type"`
+					Text      struct {
 						Body string `json:"body"`
 					} `json:"text"`
 				} `json:"messages"`
@@ -168,7 +169,7 @@ func (w *WhatsApp) SendMessage(_ context.Context, jid string, text string) error
 		MessagingProduct: "whatsapp",
 		To:               phoneNumber,
 		Type:             "text",
-		Text: textContent{Body: text},
+		Text:             textContent{Body: text},
 	}
 
 	body, err := json.Marshal(payload)
@@ -187,15 +188,24 @@ func (w *WhatsApp) SendMessage(_ context.Context, jid string, text string) error
 	req.Header.Set("Authorization", "Bearer "+w.accessToken)
 
 	client := &http.Client{Timeout: 10 * time.Second}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("send whatsapp message: %w", err)
 	}
-	defer resp.Body.Close()
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			w.log.Warn("failed to close response body", "err", err)
+		}
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		buf := new(bytes.Buffer)
-		buf.ReadFrom(resp.Body)
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("read response body: %w", err)
+		}
+
 		return fmt.Errorf("whatsapp API returned %d: %s", resp.StatusCode, buf.String())
 	}
 

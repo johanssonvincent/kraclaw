@@ -58,9 +58,9 @@ func (t *Teams) Connect(_ context.Context) error {
 }
 
 type adaptiveCard struct {
-	Type        string `json:"type"`
-	Version     string `json:"version"`
-	Body        []bodyElement `json:"body"`
+	Type    string        `json:"type"`
+	Version string        `json:"version"`
+	Body    []bodyElement `json:"body"`
 }
 
 type bodyElement struct {
@@ -70,8 +70,8 @@ type bodyElement struct {
 }
 
 type teamsPayload struct {
-	Type      string       `json:"type"`
-	Contents  []adaptiveCard `json:"contents"`
+	Type     string         `json:"type"`
+	Contents []adaptiveCard `json:"contents"`
 }
 
 func (t *Teams) SendMessage(_ context.Context, jid string, text string) error {
@@ -84,6 +84,7 @@ func (t *Teams) SendMessage(_ context.Context, jid string, text string) error {
 
 	// Parse webhook URL from JID if different, otherwise use default.
 	webhookURL := t.webhookURL
+
 	if jid != "" && jid != jidPrefix {
 		// Support multiple webhooks via JID format: teams:<webhook_name>
 		envKey := "TEAMS_WEBHOOK_" + strings.ToUpper(strings.TrimPrefix(jid, jidPrefix))
@@ -118,7 +119,11 @@ func (t *Teams) SendMessage(_ context.Context, jid string, text string) error {
 	if err != nil {
 		return fmt.Errorf("send teams message: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.log.Warn("failed to close response body", "err", err)
+		}
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("teams webhook returned %d", resp.StatusCode)
