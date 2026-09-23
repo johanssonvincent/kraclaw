@@ -66,12 +66,12 @@ func (s *Signal) HandleWebhook(req *http.Request) error {
 	}
 
 	var msg struct {
-		Type       string `json:"type"`
-		Timestamp  int64  `json:"timestamp"`
-		Envelope   struct {
-			Type       string `json:"type"`
-			Source     string `json:"source"`
-			SourceName string `json:"source_name"`
+		Type      string `json:"type"`
+		Timestamp int64  `json:"timestamp"`
+		Envelope  struct {
+			Type        string `json:"type"`
+			Source      string `json:"source"`
+			SourceName  string `json:"source_name"`
 			DataMessage struct {
 				Body string `json:"body"`
 			} `json:"data_message"`
@@ -143,15 +143,24 @@ func (s *Signal) SendMessage(_ context.Context, jid string, text string) error {
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 10 * time.Second}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("send signal message: %w", err)
 	}
-	defer resp.Body.Close()
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			s.log.Warn("failed to close response body", "err", err)
+		}
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		buf := new(bytes.Buffer)
-		buf.ReadFrom(resp.Body)
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			return fmt.Errorf("read response body: %w", err)
+		}
+
 		return fmt.Errorf("signal API returned %d: %s", resp.StatusCode, buf.String())
 	}
 
