@@ -232,20 +232,25 @@ func (g *Gate) waitForApproval(id string) <-chan *Request {
 
 			select {
 			case <-timer.C:
+				var expired *Request
+
 				g.mu.Lock()
 				if r, ok := g.pending[id]; ok {
 					r.Status = StatusExpired
 
 					delete(g.pending, id)
 					g.history = append(g.history, r)
+					expired = r
 				}
 				g.mu.Unlock()
 
-				if g.onExpired != nil {
-					g.onExpired(r)
+				if expired != nil && g.onExpired != nil {
+					g.onExpired(expired)
 				}
 
-				g.log.Info("approval expired", "id", id)
+				if expired != nil {
+					g.log.Info("approval expired", "id", id)
+				}
 
 				return
 			case <-time.After(100 * time.Millisecond):
@@ -259,19 +264,23 @@ func (g *Gate) waitForApproval(id string) <-chan *Request {
 
 // Approve approves a pending request.
 func (g *Gate) Approve(id string, approvedBy string) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	var req *Request
 
-	req, ok := g.pending[id]
-	if !ok {
+	g.mu.Lock()
+
+	req = g.pending[id]
+	if req != nil {
+		req.Status = StatusApproved
+		req.ApprovedBy = approvedBy
+
+		delete(g.pending, id)
+		g.history = append(g.history, req)
+	}
+	g.mu.Unlock()
+
+	if req == nil {
 		return fmt.Errorf("approval request not found: %s", id)
 	}
-
-	req.Status = StatusApproved
-	req.ApprovedBy = approvedBy
-
-	delete(g.pending, id)
-	g.history = append(g.history, req)
 
 	g.log.Info("approval granted", "id", id, "approved_by", approvedBy)
 
@@ -284,19 +293,23 @@ func (g *Gate) Approve(id string, approvedBy string) error {
 
 // Deny denies a pending request.
 func (g *Gate) Deny(id string, approvedBy string) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	var req *Request
 
-	req, ok := g.pending[id]
-	if !ok {
+	g.mu.Lock()
+
+	req = g.pending[id]
+	if req != nil {
+		req.Status = StatusDenied
+		req.ApprovedBy = approvedBy
+
+		delete(g.pending, id)
+		g.history = append(g.history, req)
+	}
+	g.mu.Unlock()
+
+	if req == nil {
 		return fmt.Errorf("approval request not found: %s", id)
 	}
-
-	req.Status = StatusDenied
-	req.ApprovedBy = approvedBy
-
-	delete(g.pending, id)
-	g.history = append(g.history, req)
 
 	g.log.Info("approval denied", "id", id, "approved_by", approvedBy)
 
