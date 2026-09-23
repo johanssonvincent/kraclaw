@@ -430,14 +430,19 @@ func FormatResults(results []*SubagentResult) string {
 	failed := 0
 
 	for i, r := range results {
+		name := fmt.Sprintf("Task %d", i+1)
+		if r.Subagent != nil {
+			name = r.Subagent.Name
+		}
+
 		if r.Error != nil {
 			failed++
 
-			fmt.Fprintf(&sb, "%d. ❌ **%s**: %v\n\n", i+1, r.Subagent.Name, r.Error)
+			fmt.Fprintf(&sb, "%d. ❌ **%s**: %v\n\n", i+1, name, r.Error)
 		} else {
 			success++
 
-			fmt.Fprintf(&sb, "%d. ✅ **%s**\n", i+1, r.Subagent.Name)
+			fmt.Fprintf(&sb, "%d. ✅ **%s**\n", i+1, name)
 			fmt.Fprintf(&sb, "   %s\n\n", r.GetResult())
 		}
 	}
