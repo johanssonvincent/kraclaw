@@ -148,11 +148,16 @@ type Orchestrator struct {
 
 // New creates a new orchestrator.
 func New(cfg Config, client AgentClient) *Orchestrator {
+	log := slog.With("component", "orchestration")
+	if !cfg.EnableLogging {
+		log = log.With("enabled", false)
+	}
+
 	return &Orchestrator{
 		cfg:       cfg,
 		client:    client,
 		workflows: make(map[string]*Workflow),
-		log:       slog.With("component", "orchestration"),
+		log:       log,
 	}
 }
 
@@ -191,15 +196,18 @@ func (o *Orchestrator) CreateWorkflow(ctx context.Context, name string, pattern 
 
 // Run executes a workflow.
 func (o *Orchestrator) Run(ctx context.Context, workflowID string) (*Workflow, error) {
-	o.mu.RLock()
-	workflow, ok := o.workflows[workflowID]
-	o.mu.RUnlock()
+	o.mu.Lock()
 
+	workflow, ok := o.workflows[workflowID]
 	if !ok {
+		o.mu.Unlock()
+
 		return nil, fmt.Errorf("workflow not found: %s", workflowID)
 	}
 
 	if workflow.Status != WorkflowStatusPending {
+		o.mu.Unlock()
+
 		return nil, fmt.Errorf("workflow %s is not pending (status: %s)", workflowID, workflow.Status)
 	}
 
@@ -207,9 +215,6 @@ func (o *Orchestrator) Run(ctx context.Context, workflowID string) (*Workflow, e
 	now := time.Now()
 	workflow.Status = WorkflowStatusRunning
 	workflow.StartedAt = &now
-
-	o.mu.Lock()
-	o.workflows[workflowID] = workflow
 	o.mu.Unlock()
 
 	o.log.Info("workflow started", "id", workflowID, "pattern", workflow.Pattern)
@@ -382,55 +387,70 @@ func (o *Orchestrator) runSequentialPipeline(ctx context.Context, workflow *Work
 	return nil
 }
 
-// executeTask executes a single task.
+// executeTask executes a single task with retries.
 func (o *Orchestrator) executeTask(ctx context.Context, workflow *Workflow, task *Task) (string, error) {
-	o.mu.Lock()
-	task.Status = StatusRunning
-	started := time.Now()
-	task.StartedAt = &started
-	o.mu.Unlock()
+	var lastErr error
 
-	o.log.Info("task started", "task_id", task.ID, "name", task.Name)
-
-	// Create context with timeout.
-	taskCtx, cancel := context.WithTimeout(ctx, workflow.Timeout)
-	defer cancel()
-
-	// Send to agent.
-	var result string
-
-	var err error
-
-	if task.AgentID != "" {
-		result, err = o.client.SendWithTimeout(taskCtx, task.AgentID, task.Prompt, workflow.Timeout)
-	} else {
-		// Use default agent (main).
-		result, err = o.client.SendWithTimeout(taskCtx, "main", task.Prompt, workflow.Timeout)
-	}
-
-	if err != nil {
+	for attempt := 0; attempt <= workflow.MaxRetries; attempt++ {
 		o.mu.Lock()
-		task.Status = StatusFailed
-		task.Error = stringPtr(err.Error())
+		task.Status = StatusRunning
+		started := time.Now()
+		task.StartedAt = &started
+		o.mu.Unlock()
+
+		o.log.Info("task started", "task_id", task.ID, "name", task.Name, "attempt", attempt+1)
+
+		// Create context with timeout.
+		taskCtx, cancel := context.WithTimeout(ctx, workflow.Timeout)
+
+		// Send to agent.
+		var (
+			result string
+			err    error
+		)
+
+		if task.AgentID != "" {
+			result, err = o.client.SendWithTimeout(taskCtx, task.AgentID, task.Prompt, workflow.Timeout)
+		} else {
+			// Use default agent (main).
+			result, err = o.client.SendWithTimeout(taskCtx, "main", task.Prompt, workflow.Timeout)
+		}
+
+		cancel()
+
+		if err != nil {
+			lastErr = err
+			o.log.Warn("task attempt failed", "task_id", task.ID, "attempt", attempt+1, "error", err)
+
+			if attempt < workflow.MaxRetries {
+				continue
+			}
+
+			o.mu.Lock()
+			task.Status = StatusFailed
+			task.Error = stringPtr(err.Error())
+			completed := time.Now()
+			task.CompletedAt = &completed
+			o.mu.Unlock()
+
+			o.log.Error("task failed after retries", "task_id", task.ID, "attempts", attempt+1, "error", err)
+
+			return "", err
+		}
+
+		o.mu.Lock()
+		task.Status = StatusCompleted
+		task.Result = &result
 		completed := time.Now()
 		task.CompletedAt = &completed
 		o.mu.Unlock()
 
-		o.log.Error("task failed", "task_id", task.ID, "error", err)
+		o.log.Info("task completed", "task_id", task.ID, "duration", time.Since(started), "attempts", attempt+1)
 
-		return "", err
+		return result, nil
 	}
 
-	o.mu.Lock()
-	task.Status = StatusCompleted
-	task.Result = &result
-	completed := time.Now()
-	task.CompletedAt = &completed
-	o.mu.Unlock()
-
-	o.log.Info("task completed", "task_id", task.ID, "duration", time.Since(started))
-
-	return result, nil
+	return "", lastErr
 }
 
 // GetWorkflow returns a workflow by ID.
