@@ -158,6 +158,7 @@ func (c *SearchClient) searchTavily(ctx context.Context, params SearchParams) ([
 			Title         string  `json:"title"`
 			URL           string  `json:"url"`
 			Snippet       string  `json:"content"`
+			RawContent    string  `json:"raw_content"`
 			Score         float64 `json:"score"`
 			PublishedDate string  `json:"published_date"`
 		} `json:"results"`
@@ -177,6 +178,7 @@ func (c *SearchClient) searchTavily(ctx context.Context, params SearchParams) ([
 			Title:         r.Title,
 			URL:           r.URL,
 			Snippet:       r.Snippet,
+			Content:       r.RawContent,
 			Score:         r.Score,
 			PublishedDate: r.PublishedDate,
 		}
