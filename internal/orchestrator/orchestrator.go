@@ -1748,6 +1748,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 			o.log.Error("failed to save skill", "group", group.Name, "skill", payload.Name, "error", err)
 		} else {
 			o.log.Info("skill created", "group", group.Name, "skill", payload.Name)
+			o.broadcastSkillReload(ctx, group.Folder)
 		}
 
 	case ipc.IPCSkillUpdate:
@@ -1778,6 +1779,7 @@ func (o *Orchestrator) handleIPCMessage(ctx context.Context, chatJID string, gro
 			o.log.Error("failed to update skill", "group", group.Name, "skill", payload.Name, "error", err)
 		} else {
 			o.log.Info("skill updated", "group", group.Name, "skill", payload.Name)
+			o.broadcastSkillReload(ctx, group.Folder)
 		}
 
 	case ipc.IPCSkillDelete:
