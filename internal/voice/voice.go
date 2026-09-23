@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -136,17 +137,23 @@ func (c *Client) synthesizeOpenAI(ctx context.Context, text string) ([]byte, err
 		return nil, fmt.Errorf("execute tts request: %w", err)
 	}
 
-	if err := resp.Body.Close(); err != nil {
-		return nil, fmt.Errorf("close tts response body: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 
 		return nil, fmt.Errorf("tts API returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read tts response body: %w", err)
+	}
+
+	if err := resp.Body.Close(); err != nil {
+		return nil, fmt.Errorf("close tts response body: %w", err)
+	}
+
+	return body, nil
 }
 
 // synthesizeElevenLabs uses ElevenLabs TTS API.
@@ -185,17 +192,23 @@ func (c *Client) synthesizeElevenLabs(ctx context.Context, text string) ([]byte,
 		return nil, fmt.Errorf("execute tts request: %w", err)
 	}
 
-	if err := resp.Body.Close(); err != nil {
-		return nil, fmt.Errorf("close tts response body: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 
 		return nil, fmt.Errorf("tts API returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read tts response body: %w", err)
+	}
+
+	if err := resp.Body.Close(); err != nil {
+		return nil, fmt.Errorf("close tts response body: %w", err)
+	}
+
+	return body, nil
 }
 
 // synthesizeEdge uses Microsoft Edge TTS (free).
@@ -236,17 +249,23 @@ func (c *Client) synthesizeEdge(ctx context.Context, text string) ([]byte, error
 		return nil, fmt.Errorf("execute tts request: %w", err)
 	}
 
-	if err := resp.Body.Close(); err != nil {
-		return nil, fmt.Errorf("close tts response body: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 
 		return nil, fmt.Errorf("tts API returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read tts response body: %w", err)
+	}
+
+	if err := resp.Body.Close(); err != nil {
+		return nil, fmt.Errorf("close tts response body: %w", err)
+	}
+
+	return body, nil
 }
 
 // Recognize converts speech audio to text.
@@ -316,12 +335,9 @@ func (c *Client) recognizeOpenAI(ctx context.Context, audio []byte) (string, err
 		return "", fmt.Errorf("execute stt request: %w", err)
 	}
 
-	if err := resp.Body.Close(); err != nil {
-		return "", fmt.Errorf("close stt response body: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 
 		return "", fmt.Errorf("stt API returned %d: %s", resp.StatusCode, string(body))
 	}
@@ -331,7 +347,13 @@ func (c *Client) recognizeOpenAI(ctx context.Context, audio []byte) (string, err
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		_ = resp.Body.Close()
+
 		return "", fmt.Errorf("decode stt response: %w", err)
+	}
+
+	if err := resp.Body.Close(); err != nil {
+		return "", fmt.Errorf("close stt response body: %w", err)
 	}
 
 	return result.Text, nil
@@ -352,16 +374,14 @@ func isFLAC(audio []byte) bool {
 	return len(audio) >= 4 && string(audio[:4]) == "fLaC"
 }
 
-// randomString generates a random string.
+// randomString generates a random string for multipart boundaries.
 func randomString(n int) string {
 	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
 
 	b := make([]byte, n)
 
 	for i := range b {
-		b[i] = chars[int(time.Now().UnixNano())%len(chars)]
-
-		time.Sleep(time.Nanosecond)
+		b[i] = chars[rand.Intn(len(chars))]
 	}
 
 	return string(b)
