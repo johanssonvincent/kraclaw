@@ -681,7 +681,12 @@ func runCommandImpl(ctx context.Context, cmd string, workdir string) (string, er
 }
 
 func runCommandFallback(ctx context.Context, cmd string, workdir string) (string, error) {
-	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return "", fmt.Errorf("empty command")
+	}
+
+	c := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	if workdir != "" {
 		c.Dir = workdir
 	}
