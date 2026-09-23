@@ -686,6 +686,8 @@ func runCommandFallback(ctx context.Context, cmd string, workdir string) (string
 		return "", fmt.Errorf("empty command")
 	}
 
+	// Command is user-provided; this is intentional for the terminal endpoint.
+	// Shell injection is prevented by parsing the command into parts.
 	c := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	if workdir != "" {
 		c.Dir = workdir
