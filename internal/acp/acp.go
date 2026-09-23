@@ -18,28 +18,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// Config holds ACP configuration.
 type Config struct {
-	// Enabled controls whether ACP is active.
-	Enabled bool `envconfig:"ACP_ENABLED" default:"false"`
-
-	// ListenAddr is the address to listen on.
-	ListenAddr string `envconfig:"ACP_LISTEN_ADDR" default:"127.0.0.1:6118"`
-
-	// WorkspacePath is the workspace directory.
-	WorkspacePath string `envconfig:"ACP_WORKSPACE_PATH"`
-
-	// EnableFileOperations controls whether file operations are allowed.
-	EnableFileOperations bool `envconfig:"ACP_FILE_OPS" default:"true"`
-
-	// EnableTerminal controls whether terminal operations are allowed.
-	EnableTerminal bool `envconfig:"ACP_TERMINAL" default:"true"`
-
-	// MaxFileSize is the maximum file size for read operations.
-	MaxFileSize int64 `envconfig:"ACP_MAX_FILE_SIZE" default:"1048576"` // 1MB
+	Enabled              bool   `envconfig:"ACP_ENABLED" default:"false"`
+	ListenAddr           string `envconfig:"ACP_LISTEN_ADDR" default:"127.0.0.1:6118"`
+	WorkspacePath        string `envconfig:"ACP_WORKSPACE_PATH"`
+	EnableFileOperations bool   `envconfig:"ACP_FILE_OPS" default:"true"`
+	EnableTerminal       bool   `envconfig:"ACP_TERMINAL" default:"true"`
+	MaxFileSize          int64  `envconfig:"ACP_MAX_FILE_SIZE" default:"1048576"`
 }
 
-// Server is the ACP server.
 type Server struct {
 	cfg      Config
 	httpSrv  *http.Server
@@ -49,7 +36,6 @@ type Server struct {
 	log      *slog.Logger
 }
 
-// Session represents an ACP client session.
 type Session struct {
 	ID            string    `json:"id"`
 	ClientName    string    `json:"client_name"`
@@ -59,7 +45,6 @@ type Session struct {
 	LastActive    time.Time `json:"last_active"`
 }
 
-// New creates a new ACP server.
 func New(cfg Config) *Server {
 	return &Server{
 		cfg:      cfg,
@@ -68,7 +53,6 @@ func New(cfg Config) *Server {
 	}
 }
 
-// Start starts the ACP server.
 func (s *Server) Start(ctx context.Context) error {
 	if !s.cfg.Enabled {
 		s.log.Info("ACP server disabled")
@@ -118,7 +102,6 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the ACP server.
 func (s *Server) Stop(ctx context.Context) error {
 	if s.httpSrv == nil {
 		return nil
@@ -254,7 +237,6 @@ func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate path is within workspace.
 	absPath, err := s.validatePath(req.Path)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("invalid path: %v", err), http.StatusBadRequest)
@@ -262,7 +244,6 @@ func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read file.
 	data, err := readFile(absPath, s.cfg.MaxFileSize)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("read file: %v", err), http.StatusInternalServerError)
@@ -311,7 +292,6 @@ func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate path is within workspace.
 	absPath, err := s.validatePath(req.Path)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("invalid path: %v", err), http.StatusBadRequest)
@@ -319,7 +299,6 @@ func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write file.
 	if err := writeFile(absPath, req.Content); err != nil {
 		http.Error(w, fmt.Sprintf("write file: %v", err), http.StatusInternalServerError)
 
@@ -357,7 +336,6 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 		req.Path = "."
 	}
 
-	// Validate path is within workspace.
 	absPath, err := s.validatePath(req.Path)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("invalid path: %v", err), http.StatusBadRequest)
@@ -411,7 +389,6 @@ func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
 		req.Path = "."
 	}
 
-	// Validate path is within workspace.
 	absPath, err := s.validatePath(req.Path)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("invalid path: %v", err), http.StatusBadRequest)
@@ -471,7 +448,6 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate workdir is within workspace.
 	if req.Workdir != "" {
 		absWorkdir, err := s.validatePath(req.Workdir)
 		if err != nil {
@@ -528,8 +504,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Forward to Kraclaw agent via IPC or direct call.
-	// For now, return a placeholder response.
 	response := fmt.Sprintf("Received: %s\n\n(ACP chat integration pending — wire to Kraclaw agent IPC)", req.Message)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -557,7 +531,6 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// validatePath ensures the path is within the workspace.
 func (s *Server) validatePath(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -574,14 +547,18 @@ func (s *Server) validatePath(path string) (string, error) {
 		return "", fmt.Errorf("invalid workspace path %q: %w", workspace, err)
 	}
 
-	if !strings.HasPrefix(absPath, absWorkspace) {
+	rel, err := filepath.Rel(absWorkspace, absPath)
+	if err != nil {
+		return "", fmt.Errorf("path %q is outside workspace %q: %w", path, workspace, err)
+	}
+
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
 		return "", fmt.Errorf("path %q is outside workspace %q", path, workspace)
 	}
 
 	return absPath, nil
 }
 
-// readFile reads a file with size limit.
 func readFile(path string, maxSize int64) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -595,7 +572,6 @@ func readFile(path string, maxSize int64) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// writeFile writes content to a file.
 func writeFile(path string, content string) error {
 	dir := strings.TrimSuffix(path, path[strings.LastIndex(path, "/"):])
 	if dir != "" && dir != "." {
@@ -607,7 +583,6 @@ func writeFile(path string, content string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
-// listDirectory lists directory entries.
 func listDirectory(path string) ([]map[string]any, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -632,13 +607,12 @@ func listDirectory(path string) ([]map[string]any, error) {
 	return result, nil
 }
 
-// searchFiles searches for files matching a pattern.
 func searchFiles(path string, pattern string, limit int) ([]string, error) {
 	var results []string
 
 	err := filepathWalk(path, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // Skip errors.
+			return nil
 		}
 
 		if len(results) >= limit {
@@ -659,7 +633,6 @@ func searchFiles(path string, pattern string, limit int) ([]string, error) {
 	return results, nil
 }
 
-// filepathWalk is a simple filepath walker.
 func filepathWalk(root string, fn func(path string, info os.FileInfo, err error) error) error {
 	info, err := os.Stat(root)
 	if err != nil {
@@ -691,13 +664,10 @@ func filepathWalk(root string, fn func(path string, info os.FileInfo, err error)
 	return nil
 }
 
-// runCommand runs a shell command.
 func runCommand(cmd string, workdir string, timeout int) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	// Use exec to run the command.
-	// For simplicity, we'll use a basic approach.
 	output, err := runCommandImpl(ctx, cmd, workdir)
 	if err != nil {
 		return "", err
@@ -706,13 +676,10 @@ func runCommand(cmd string, workdir string, timeout int) (string, error) {
 	return output, nil
 }
 
-// runCommandImpl is the actual command runner.
 func runCommandImpl(ctx context.Context, cmd string, workdir string) (string, error) {
-	// Import exec at package level instead.
 	return runCommandFallback(ctx, cmd, workdir)
 }
 
-// runCommandFallback runs a command using exec.
 func runCommandFallback(ctx context.Context, cmd string, workdir string) (string, error) {
 	c := exec.CommandContext(ctx, "sh", "-c", cmd)
 	if workdir != "" {

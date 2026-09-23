@@ -38,7 +38,7 @@ func TestHandleRoot(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
-	var resp map[string]interface{}
+	var resp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestHandleSessions_Post(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
-	var resp map[string]interface{}
+	var resp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestHandleSessions_Post(t *testing.T) {
 
 func TestHandleFilesRead(t *testing.T) {
 	s := New(Config{EnableFileOperations: true, WorkspacePath: "/tmp"})
-	body := `{"path":"/tmp/test.txt"}`
+	body := `{"path":"/tmp/acp_read_test_nonexistent.txt"}`
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/files/read", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
@@ -176,7 +176,6 @@ func TestHandleHealth_NotGet(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/health", nil)
 	s.handleHealth(w, r)
-	// Health endpoint doesn't check method, always returns OK
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
@@ -233,7 +232,6 @@ func TestHandleFilesWrite_MissingContent(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/files/write", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	s.handleFilesWrite(w, r)
-	// Content can be empty string, so this should succeed
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
@@ -256,7 +254,6 @@ func TestHandleFilesList_MissingPath(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/files/list", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	s.handleFilesList(w, r)
-	// Path defaults to "." if missing
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
@@ -279,7 +276,6 @@ func TestHandleFilesSearch_MissingPath(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/files/search", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	s.handleFilesSearch(w, r)
-	// Path defaults to "." if missing
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
