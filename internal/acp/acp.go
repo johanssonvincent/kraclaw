@@ -1,7 +1,6 @@
 package acp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,13 +8,13 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/johanssonvincent/kraclaw/internal/sandbox"
 )
 
 type Config struct {
@@ -33,6 +32,7 @@ type Server struct {
 	listener net.Listener
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	sandbox  *sandbox.Controller
 	log      *slog.Logger
 }
 
@@ -45,10 +45,11 @@ type Session struct {
 	LastActive    time.Time `json:"last_active"`
 }
 
-func New(cfg Config) *Server {
+func New(cfg Config, sb *sandbox.Controller) *Server {
 	return &Server{
 		cfg:      cfg,
 		sessions: make(map[string]*Session),
+		sandbox:  sb,
 		log:      slog.With("component", "acp"),
 	}
 }
@@ -432,6 +433,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Command string `json:"command"`
+		Sandbox string `json:"sandbox"`
 		Workdir string `json:"workdir"`
 		Timeout int    `json:"timeout"`
 	}
@@ -448,22 +450,22 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Workdir != "" {
-		absWorkdir, err := s.validatePath(req.Workdir)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("invalid workdir: %v", err), http.StatusBadRequest)
+	if req.Sandbox == "" {
+		http.Error(w, "sandbox is required", http.StatusBadRequest)
 
-			return
-		}
-
-		req.Workdir = absWorkdir
+		return
 	}
 
-	if req.Timeout <= 0 {
-		req.Timeout = 30
+	if s.sandbox == nil {
+		http.Error(w, "sandbox controller not configured", http.StatusInternalServerError)
+
+		return
 	}
 
-	output, err := runCommand(req.Command, req.Workdir, req.Timeout)
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(req.Timeout)*time.Second)
+	defer cancel()
+
+	output, err := s.sandbox.ExecInPod(ctx, req.Sandbox, req.Command)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("run command: %v", err), http.StatusInternalServerError)
 
@@ -662,51 +664,4 @@ func filepathWalk(root string, fn func(path string, info os.FileInfo, err error)
 	}
 
 	return nil
-}
-
-func runCommand(cmd string, workdir string, timeout int) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer cancel()
-
-	output, err := runCommandImpl(ctx, cmd, workdir)
-	if err != nil {
-		return "", err
-	}
-
-	return output, nil
-}
-
-func runCommandImpl(ctx context.Context, cmd string, workdir string) (string, error) {
-	return runCommandFallback(ctx, cmd, workdir)
-}
-
-func runCommandFallback(ctx context.Context, cmd string, workdir string) (string, error) {
-	parts := strings.Fields(cmd)
-	if len(parts) == 0 {
-		return "", fmt.Errorf("empty command")
-	}
-
-	// codeql:suppress[go/command-injection]
-	// Command is user-provided; this is intentional for the terminal endpoint.
-	// Shell injection is prevented by parsing the command into parts.
-	c := exec.CommandContext(ctx, parts[0], parts[1:]...)
-	if workdir != "" {
-		c.Dir = workdir
-	}
-
-	var stdout, stderr bytes.Buffer
-
-	c.Stdout = &stdout
-	c.Stderr = &stderr
-
-	if err := c.Run(); err != nil {
-		output := stdout.String()
-		if stderr.Len() > 0 {
-			output += "\n" + stderr.String()
-		}
-
-		return "", fmt.Errorf("exit %d: %s", c.ProcessState.ExitCode(), output)
-	}
-
-	return stdout.String(), nil
 }
