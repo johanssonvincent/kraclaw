@@ -97,8 +97,9 @@ type Manager struct {
 
 // PluginTool holds a tool reference.
 type PluginTool struct {
-	Plugin *Plugin
-	Func   ToolFunc
+	Plugin   *Plugin
+	Func     ToolFunc
+	Manifest ToolManifest
 }
 
 // PluginHook holds a hook reference.
@@ -209,7 +210,7 @@ func (m *Manager) loadPlugin(ctx context.Context, path string) error {
 	plugin := &Plugin{
 		Manifest: manifest,
 		Path:     path,
-		Enabled:  true, // Default to enabled.
+		Enabled:  manifest.Enabled,
 		Tools:    make(map[string]ToolFunc),
 		Hooks:    make(map[string][]HookFunc),
 		Commands: make(map[string]CommandFunc),
@@ -227,7 +228,17 @@ func (m *Manager) loadPlugin(ctx context.Context, path string) error {
 
 	// Register tools.
 	for name, fn := range plugin.Tools {
-		m.tools[name] = &PluginTool{Plugin: plugin, Func: fn}
+		var manifest ToolManifest
+
+		for _, t := range plugin.Manifest.Tools {
+			if t.Name == name {
+				manifest = t
+
+				break
+			}
+		}
+
+		m.tools[name] = &PluginTool{Plugin: plugin, Func: fn, Manifest: manifest}
 	}
 
 	// Register hooks.
@@ -333,7 +344,8 @@ func (m *Manager) CallTool(ctx context.Context, name string, args map[string]any
 // RunHook runs all hooks for a given hook name.
 func (m *Manager) RunHook(ctx context.Context, name string, data any) (any, error) {
 	m.mu.RLock()
-	hooks := m.hooks[name]
+	hooks := make([]*PluginHook, len(m.hooks[name]))
+	copy(hooks, m.hooks[name])
 	m.mu.RUnlock()
 
 	if len(hooks) == 0 {
@@ -461,8 +473,8 @@ func (m *Manager) FormatToolsPrompt() string {
 	for name, pt := range tools {
 		fmt.Fprintf(&sb, "### %s (%s)\n", name, pt.Plugin.Manifest.Name)
 
-		if pt.Plugin.Manifest.Description != "" {
-			fmt.Fprintf(&sb, "%s\n\n", pt.Plugin.Manifest.Description)
+		if pt.Manifest.Description != "" {
+			fmt.Fprintf(&sb, "%s\n\n", pt.Manifest.Description)
 		}
 	}
 
