@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -13,7 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
 	agentsandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -212,6 +215,75 @@ func (c *Controller) CreateSandbox(ctx context.Context, cfg SandboxConfig) (*San
 	}
 
 	return nil, fmt.Errorf("sandbox: create sandbox failed after %d retries: %w", sandboxCreateMaxRetries, lastErr)
+}
+
+// ExecInPod executes a command in the agent container of a sandbox pod.
+func (c *Controller) ExecInPod(ctx context.Context, sandboxName string, command string) (string, error) {
+	podName, err := c.findPodForSandbox(ctx, sandboxName)
+	if err != nil {
+		return "", fmt.Errorf("sandbox: find pod for %s: %w", sandboxName, err)
+	}
+
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return "", fmt.Errorf("sandbox: empty command")
+	}
+
+	req := c.clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(c.namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: "agent",
+			Command:   parts,
+			Stdin:     false,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, scheme.ParameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(c.config, "POST", req.URL())
+	if err != nil {
+		return "", fmt.Errorf("sandbox: create executor: %w", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+
+	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+	if err != nil {
+		output := stdout.String()
+		if stderr.Len() > 0 {
+			output += "\n" + stderr.String()
+		}
+
+		return "", fmt.Errorf("sandbox: exec failed: %w\n%s", err, output)
+	}
+
+	output := stdout.String()
+	if stderr.Len() > 0 {
+		output += "\n" + stderr.String()
+	}
+
+	return output, nil
+}
+
+func (c *Controller) findPodForSandbox(ctx context.Context, sandboxName string) (string, error) {
+	pods, err := c.clientset.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "kraclaw.io/sandbox=" + sandboxName,
+	})
+	if err != nil {
+		return "", fmt.Errorf("list pods: %w", err)
+	}
+
+	if len(pods.Items) == 0 {
+		return "", fmt.Errorf("no pod found for sandbox %s", sandboxName)
+	}
+
+	return pods.Items[0].Name, nil
 }
 
 // StopSandbox deletes a Sandbox resource.
