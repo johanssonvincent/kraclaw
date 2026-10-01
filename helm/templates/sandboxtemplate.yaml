@@ -82,6 +82,10 @@ spec:
             - name: KRACLAW_AGENT_DEFENSIVE_STREAM
               value: "1"
             {{- end }}
+            {{- if .Values.mcp.servers }}
+            - name: KRACLAW_MCP_SERVERS
+              value: {{ .Values.mcp.servers | quote }}
+            {{- end }}
           volumeMounts:
             - name: sessions
               mountPath: /home/node/.claude
