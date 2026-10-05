@@ -175,6 +175,14 @@ func (c *HTTPClient) Connect(ctx context.Context) error {
 		return fmt.Errorf("mcp:http: initialize: %w", err)
 	}
 
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+
+	if err := json.Unmarshal(resp, &envelope); err != nil {
+		return fmt.Errorf("mcp:http: parse initialize envelope: %w", err)
+	}
+
 	var initResult struct {
 		ProtocolVersion string `json:"protocolVersion"`
 		ServerInfo      struct {
@@ -183,8 +191,8 @@ func (c *HTTPClient) Connect(ctx context.Context) error {
 		} `json:"serverInfo"`
 	}
 
-	if err := json.Unmarshal(resp, &initResult); err != nil {
-		return fmt.Errorf("mcp:http: parse initialize: %w", err)
+	if err := json.Unmarshal(envelope.Result, &initResult); err != nil {
+		return fmt.Errorf("mcp:http: parse initialize result: %w", err)
 	}
 
 	c.mu.Lock()
@@ -239,12 +247,20 @@ func (c *HTTPClient) ListTools(ctx context.Context) ([]ToolInfo, error) {
 		return nil, fmt.Errorf("mcp:http: list tools: %w", err)
 	}
 
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+
+	if err := json.Unmarshal(resp, &envelope); err != nil {
+		return nil, fmt.Errorf("mcp:http: parse tools list envelope: %w", err)
+	}
+
 	var result struct {
 		Tools []ToolInfo `json:"tools"`
 	}
 
-	if err := json.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("mcp:http: parse tools: %w", err)
+	if err := json.Unmarshal(envelope.Result, &result); err != nil {
+		return nil, fmt.Errorf("mcp:http: parse tools list result: %w", err)
 	}
 
 	return result.Tools, nil
@@ -277,10 +293,18 @@ func (c *HTTPClient) CallTool(ctx context.Context, name string, args map[string]
 		return nil, fmt.Errorf("mcp:http: call tool %s: %w", name, err)
 	}
 
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+
+	if err := json.Unmarshal(resp, &envelope); err != nil {
+		return nil, fmt.Errorf("mcp:http: parse call tool envelope: %w", err)
+	}
+
 	var result ToolResult
 
-	if err := json.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("mcp:http: parse tool result: %w", err)
+	if err := json.Unmarshal(envelope.Result, &result); err != nil {
+		return nil, fmt.Errorf("mcp:http: parse call tool result: %w", err)
 	}
 
 	return &result, nil
@@ -309,12 +333,20 @@ func (c *HTTPClient) ListResources(ctx context.Context) ([]ResourceInfo, error) 
 		return nil, fmt.Errorf("mcp:http: list resources: %w", err)
 	}
 
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+
+	if err := json.Unmarshal(resp, &envelope); err != nil {
+		return nil, fmt.Errorf("mcp:http: parse resources list envelope: %w", err)
+	}
+
 	var result struct {
 		Resources []ResourceInfo `json:"resources"`
 	}
 
-	if err := json.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("mcp:http: parse resources: %w", err)
+	if err := json.Unmarshal(envelope.Result, &result); err != nil {
+		return nil, fmt.Errorf("mcp:http: parse resources list result: %w", err)
 	}
 
 	return result.Resources, nil

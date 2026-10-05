@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,7 +20,7 @@ type StdioTransport struct {
 	stderr    io.ReadCloser
 	log       Logger
 	closeOnce sync.Once
-	closed    bool
+	closed    atomic.Bool
 }
 
 // NewStdioTransport creates a transport that runs an MCP server as a subprocess.
@@ -72,8 +73,7 @@ func (t *StdioTransport) Close() error {
 	var errs []error
 
 	t.closeOnce.Do(func() {
-		t.closed = true
-
+		t.closed.Store(true)
 		// Close stdin to signal EOF.
 		if t.stdin != nil {
 			errs = append(errs, t.stdin.Close())
@@ -112,7 +112,7 @@ func (t *StdioTransport) Close() error {
 
 // Send writes a JSON-RPC message to the server's stdin.
 func (t *StdioTransport) Send(ctx context.Context, msg json.RawMessage) error {
-	if t.closed {
+	if t.closed.Load() {
 		return fmt.Errorf("stdio: transport closed")
 	}
 
@@ -128,7 +128,7 @@ func (t *StdioTransport) Send(ctx context.Context, msg json.RawMessage) error {
 
 // Receive reads a JSON-RPC message from the server's stdout.
 func (t *StdioTransport) Receive(ctx context.Context) (json.RawMessage, error) {
-	if t.closed {
+	if t.closed.Load() {
 		return nil, fmt.Errorf("stdio: transport closed")
 	}
 
