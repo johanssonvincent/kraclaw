@@ -61,10 +61,15 @@ type K8sConfig struct {
 	FastStartEnabled      bool          `envconfig:"K8S_FAST_START_ENABLED" default:"true"`
 }
 
-type ProxyConfig struct {
-	Addr string `envconfig:"PROXY_ADDR" default:":3001"`
+// GroupsPVCPath returns the filesystem path for a group's workspace within the
+// groups PVC. The mount path in the sandbox is /workspace, and each group has
+// its own subdirectory via SubPathExpr.
+func (c *K8sConfig) GroupsPVCPath(groupFolder string) string {
+	return fmt.Sprintf("/groups/%s", groupFolder)
+}
 
-	// Anthropic (platform-level fallback)
+type ProxyConfig struct {
+	Addr                 string `envconfig:"PROXY_ADDR" default:":3001"`
 	AnthropicUpstreamURL string `envconfig:"ANTHROPIC_UPSTREAM_URL" default:"https://api.anthropic.com"`
 	AnthropicAPIKey      string `envconfig:"ANTHROPIC_API_KEY"`
 	AnthropicAPIVersion  string `envconfig:"ANTHROPIC_VERSION" default:"2023-06-01"`
