@@ -25,9 +25,9 @@ require (
 	golang.org/x/sync v0.23.0
 	google.golang.org/grpc v1.85.0-dev.0.20260825072537-93e31b48545e
 	google.golang.org/protobuf v1.36.12
-	k8s.io/api v0.37.0
+	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
-	k8s.io/client-go v0.37.0
+	k8s.io/client-go v0.37.1
 	sigs.k8s.io/agent-sandbox v0.4.6
 	sigs.k8s.io/controller-runtime v0.25.1
 )
