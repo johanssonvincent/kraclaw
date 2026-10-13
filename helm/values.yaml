@@ -209,3 +209,13 @@ sandbox:
 # when sandbox.fastStart.enabled=true; set false to opt out independently.
 prepull:
   enabled: true
+
+# MCP server configuration
+# JSON array of server configs. Each server has:
+# - id: unique identifier
+# - name: display name
+# - type: "stdio" or "http"
+# - command/args: for stdio servers
+# - url/headers: for http servers
+mcp:
+  servers: "[]"

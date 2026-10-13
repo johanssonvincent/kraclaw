@@ -61,3 +61,5 @@ data:
   # Channels (non-secret)
   ASSISTANT_NAME: {{ .Values.channels.assistantName | quote }}
   TZ: {{ .Values.channels.timezone | quote }}
+  # MCP server configuration (JSON array of server configs)
+  KRACLAW_MCP_SERVERS: {{ .Values.mcp.servers | default "[]" | quote }}
