@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/johanssonvincent/kraclaw/internal/auth"
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/channel/tui"
 	"github.com/johanssonvincent/kraclaw/internal/store"
@@ -164,6 +166,135 @@ func TestSendMessage_TriggersHandleInbound(t *testing.T) {
 	}
 	if gotMsg.SenderName != "User One" {
 		t.Fatalf("OnMessage senderName = %q, want %q", gotMsg.SenderName, "User One")
+	}
+}
+
+// --- allowlist mocks for SendMessage authz tests ---
+
+type mockAllowlistStore struct {
+	entries map[string][]store.SenderAllowlistEntry // chatJID -> entries
+	err     error
+}
+
+func (m *mockAllowlistStore) GetAllowlist(_ context.Context, chatJID string) ([]store.SenderAllowlistEntry, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+
+	return m.entries[chatJID], nil
+}
+
+func (m *mockAllowlistStore) UpsertAllowlistEntry(_ context.Context, _ *store.SenderAllowlistEntry) error {
+	return nil
+}
+
+func (m *mockAllowlistStore) DeleteAllowlistEntry(_ context.Context, _ int64) error {
+	return nil
+}
+
+func newSendMessageService(t *testing.T, allowlist *mockAllowlistStore) *channelService {
+	t.Helper()
+
+	tuiCh := tui.New(slog.Default())
+	tuiCh.SetConfig(channel.ChannelConfig{
+		OnMessage:  func(string, *channel.InboundMessage) {},
+		OnChatMeta: func(string, time.Time, string, string, bool) {},
+		Groups:     func() []store.Group { return nil },
+	})
+
+	var authz *auth.Authorizer
+	if allowlist != nil {
+		authz = auth.New(allowlist)
+	}
+
+	return &channelService{tui: tuiCh, log: testLogger(), authz: authz}
+}
+
+// TestSendMessage_UnauthorizedSender verifies that SendMessage enforces the
+// per-chat sender allowlist. Regression test for the authorization bypass
+// where any gRPC client could impersonate any sender on any chat.
+func TestSendMessage_UnauthorizedSender(t *testing.T) {
+	allowlist := &mockAllowlistStore{
+		entries: map[string][]store.SenderAllowlistEntry{
+			"tui:locked-chat": {
+				{ChatJID: "tui:locked-chat", AllowPattern: "user1", Mode: store.ModeTrigger},
+			},
+		},
+	}
+	svc := newSendMessageService(t, allowlist)
+
+	_, err := svc.SendMessage(context.Background(), &kraclawv1.SendMessageRequest{
+		ChatJid: "tui:locked-chat",
+		Sender:  "attacker",
+		Text:    "drop tables",
+	})
+	if err == nil {
+		t.Fatal("expected PermissionDenied for sender not in allowlist, got nil error")
+	}
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", status.Code(err))
+	}
+}
+
+// TestSendMessage_AllowedSender verifies a sender explicitly in the
+// allowlist still passes SendMessage.
+func TestSendMessage_AllowedSender(t *testing.T) {
+	allowlist := &mockAllowlistStore{
+		entries: map[string][]store.SenderAllowlistEntry{
+			"tui:locked-chat": {
+				{ChatJID: "tui:locked-chat", AllowPattern: "user1", Mode: store.ModeTrigger},
+			},
+		},
+	}
+	svc := newSendMessageService(t, allowlist)
+
+	resp, err := svc.SendMessage(context.Background(), &kraclawv1.SendMessageRequest{
+		ChatJid: "tui:locked-chat",
+		Sender:  "user1",
+		Text:    "hello agent",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for allowed sender: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+}
+
+// TestSendMessage_AllowlistErrorFailsClosed verifies a store error does not
+// open the door: SendMessage must fail closed with codes.Internal.
+func TestSendMessage_AllowlistErrorFailsClosed(t *testing.T) {
+	allowlist := &mockAllowlistStore{err: errors.New("db down")}
+	svc := newSendMessageService(t, allowlist)
+
+	_, err := svc.SendMessage(context.Background(), &kraclawv1.SendMessageRequest{
+		ChatJid: "tui:locked-chat",
+		Sender:  "user1",
+		Text:    "hello",
+	})
+	if err == nil {
+		t.Fatal("expected error when allowlist check fails, got nil")
+	}
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal on allowlist failure, got %v", status.Code(err))
+	}
+}
+
+// TestSendMessage_NilAuthzBackwardCompat verifies the legacy behavior is
+// preserved when no allowlist store is wired (unconfigured deployments).
+func TestSendMessage_NilAuthzBackwardCompat(t *testing.T) {
+	svc := newSendMessageService(t, nil)
+
+	resp, err := svc.SendMessage(context.Background(), &kraclawv1.SendMessageRequest{
+		ChatJid: "tui:any-chat",
+		Sender:  "anyone",
+		Text:    "hello",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error with nil authorizer: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
 	}
 }
 

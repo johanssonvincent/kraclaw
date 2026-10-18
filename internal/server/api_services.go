@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/johanssonvincent/kraclaw/internal/auth"
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/credproxy"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
@@ -104,10 +105,18 @@ func registerAPIServices(grpcServer *grpc.Server, cfg Config, events *eventHub) 
 		log:     cfg.Log.With("component", "grpc-sandboxes"),
 	}
 
+	// Enforce the per-chat sender allowlist when a store is configured.
+	// Without this check any gRPC client could impersonate any sender.
+	var authz *auth.Authorizer
+	if cfg.Store != nil {
+		authz = auth.New(cfg.Store)
+	}
+
 	channels := &channelService{
 		tui:      cfg.TUIChannel,
 		channels: cfg.Channels,
 		store:    cfg.Store,
+		authz:    authz,
 		log:      cfg.Log.With("component", "grpc-channels"),
 	}
 
