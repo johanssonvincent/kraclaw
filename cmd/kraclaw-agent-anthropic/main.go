@@ -11,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/johanssonvincent/kraclaw/internal/contextfiles"
 	"github.com/johanssonvincent/kraclaw/pkg/agent"
 )
 
@@ -39,6 +40,21 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 	maxTokens := int64(8192)
 
+	// Load context files from workspace.
+	workspacePath := os.Getenv("KRACLAW_WORKSPACE_PATH")
+	if workspacePath == "" {
+		workspacePath = "/workspace"
+	}
+
+	contextFiles, err := contextfiles.Load(workspacePath)
+	if err != nil {
+		log.Warn("failed to load context files", "error", err)
+	}
+
+	if contextFiles != "" {
+		log.Info("context files loaded", "length", len(contextFiles))
+	}
+
 	// Create Anthropic client pointing at the credential proxy.
 	client := anthropic.NewClient(
 		option.WithAPIKey("placeholder"), // Proxy injects real key.
@@ -49,6 +65,12 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 	log.Info("anthropic agent ready", "model", model, "proxy", proxyURL)
 
 	var history []anthropic.MessageParam
+
+	// Build system prompt with context files.
+	systemPrompt := "You are an AI assistant running in a Kraclaw sandbox."
+	if contextFiles != "" {
+		systemPrompt += "\n\n## Project Context\n\n" + contextFiles
+	}
 
 	inputCh, ipcErrCh, err := ipc.ReadInput(ctx)
 	if err != nil {
@@ -83,6 +105,9 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					Model:     model,
 					MaxTokens: maxTokens,
 					Messages:  msgs,
+					System: []anthropic.TextBlockParam{
+						{Type: "text", Text: systemPrompt},
+					},
 				})
 
 				var buf strings.Builder
