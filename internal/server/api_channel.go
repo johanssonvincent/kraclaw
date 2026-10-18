@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/johanssonvincent/kraclaw/internal/auth"
 	"github.com/johanssonvincent/kraclaw/internal/channel"
 	"github.com/johanssonvincent/kraclaw/internal/channel/tui"
 	"github.com/johanssonvincent/kraclaw/internal/store"
@@ -20,10 +21,11 @@ type channelService struct {
 	tui      *tui.TUI
 	channels []channel.Channel
 	store    store.Store
+	authz    *auth.Authorizer
 	log      *slog.Logger
 }
 
-func (s *channelService) SendMessage(_ context.Context, req *kraclawv1.SendMessageRequest) (*kraclawv1.SendMessageResponse, error) {
+func (s *channelService) SendMessage(ctx context.Context, req *kraclawv1.SendMessageRequest) (*kraclawv1.SendMessageResponse, error) {
 	if s.tui == nil {
 		return nil, status.Error(codes.Unavailable, "TUI channel not configured")
 	}
@@ -34,6 +36,24 @@ func (s *channelService) SendMessage(_ context.Context, req *kraclawv1.SendMessa
 
 	if req.Text == "" {
 		return nil, status.Error(codes.InvalidArgument, "text is required")
+	}
+
+	// Enforce the per-chat sender allowlist when one is configured.
+	// Without this check any gRPC client could impersonate any sender.
+	// Fails closed: a store error is an internal error, not an approval.
+	if s.authz != nil {
+		allowed, err := s.authz.IsAllowed(ctx, req.ChatJid, req.Sender)
+		if err != nil {
+			s.log.Error("SendMessage allowlist check failed", "chat_jid", req.ChatJid, "sender", req.Sender, "error", err)
+
+			return nil, status.Error(codes.Internal, "allowlist check failed")
+		}
+
+		if !allowed {
+			s.log.Warn("SendMessage rejected by allowlist", "chat_jid", req.ChatJid, "sender", req.Sender)
+
+			return nil, status.Error(codes.PermissionDenied, "sender not in chat allowlist")
+		}
 	}
 
 	if err := s.tui.HandleInbound(req.ChatJid, req.Sender, req.SenderName, req.Text); err != nil {
