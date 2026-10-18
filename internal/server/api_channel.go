@@ -45,11 +45,13 @@ func (s *channelService) SendMessage(ctx context.Context, req *kraclawv1.SendMes
 		allowed, err := s.authz.IsAllowed(ctx, req.ChatJid, req.Sender)
 		if err != nil {
 			s.log.Error("SendMessage allowlist check failed", "chat_jid", req.ChatJid, "sender", req.Sender, "error", err)
+
 			return nil, status.Error(codes.Internal, "allowlist check failed")
 		}
 
 		if !allowed {
 			s.log.Warn("SendMessage rejected by allowlist", "chat_jid", req.ChatJid, "sender", req.Sender)
+
 			return nil, status.Error(codes.PermissionDenied, "sender not in chat allowlist")
 		}
 	}
