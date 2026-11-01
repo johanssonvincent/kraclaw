@@ -91,20 +91,40 @@ func escapeXML(s string) string {
 	return s
 }
 
+const (
+	internalOpenTag  = "<internal>"
+	internalCloseTag = "</internal>"
+)
+
+// stripInternalTags removes <internal>…</internal> blocks from outbound text so
+// agent-internal reasoning never reaches the user.
+//
+// The scan always resumes after the opening tag, which guarantees progress: a
+// closing tag that appears before an opening tag cannot rewind the search (it
+// used to, producing a loop that never terminated and wedged RouteOutbound).
+// An unterminated opening tag drops the remainder of the text, because
+// everything after it is reasoning that was never closed off.
 func stripInternalTags(text string) string {
 	for {
-		start := strings.Index(text, "<internal>")
+		start := strings.Index(text, internalOpenTag)
 		if start == -1 {
 			break
 		}
 
-		end := strings.Index(text, "</internal>")
+		rest := text[start+len(internalOpenTag):]
+
+		end := strings.Index(rest, internalCloseTag)
 		if end == -1 {
+			text = text[:start]
+
 			break
 		}
 
-		text = text[:start] + text[end+len("</internal>"):]
+		text = text[:start] + rest[end+len(internalCloseTag):]
 	}
+
+	// Any close tag left over has no matching opener and carries no meaning.
+	text = strings.ReplaceAll(text, internalCloseTag, "")
 
 	return strings.TrimSpace(text)
 }
