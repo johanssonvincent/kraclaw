@@ -1000,6 +1000,8 @@ func (o *Orchestrator) spawnAgent(ctx context.Context, chatJID string, group *st
 		GroupsPVC:       o.cfg.K8s.GroupsPVC,
 		DataPVC:         o.cfg.K8s.DataPVC,
 		ContainerConfig: group.ContainerConfig,
+		// Bound hostPath mounts to deployment-approved roots (empty = none).
+		AllowedMountRoots: o.cfg.K8s.AllowedMountRoots,
 	}
 
 	if o.sandbox == nil {
