@@ -64,6 +64,10 @@ type SandboxConfig struct {
 	GroupsPVC       string // PVC for per-group workspace (default: kraclaw-groups)
 	DataPVC         string // PVC for read-only global config (default: kraclaw-data)
 	ContainerConfig *store.ContainerConfig
+
+	// AllowedMountRoots bounds the host paths that ContainerConfig may mount.
+	// Empty means no additional hostPath mounts are permitted at all.
+	AllowedMountRoots []string
 }
 
 // Validate checks that required SandboxConfig fields are set.
@@ -74,6 +78,21 @@ func (c *SandboxConfig) Validate() error {
 
 	if c.GroupJID == "" {
 		return fmt.Errorf("sandbox: GroupJID is required")
+	}
+
+	if err := c.ContainerConfig.Validate(); err != nil {
+		return fmt.Errorf("sandbox: %w", err)
+	}
+
+	// HostPath mounts hand the pod whatever the kubelet can read at that path,
+	// so they are constrained to deployment-owned roots. This runs before any
+	// resource is created: a rejected mount must not leave a half-built sandbox.
+	if c.ContainerConfig != nil {
+		for i, mount := range c.ContainerConfig.AdditionalMounts {
+			if err := mount.ValidateAllowedRoot(c.AllowedMountRoots); err != nil {
+				return fmt.Errorf("sandbox: additional mount %d: %w", i, err)
+			}
+		}
 	}
 
 	return nil

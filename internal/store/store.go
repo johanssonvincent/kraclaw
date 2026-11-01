@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -29,6 +31,107 @@ type AdditionalMount struct {
 	HostPath      string `json:"hostPath"`
 	ContainerPath string `json:"containerPath,omitempty"`
 	ReadOnly      bool   `json:"readonly,omitempty"`
+}
+
+// Validate checks the shape of the configured additional mounts. It does not
+// decide which host paths are acceptable — that is a deployment policy, applied
+// with ValidateAllowedRoot before a pod is built. Called from
+// ParseContainerConfig so every entry point (gRPC, REST, MySQL reads) is covered.
+func (cc *ContainerConfig) Validate() error {
+	if cc == nil {
+		return nil
+	}
+
+	if cc.Timeout < 0 {
+		return fmt.Errorf("container config: timeout must not be negative")
+	}
+
+	seen := make(map[string]struct{}, len(cc.AdditionalMounts))
+
+	for i, mount := range cc.AdditionalMounts {
+		if err := mount.validateStructure(); err != nil {
+			return fmt.Errorf("container config: additional mount %d: %w", i, err)
+		}
+
+		containerPath := mount.ContainerPath
+		if containerPath == "" {
+			containerPath = mount.HostPath
+		}
+
+		if _, duplicate := seen[containerPath]; duplicate {
+			return fmt.Errorf("container config: additional mount %d: duplicate container path %q", i, containerPath)
+		}
+
+		seen[containerPath] = struct{}{}
+	}
+
+	return nil
+}
+
+// validateStructure rejects mount paths that cannot be made safe by policy:
+// they must be absolute, already clean, and never the filesystem root.
+func (m AdditionalMount) validateStructure() error {
+	if m.HostPath == "" {
+		return fmt.Errorf("hostPath is required")
+	}
+
+	if err := validateMountPath("hostPath", m.HostPath); err != nil {
+		return err
+	}
+
+	if m.ContainerPath != "" {
+		if err := validateMountPath("containerPath", m.ContainerPath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateMountPath(field, value string) error {
+	if !filepath.IsAbs(value) {
+		return fmt.Errorf("%s %q must be an absolute path", field, value)
+	}
+
+	clean := filepath.Clean(value)
+	if clean != value {
+		return fmt.Errorf("%s %q must be a clean path (write %q instead)", field, value, clean)
+	}
+
+	if clean == string(filepath.Separator) {
+		return fmt.Errorf("%s must not be the filesystem root", field)
+	}
+
+	return nil
+}
+
+// ValidateAllowedRoot reports whether the mount's host path sits inside one of
+// the allowed roots. A host path mount is a node-level capability: the pod
+// inherits whatever the kubelet can read at that path, so the path must come
+// from a deployment-owned allowlist rather than from a request.
+func (m AdditionalMount) ValidateAllowedRoot(roots []string) error {
+	if err := m.validateStructure(); err != nil {
+		return err
+	}
+
+	if len(roots) == 0 {
+		return fmt.Errorf("hostPath mount %q is not permitted: no allowed mount roots configured (set SANDBOX_ALLOWED_MOUNT_ROOTS)", m.HostPath)
+	}
+
+	for _, root := range roots {
+		cleanRoot := filepath.Clean(root)
+
+		rel, err := filepath.Rel(cleanRoot, m.HostPath)
+		if err != nil {
+			continue
+		}
+
+		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("hostPath mount %q is outside the allowed mount roots %v", m.HostPath, roots)
 }
 
 // Group represents a registered chat group.
@@ -288,7 +391,7 @@ func ContainerConfigJSON(cc *ContainerConfig) ([]byte, error) {
 	return json.Marshal(cc)
 }
 
-// ParseContainerConfig parses JSON into ContainerConfig.
+// ParseContainerConfig parses JSON into ContainerConfig and validates it.
 func ParseContainerConfig(data []byte) (*ContainerConfig, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -296,6 +399,10 @@ func ParseContainerConfig(data []byte) (*ContainerConfig, error) {
 
 	var cc ContainerConfig
 	if err := json.Unmarshal(data, &cc); err != nil {
+		return nil, err
+	}
+
+	if err := cc.Validate(); err != nil {
 		return nil, err
 	}
 
