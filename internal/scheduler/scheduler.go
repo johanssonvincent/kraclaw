@@ -208,6 +208,15 @@ func (s *Scheduler) runTask(ctx context.Context, task store.ScheduledTask) {
 		task.Status = store.TaskActive
 	}
 
+	// task was read before the executor ran, and UpdateTask writes the whole
+	// row: a pause applied while the run was in flight would be reverted to
+	// "active" here and the task would keep firing. Re-read and let a pause win.
+	if current, getErr := s.store.GetTask(ctx, task.ID, task.GroupFolder); getErr != nil {
+		s.log.Warn("failed to re-read task before outcome write", "task_id", task.ID, "error", getErr)
+	} else if current != nil && current.Status == store.TaskPaused && task.Status != store.TaskCompleted {
+		task.Status = store.TaskPaused
+	}
+
 	if updateErr := s.store.UpdateTask(ctx, &task); updateErr != nil {
 		s.log.Error("failed to record task outcome", "task_id", task.ID, "error", updateErr)
 	}
