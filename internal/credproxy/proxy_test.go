@@ -1069,3 +1069,75 @@ func TestProxy_ChatGPTAuthModeForwardsBearerToken(t *testing.T) {
 		})
 	}
 }
+
+// TestUpstreamPath_StaysWithinBasePath pins the joining rules for the
+// provider base path. A request path is caller-controlled (the sandbox sets
+// it), so dot segments must not be able to climb out of the base path and
+// reach a different endpoint on the same upstream host.
+func TestUpstreamPath_StaysWithinBasePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		basePath    string
+		requestPath string
+		authMode    AuthMode
+		want        string
+	}{
+		{
+			name: "chatgpt strips the v1 prefix", basePath: "/backend-api/codex",
+			requestPath: "/v1/responses", authMode: AuthModeChatGPT,
+			want: "/backend-api/codex/responses",
+		},
+		{
+			name: "chatgpt bare v1 maps to the base", basePath: "/backend-api/codex",
+			requestPath: "/v1", authMode: AuthModeChatGPT,
+			want: "/backend-api/codex",
+		},
+		{
+			name: "no base path passes the path through", basePath: "",
+			requestPath: "/v1/messages", authMode: AuthModeAPIKey,
+			want: "/v1/messages",
+		},
+		{
+			name: "api key base path is prefixed", basePath: "/v1",
+			requestPath: "/messages", authMode: AuthModeAPIKey,
+			want: "/v1/messages",
+		},
+		{
+			name: "dot dot cannot escape a chatgpt base", basePath: "/backend-api/codex",
+			requestPath: "/v1/../../backend-api/conversations", authMode: AuthModeChatGPT,
+			want: "/backend-api/codex",
+		},
+		{
+			name: "dot dot cannot escape an api key base", basePath: "/v1",
+			requestPath: "/../../internal/admin", authMode: AuthModeAPIKey,
+			want: "/v1",
+		},
+		{
+			name: "dot dot inside the base is normalised", basePath: "/v1",
+			requestPath: "/models/../messages", authMode: AuthModeAPIKey,
+			want: "/v1/messages",
+		},
+		{
+			name: "single dot is normalised", basePath: "/v1",
+			requestPath: "/./messages", authMode: AuthModeAPIKey,
+			want: "/v1/messages",
+		},
+		{
+			name: "trailing slash is preserved", basePath: "/v1",
+			requestPath: "/messages/", authMode: AuthModeAPIKey,
+			want: "/v1/messages/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := upstreamPath(tt.basePath, tt.requestPath, tt.authMode)
+			if got != tt.want {
+				t.Errorf("upstreamPath(%q, %q, %q) = %q, want %q",
+					tt.basePath, tt.requestPath, tt.authMode, got, tt.want)
+			}
+		})
+	}
+}
