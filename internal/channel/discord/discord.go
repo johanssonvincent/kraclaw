@@ -75,9 +75,26 @@ func (d *Discord) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (d *Discord) handleMessage(_ *discordgo.Session, m *discordgo.MessageCreate) {
-	// Skip messages from the bot itself.
-	if m.Author.ID == d.session.State.User.ID {
+func (d *Discord) handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
+	// System messages and webhook posts can arrive without an author.
+	if m == nil || m.Message == nil || m.Author == nil {
+		return
+	}
+
+	// Prefer the gateway session that dispatched the event: Connect publishes
+	// d.session only after Open returns, so the first events of a connection can
+	// arrive while it is still nil, and Disconnect/reconnect swaps it.
+	session := s
+	if session == nil {
+		d.mu.RLock()
+		session = d.session
+		d.mu.RUnlock()
+	}
+
+	// Skip messages from the bot itself; without a usable session there is no
+	// identity to compare against, so the message is delivered.
+	if session != nil && session.State != nil && session.State.User != nil &&
+		m.Author.ID == session.State.User.ID {
 		return
 	}
 
@@ -102,9 +119,10 @@ func (d *Discord) handleMessage(_ *discordgo.Session, m *discordgo.MessageCreate
 	if d.cfg.OnChatMeta != nil {
 		channelName := ""
 
-		ch, err := d.session.Channel(m.ChannelID)
-		if err == nil {
-			channelName = ch.Name
+		if session != nil {
+			if ch, err := session.Channel(m.ChannelID); err == nil {
+				channelName = ch.Name
+			}
 		}
 
 		d.cfg.OnChatMeta(chatJID, time.Now(), channelName, "discord", isGroup)
