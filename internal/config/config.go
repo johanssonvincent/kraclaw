@@ -59,6 +59,12 @@ type K8sConfig struct {
 	SandboxStartupTimeout time.Duration `envconfig:"SANDBOX_STARTUP_TIMEOUT" default:"5m"`
 	SandboxProxyURL       string        `envconfig:"SANDBOX_PROXY_URL" default:"http://kraclaw-credproxy:3001"`
 	FastStartEnabled      bool          `envconfig:"K8S_FAST_START_ENABLED" default:"true"`
+
+	// AllowedMountRoots is the allowlist of host paths a group's container
+	// config may bind-mount into its sandbox pod. Comma-separated. Empty denies
+	// every additional hostPath mount, because a host path is a node-level
+	// capability that must be granted deliberately.
+	AllowedMountRoots []string `envconfig:"SANDBOX_ALLOWED_MOUNT_ROOTS"`
 }
 
 type ProxyConfig struct {
