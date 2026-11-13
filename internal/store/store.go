@@ -149,6 +149,68 @@ func (t *ScheduledTask) Validate() error {
 	return nil
 }
 
+// InitialNextRun computes the first time this task should run, given the moment
+// it was created. It is the creation-time counterpart of the scheduler's
+// per-run advance: without it a task is persisted with a NULL next_run, and
+// GetDueTasks only selects rows whose next_run is set and in the past.
+func (t *ScheduledTask) InitialNextRun(now time.Time) (*time.Time, error) {
+	switch t.ScheduleType {
+	case ScheduleCron:
+		sched, err := CronParser.Parse(t.ScheduleValue)
+		if err != nil {
+			return nil, fmt.Errorf("parse cron expression: %w", err)
+		}
+
+		next := sched.Next(now)
+
+		return &next, nil
+
+	case ScheduleInterval:
+		d, err := time.ParseDuration(t.ScheduleValue)
+		if err != nil {
+			return nil, fmt.Errorf("parse interval: %w", err)
+		}
+
+		if d <= 0 {
+			return nil, fmt.Errorf("interval %q must be positive", t.ScheduleValue)
+		}
+
+		// First run is one interval after creation, so a task created now does
+		// not fire immediately on the next poll.
+		next := now.Add(d)
+
+		return &next, nil
+
+	case ScheduleOnce:
+		at, err := time.Parse(time.RFC3339, t.ScheduleValue)
+		if err != nil {
+			return nil, fmt.Errorf("parse once schedule: %w", err)
+		}
+
+		return &at, nil
+
+	default:
+		return nil, fmt.Errorf("unknown schedule type %q", t.ScheduleType)
+	}
+}
+
+// EnsureNextRun fills in NextRun when it is unset, leaving an explicit value
+// untouched. Creation paths call it so every persisted task is schedulable.
+func (t *ScheduledTask) EnsureNextRun(now time.Time) error {
+	if t.NextRun != nil {
+		return nil
+	}
+
+	next, err := t.InitialNextRun(now)
+	if err != nil {
+		return fmt.Errorf("initial next run: %w", err)
+	}
+
+	t.NextRun = next
+
+	return nil
+}
+
 // TaskRunStatus represents the outcome of a task run.
 type TaskRunStatus string
 
@@ -220,6 +282,8 @@ type ChatStore interface {
 
 // TaskStore handles group-scoped scheduled task operations.
 type TaskStore interface {
+	// CreateTask persists a task and assigns NextRun when the caller left it
+	// unset, so a newly created task becomes due without further setup.
 	CreateTask(ctx context.Context, task *ScheduledTask) error
 	GetTask(ctx context.Context, id, groupFolder string) (*ScheduledTask, error)
 	ListTasksByGroup(ctx context.Context, groupFolder string) ([]ScheduledTask, error)

@@ -575,6 +575,13 @@ func (s *MySQLStore) ListChats(ctx context.Context) ([]Chat, error) {
 // ---------------------------------------------------------------------------.
 
 func (s *MySQLStore) CreateTask(ctx context.Context, task *ScheduledTask) error {
+	// Every persisted task must carry a next_run: GetDueTasks only selects rows
+	// where next_run is set and due, so a NULL next_run silently parks the task
+	// forever (it is listed, updatable, and never executed).
+	if err := task.EnsureNextRun(time.Now().UTC()); err != nil {
+		return fmt.Errorf("create task: %w", err)
+	}
+
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

@@ -720,6 +720,55 @@ func TestCreateTask(t *testing.T) {
 	}
 }
 
+// TestCreateTask_SetsInitialNextRun guards the bug where a task created without
+// next_run was stored with NULL and therefore never returned by GetDueTasks:
+// the scheduler would create, list, and never run it.
+func TestCreateTask_SetsInitialNextRun(t *testing.T) {
+	store, mock := newTestStore(t)
+	now := time.Now().UTC()
+
+	// Any non-nil time is acceptable; assert on the value the store persisted.
+	mock.ExpectExec("INSERT INTO scheduled_tasks").
+		WithArgs("task1", "folder1", "c1@g.us", "do something", ScheduleInterval, "1h", ContextIsolated, sqlmock.AnyArg(), TaskActive, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	task := &ScheduledTask{
+		ID: "task1", GroupFolder: "folder1", ChatJID: "c1@g.us", Prompt: "do something",
+		ScheduleType: ScheduleInterval, ScheduleValue: "1h", ContextMode: ContextIsolated,
+		Status: TaskActive, CreatedAt: now,
+	}
+
+	if err := store.CreateTask(context.Background(), task); err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	if task.NextRun == nil {
+		t.Fatal("CreateTask() left NextRun nil: the task can never become due")
+	}
+	if !task.NextRun.After(now) {
+		t.Errorf("NextRun = %v, want a time after %v", task.NextRun, now)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestCreateTask_RejectsInvalidSchedule keeps a malformed schedule from being
+// persisted with no next_run at all.
+func TestCreateTask_RejectsInvalidSchedule(t *testing.T) {
+	store, _ := newTestStore(t)
+
+	task := &ScheduledTask{
+		ID: "task1", GroupFolder: "folder1", ChatJID: "c1@g.us", Prompt: "do something",
+		ScheduleType: ScheduleInterval, ScheduleValue: "not-a-duration", ContextMode: ContextIsolated,
+		Status: TaskActive, CreatedAt: time.Now().UTC(),
+	}
+
+	if err := store.CreateTask(context.Background(), task); err == nil {
+		t.Fatal("CreateTask() error = nil, want an error for an unparseable schedule")
+	}
+}
+
 func TestGetTask(t *testing.T) {
 	tests := []struct {
 		name        string
