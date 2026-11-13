@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -474,23 +475,37 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 }
 
 func upstreamPath(basePath, requestPath string, authMode AuthMode) string {
-	path := requestPath
+	reqPath := requestPath
 	if authMode == AuthModeChatGPT {
-		path = strings.TrimPrefix(path, "/v1")
-		if path == "" {
-			path = "/"
+		reqPath = strings.TrimPrefix(reqPath, "/v1")
+		if reqPath == "" {
+			reqPath = "/"
 		}
 	}
 
 	if basePath == "" || basePath == "/" {
-		return path
+		return reqPath
 	}
 
-	if path == "" || path == "/" {
-		return basePath
+	base := "/" + strings.Trim(basePath, "/")
+
+	if reqPath == "" || reqPath == "/" {
+		return base
 	}
 
-	return strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(path, "/")
+	// The request path is caller-controlled, so resolve "." and ".." segments
+	// before joining: the result must stay inside basePath instead of letting
+	// the agent reach another endpoint on the same upstream host.
+	cleaned := path.Clean(base + "/" + strings.TrimLeft(reqPath, "/"))
+	if cleaned != base && !strings.HasPrefix(cleaned, base+"/") {
+		return base
+	}
+
+	if strings.HasSuffix(reqPath, "/") && cleaned != base {
+		cleaned += "/"
+	}
+
+	return cleaned
 }
 
 func (p *Proxy) metricsMiddleware(next http.Handler) http.Handler {
