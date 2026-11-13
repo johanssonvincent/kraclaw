@@ -85,9 +85,16 @@ type Orchestrator struct {
 	rateLimitersMu sync.Mutex
 
 	// prevLast* fields (PERF-04) are a best-effort dedup optimisation: compared a...
+	// guard strip: these three are only read and written while saveMu is held.
 	prevLastTimestampStr string // serialized last_timestamp from last save
 	prevAgentTsJSON      string // JSON-serialized last_agent_timestamp from last save
 	prevConfirmedTsJSON  string // JSON-serialized last_confirmed_timestamp from last save
+
+	// saveMu serialises saveState: the prevLast* fields are shared mutable state
+	// and concurrent saves would otherwise interleave a compare with a stale
+	// write, persisting an older cursor over a newer one. Callers release mu
+	// before calling saveState, so the lock order is always saveMu -> mu.
+	saveMu sync.Mutex
 
 	ctx    context.Context
 	notify chan struct{} // buffered signal to trigger immediate poll
@@ -396,6 +403,9 @@ func (o *Orchestrator) loadState(ctx context.Context) error {
 
 // saveState persists cursors to MySQL, skipping writes when values are unchanged (PERF-04).
 func (o *Orchestrator) saveState(ctx context.Context) error {
+	o.saveMu.Lock()
+	defer o.saveMu.Unlock()
+
 	o.mu.Lock()
 	ts := o.lastTimestamp
 

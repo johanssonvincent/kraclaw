@@ -28,6 +28,7 @@ import (
 // --- Mock Store ---
 
 type mockStore struct {
+	mu       sync.Mutex // guards the maps and counters below; saveState is called concurrently
 	state    map[string]string
 	groups   []store.Group
 	sessions map[string]*store.Session
@@ -66,10 +67,16 @@ func newMockStore() *mockStore {
 }
 
 func (m *mockStore) GetState(_ context.Context, key string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	return m.state[key], nil
 }
 
 func (m *mockStore) SetState(_ context.Context, key, value string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if m.setStateErr != nil {
 		return m.setStateErr
 	}
@@ -3917,5 +3924,92 @@ func TestReleaseOrphanedStreams(t *testing.T) {
 					tt.hasActive, tt.hasActiveErr, got, tt.wantDeleteStreams)
 			}
 		})
+	}
+}
+
+// TestSaveState_ConcurrentCallsRace reproduces the data race on the saveState
+// dedup fields: cursors are mutated under o.mu from many goroutines while
+// saveState reads and rewrites prevLastTimestampStr/prevAgentTsJSON/
+// prevConfirmedTsJSON with no lock at all. Run with -race; without the fix the
+// detector reports a write/read race on those three fields.
+func TestSaveState_ConcurrentCallsRace(t *testing.T) {
+	s := newMockStore()
+	o := newTestOrchestrator(s, newMockQueue(), &mockIPCBroker{})
+
+	const (
+		workers    = 8
+		iterations = 25
+	)
+
+	var wg sync.WaitGroup
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+
+		go func(w int) {
+			defer wg.Done()
+
+			for i := 0; i < iterations; i++ {
+				jid := fmt.Sprintf("group%d@g.us", w)
+				cursor := time.Unix(int64(w*1000+i), 0).UTC()
+
+				o.mu.Lock()
+				o.lastTimestamp = cursor
+				o.lastAgentTimestamp[jid] = cursor
+				o.lastConfirmedTimestamp[jid] = cursor
+				o.mu.Unlock()
+
+				if err := o.saveState(context.Background()); err != nil {
+					t.Errorf("saveState() error = %v", err)
+
+					return
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+
+	// One final save after all mutations: what is persisted must match what is
+	// in memory, so a lost update from an interleaved save is caught too.
+	if err := o.saveState(context.Background()); err != nil {
+		t.Fatalf("final saveState() error = %v", err)
+	}
+
+	o.mu.Lock()
+	lastTimestamp := o.lastTimestamp
+	agentTs := make(map[string]string, len(o.lastAgentTimestamp))
+	for k, v := range o.lastAgentTimestamp {
+		agentTs[k] = v.Format(time.RFC3339Nano)
+	}
+	o.mu.Unlock()
+
+	persisted, err := s.GetState(context.Background(), "last_timestamp")
+	if err != nil {
+		t.Fatalf("GetState(last_timestamp) error = %v", err)
+	}
+
+	if persisted != lastTimestamp.Format(time.RFC3339Nano) {
+		t.Errorf("persisted last_timestamp = %q, want %q", persisted, lastTimestamp.Format(time.RFC3339Nano))
+	}
+
+	persistedAgent, err := s.GetState(context.Background(), "last_agent_timestamp")
+	if err != nil {
+		t.Fatalf("GetState(last_agent_timestamp) error = %v", err)
+	}
+
+	persistedAgentMap := map[string]string{}
+	if err := json.Unmarshal([]byte(persistedAgent), &persistedAgentMap); err != nil {
+		t.Fatalf("unmarshal persisted last_agent_timestamp: %v", err)
+	}
+
+	if len(persistedAgentMap) != len(agentTs) {
+		t.Fatalf("persisted last_agent_timestamp has %d entries, want %d", len(persistedAgentMap), len(agentTs))
+	}
+
+	for k, want := range agentTs {
+		if persistedAgentMap[k] != want {
+			t.Errorf("persisted last_agent_timestamp[%q] = %q, want %q", k, persistedAgentMap[k], want)
+		}
 	}
 }
