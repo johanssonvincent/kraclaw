@@ -250,9 +250,16 @@ func (s *Scheduler) computeNextRun(task *store.ScheduledTask) (*time.Time, error
 			lastScheduled = *task.LastRun
 		}
 
+		// Jump over missed intervals in one step. Stepping one interval at a
+		// time made this loop unbounded: any small interval combined with real
+		// history (1ns x 1h is 3.6e12 iterations) wedged the scheduler
+		// goroutine, which serves every task in the process.
 		next := lastScheduled
-		for !next.After(now) {
-			next = next.Add(d)
+		if !next.After(now) {
+			next = lastScheduled.Add(now.Sub(lastScheduled) / d * d)
+			if !next.After(now) {
+				next = next.Add(d)
+			}
 		}
 
 		return &next, nil
