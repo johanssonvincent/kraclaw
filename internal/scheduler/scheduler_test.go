@@ -20,6 +20,11 @@ import (
 type mockTaskStore struct {
 	tasks []store.ScheduledTask
 
+	// persisted models what is on disk: UpdateTask mirrors into it and GetTask
+	// reads it, so a test can simulate a concurrent write (a pause) while a run
+	// is in flight.
+	persisted map[string]store.ScheduledTask
+
 	mu          sync.Mutex
 	events      []string
 	updateCalls []store.ScheduledTask
@@ -37,8 +42,17 @@ func (m *mockTaskStore) record(event string) {
 }
 
 func (m *mockTaskStore) CreateTask(context.Context, *store.ScheduledTask) error { return nil }
-func (m *mockTaskStore) GetTask(context.Context, string, string) (*store.ScheduledTask, error) {
-	return nil, nil
+
+func (m *mockTaskStore) GetTask(_ context.Context, id, _ string) (*store.ScheduledTask, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	task, ok := m.persisted[id]
+	if !ok {
+		return nil, nil
+	}
+
+	return &task, nil
 }
 
 func (m *mockTaskStore) ListTasks(context.Context) ([]store.ScheduledTask, error) { return nil, nil }
@@ -54,6 +68,13 @@ func (m *mockTaskStore) UpdateTask(ctx context.Context, t *store.ScheduledTask) 
 	m.updateCalls = append(m.updateCalls, *t)
 
 	m.updateCtxs = append(m.updateCtxs, ctx)
+
+	if m.persisted == nil {
+		m.persisted = make(map[string]store.ScheduledTask)
+	}
+
+	m.persisted[t.ID] = *t
+
 	if len(m.updateErrs) > 0 {
 		err := m.updateErrs[0]
 		m.updateErrs = m.updateErrs[1:]
@@ -948,4 +969,56 @@ func TestSchedulerCompensatingWriteOnFailure(t *testing.T) {
 			t.Errorf("expected once task to be completed, got status %q", ms.updateCalls[0].Status)
 		}
 	})
+}
+
+// TestRunTask_PauseDuringExecutionIsNotReverted guards the stale-copy
+// write-back: runTask holds the task as it was read at poll time and writes the
+// whole row after the executor returns, so a pause applied through the agent IPC
+// task_update while the run was in flight used to be overwritten with "active"
+// and the task kept firing.
+func TestRunTask_PauseDuringExecutionIsNotReverted(t *testing.T) {
+	past := time.Now().Add(-time.Minute)
+
+	stored := store.ScheduledTask{
+		ID:            "t1",
+		GroupFolder:   "g1",
+		ChatJID:       "c1@g.us",
+		Prompt:        "do something",
+		ScheduleType:  store.ScheduleCron,
+		ScheduleValue: "*/5 * * * *",
+		NextRun:       &past,
+		Status:        store.TaskActive,
+	}
+
+	ms := &mockTaskStore{
+		tasks:     []store.ScheduledTask{stored},
+		persisted: map[string]store.ScheduledTask{"t1": stored},
+	}
+
+	executor := func(_ context.Context, task store.ScheduledTask) error {
+		// The pause lands while the executor is running.
+		ms.mu.Lock()
+		paused := ms.persisted[task.ID]
+		paused.Status = store.TaskPaused
+		ms.persisted[task.ID] = paused
+		ms.mu.Unlock()
+
+		return nil
+	}
+
+	sched, err := New(ms, executor, time.Minute)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	sched.poll(context.Background())
+
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	final := ms.persisted["t1"]
+	if final.Status != store.TaskPaused {
+		t.Errorf("persisted Status = %q after the outcome write, want %q (the pause was reverted)",
+			final.Status, store.TaskPaused)
+	}
 }
