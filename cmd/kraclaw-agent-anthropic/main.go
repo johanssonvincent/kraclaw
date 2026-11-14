@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/johanssonvincent/kraclaw/internal/skills"
 	"github.com/johanssonvincent/kraclaw/pkg/agent"
 )
 
@@ -39,6 +41,22 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 
 	maxTokens := int64(8192)
 
+	// Determine workspace path.
+	workspacePath := os.Getenv("KRACLAW_WORKSPACE_PATH")
+	if workspacePath == "" {
+		workspacePath = "/workspace"
+	}
+
+	// Load skills from workspace.
+	skillList, err := skills.LoadAll(workspacePath)
+	if err != nil {
+		log.Warn("failed to load skills", "error", err)
+	}
+
+	if len(skillList) > 0 {
+		log.Info("skills loaded", "count", len(skillList))
+	}
+
 	// Create Anthropic client pointing at the credential proxy.
 	client := anthropic.NewClient(
 		option.WithAPIKey("placeholder"), // Proxy injects real key.
@@ -49,6 +67,44 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 	log.Info("anthropic agent ready", "model", model, "proxy", proxyURL)
 
 	var history []anthropic.MessageParam
+
+	// Protected skill list for hot-reload.
+	var (
+		skillMu    sync.RWMutex
+		skillCache = skillList
+		workspace  = workspacePath
+	)
+
+	reloadSkills := func() {
+		list, err := skills.LoadAll(workspace)
+		if err != nil {
+			log.Warn("failed to reload skills", "error", err)
+
+			return
+		}
+
+		skillMu.Lock()
+		skillCache = list
+		skillMu.Unlock()
+
+		if len(list) > 0 {
+			log.Info("skills reloaded", "count", len(list))
+		}
+	}
+
+	buildSystemPrompt := func() string {
+		skillMu.RLock()
+		defer skillMu.RUnlock()
+
+		prompt := "You are an AI assistant running in a Kraclaw sandbox."
+
+		skillsSummary := skills.FormatPromptSummary(skillCache)
+		if skillsSummary != "" {
+			prompt += "\n\n" + skillsSummary
+		}
+
+		return prompt
+	}
 
 	inputCh, ipcErrCh, err := ipc.ReadInput(ctx)
 	if err != nil {
@@ -83,6 +139,9 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					Model:     model,
 					MaxTokens: maxTokens,
 					Messages:  msgs,
+					System: []anthropic.TextBlockParam{
+						{Type: "text", Text: buildSystemPrompt()},
+					},
 				})
 
 				var buf strings.Builder
@@ -142,6 +201,9 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 					model = payload.Model
 					log.Info("model updated", "model", model)
 				}
+
+			case "skill_reload":
+				reloadSkills()
 
 			case "shutdown":
 				log.Info("shutdown signal received")
