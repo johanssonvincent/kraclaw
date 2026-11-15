@@ -265,8 +265,60 @@ func (s *Server) Stop(ctx context.Context) {
 	}
 }
 
+// sandboxEventSource opens a sandbox watch. It matches
+// (*sandbox.Controller).WatchSandboxes and is a seam for tests.
+type sandboxEventSource func(ctx context.Context) (<-chan sandbox.SandboxEvent, error)
+
+// errSandboxWatchClosed reports that the apiserver ended the watch stream.
+var errSandboxWatchClosed = errors.New("sandbox watch channel closed")
+
+// watchSandboxEvents keeps the sandbox event feed alive for the lifetime of the
+// process.
+//
+// A watch is not a long-lived resource: the apiserver closes it on
+// --min-request-timeout, on a resource-version expiry (410 Gone), on its own
+// rollout, or the initial List/Watch can fail while the apiserver is still
+// starting. sandbox.WatchSandboxes delegates reconnects to its caller for that
+// reason, so returning on the first failure left StreamEvents subscribers
+// permanently blind to sandbox lifecycle events.
 func (s *Server) watchSandboxEvents(ctx context.Context) {
-	ch, err := s.sandbox.WatchSandboxes(ctx)
+	s.superviseSandboxEvents(ctx, s.sandbox.WatchSandboxes)
+}
+
+// superviseSandboxEvents re-establishes the watch with exponential backoff
+// until ctx is cancelled.
+func (s *Server) superviseSandboxEvents(ctx context.Context, watch sandboxEventSource) {
+	const (
+		baseBackoff = 100 * time.Millisecond
+		maxBackoff  = 30 * time.Second
+	)
+
+	backoff := baseBackoff
+
+	for {
+		err := s.consumeSandboxEvents(ctx, watch)
+		if ctx.Err() != nil {
+			return
+		}
+
+		s.log.Error("sandbox event watch ended, reconnecting", "error", err, "backoff", backoff)
+
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return
+		}
+
+		backoff = backoff * 3 / 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+// consumeSandboxEvents drains one watch until it ends or ctx is cancelled.
+func (s *Server) consumeSandboxEvents(ctx context.Context, watch sandboxEventSource) error {
+	ch, err := watch(ctx)
 	if err != nil {
 		s.log.Error("failed to watch sandbox events", "error", err)
 		s.events.publish(&kraclawv1.Event{
@@ -276,16 +328,16 @@ func (s *Server) watchSandboxEvents(ctx context.Context) {
 			Message:   fmt.Sprintf("failed to watch sandbox events: %v", err),
 		})
 
-		return
+		return fmt.Errorf("watch sandboxes: %w", err)
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case evt, ok := <-ch:
 			if !ok {
-				return
+				return errSandboxWatchClosed
 			}
 
 			s.events.publish(sandboxEventToProto(evt))
