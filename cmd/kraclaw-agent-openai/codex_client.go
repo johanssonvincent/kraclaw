@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/johanssonvincent/kraclaw/internal/credproxy/grouptoken"
 )
 
 const (
@@ -188,8 +191,14 @@ func codexMessage(role string, text string) codexInputItem {
 }
 
 func setCodexHeaders(req *http.Request, groupJID, sessionID, threadID, installationID string) {
-	req.Header.Set("X-Kraclaw-Group", groupJID)
-	req.Header.Set("X-Kraclaw-Provider", "openai")
+	req.Header.Set(grouptoken.HeaderGroup, groupJID)
+	req.Header.Set(grouptoken.HeaderProvider, "openai")
+	// Proves this sandbox owns groupJID; the proxy rejects the group header
+	// without it when CREDPROXY_GROUP_TOKEN_SECRET is configured.
+	if token := os.Getenv("KRACLAW_GROUP_TOKEN"); token != "" {
+		req.Header.Set(grouptoken.HeaderGroupToken, token)
+	}
+
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("version", codexClientVersion)

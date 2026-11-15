@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
+
+	"github.com/johanssonvincent/kraclaw/internal/credproxy/grouptoken"
 )
 
 // Config holds all application configuration.
@@ -81,6 +83,14 @@ type ProxyConfig struct {
 
 	// Encryption key for credential store (hex-encoded 32 bytes)
 	CredentialEncryptionKey string `envconfig:"CREDENTIAL_ENCRYPTION_KEY"`
+
+	// GroupTokenSecret authenticates the tenant selected by X-Kraclaw-Group.
+	// When set (at least credproxy.MinGroupTokenSecretLen characters), the proxy
+	// only serves a group's credential to a caller that also presents the
+	// group's derived capability token. Empty disables the check and leaves the
+	// proxy open to tenant impersonation from any pod that can reach it, so it
+	// is required for multi-tenant deployments.
+	GroupTokenSecret string `envconfig:"CREDPROXY_GROUP_TOKEN_SECRET"`
 }
 
 // OAuthConfig holds OAuth-related configuration for interactive auth flows
@@ -187,6 +197,10 @@ func (c *Config) Validate() error {
 		if _, err := hex.DecodeString(c.Proxy.CredentialEncryptionKey); err != nil {
 			return fmt.Errorf("CREDENTIAL_ENCRYPTION_KEY must be valid hex: %w", err)
 		}
+	}
+
+	if c.Proxy.GroupTokenSecret != "" && len(c.Proxy.GroupTokenSecret) < grouptoken.MinSecretLen {
+		return fmt.Errorf("CREDPROXY_GROUP_TOKEN_SECRET must be at least %d characters, got %d", grouptoken.MinSecretLen, len(c.Proxy.GroupTokenSecret))
 	}
 
 	return nil

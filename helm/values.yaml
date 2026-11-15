@@ -84,6 +84,14 @@ credproxy:
   anthropicVersion: "2023-06-01"             # ANTHROPIC_VERSION
   # secretName: name of pre-existing Secret containing key "ANTHROPIC_API_KEY"
   secretName: "kraclaw-api-keys"
+  # Tenant authentication for multi-provider mode: add a key named
+  # CREDPROXY_GROUP_TOKEN_SECRET (>= 32 characters random) to secretName. The
+  # proxy then only serves a group's stored credential when the caller also
+  # presents that group's derived token, which the sandbox controller injects
+  # into the sandbox as KRACLAW_GROUP_TOKEN. Without it any pod that can reach
+  # the proxy may name any group in X-Kraclaw-Group and use its credential.
+  # Skips/changes the value to revoke every outstanding sandbox token.
+  groupTokenSecretKey: "CREDPROXY_GROUP_TOKEN_SECRET"
 
 # Queue and rate limiting
 queue:

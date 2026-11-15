@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/johanssonvincent/kraclaw/internal/credproxy/grouptoken"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/store"
 	corev1 "k8s.io/api/core/v1"
@@ -31,7 +32,7 @@ func newTestController() *Controller {
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "", true)
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "", true, "")
 	if err != nil {
 		panic("newTestController: " + err.Error())
 	}
@@ -123,7 +124,7 @@ func newTestControllerWithCreateInterceptor(funcs interceptor.Funcs) *Controller
 		Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "", true)
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "", true, "")
 	if err != nil {
 		panic("newTestControllerWithCreateInterceptor: " + err.Error())
 	}
@@ -518,7 +519,7 @@ func TestCleanupOrphans_IsNotFoundSkipped(t *testing.T) {
 		failName:  "kraclaw-agent-gone-aaa111",
 	}
 
-	ctrl, err := New(fake.NewClientset(), wrappedClient, nil, "test-ns", nil, "nats://localhost:4222", "http://localhost:3001", "", true)
+	ctrl, err := New(fake.NewClientset(), wrappedClient, nil, "test-ns", nil, "nats://localhost:4222", "http://localhost:3001", "", true, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -955,7 +956,7 @@ func newTestControllerWithFastStart(t *testing.T, fastStart bool) *Controller {
 	_ = agentsandboxv1alpha1.AddToScheme(scheme)
 	ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 	agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
-	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "", fastStart)
+	ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "", fastStart, "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1012,7 +1013,7 @@ func TestCreateSandbox_NATSAuthSecretEnv(t *testing.T) {
 		ctrlClient := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
 		agentImages := map[string]string{provider.ProviderAnthropic: "ghcr.io/test/kraclaw-agent-anthropic:latest"}
 
-		ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "nats-auth-test", true)
+		ctrl, err := New(fake.NewClientset(), ctrlClient, nil, "test-ns", agentImages, "nats://localhost:4222", "http://localhost:3001", "nats-auth-test", true, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1173,5 +1174,58 @@ func TestBuildSandbox_DefensiveStreamEnvGating(t *testing.T) {
 				t.Errorf("KRACLAW_AGENT_DEFENSIVE_STREAM env present = %v, want %v", found, tt.wantEnv)
 			}
 		})
+	}
+}
+
+// TestBuildSandbox_GroupTokenEnv asserts the sandbox receives the capability
+// token for its own group only. The proxy rejects X-Kraclaw-Group without it, so
+// a missing token would break every agent call, and a token for another group
+// would let one sandbox spend another tenant's credential.
+func TestBuildSandbox_GroupTokenEnv(t *testing.T) {
+	t.Parallel()
+
+	const secret = "0123456789abcdef0123456789abcdef"
+
+	ctrl := newTestControllerWithFastStart(t, true)
+	ctrl.groupTokenSecret = secret
+
+	sb, err := ctrl.buildSandbox("test-name", validSandboxConfig())
+	if err != nil {
+		t.Fatalf("buildSandbox: %v", err)
+	}
+
+	var got string
+
+	for _, e := range sb.Spec.PodTemplate.Spec.Containers[0].Env {
+		if e.Name == "KRACLAW_GROUP_TOKEN" {
+			got = e.Value
+		}
+	}
+
+	if want := grouptoken.Token(secret, "123@g.us"); got != want {
+		t.Fatalf("KRACLAW_GROUP_TOKEN = %q, want the token for 123@g.us (%q)", got, want)
+	}
+
+	if other := grouptoken.Token(secret, "456@g.us"); got == other {
+		t.Fatal("sandbox received another group's token")
+	}
+}
+
+// TestBuildSandbox_NoGroupTokenWithoutSecret keeps legacy deployments working:
+// without a shared secret the proxy does not ask for a token, so none is injected.
+func TestBuildSandbox_NoGroupTokenWithoutSecret(t *testing.T) {
+	t.Parallel()
+
+	ctrl := newTestControllerWithFastStart(t, true)
+
+	sb, err := ctrl.buildSandbox("test-name", validSandboxConfig())
+	if err != nil {
+		t.Fatalf("buildSandbox: %v", err)
+	}
+
+	for _, e := range sb.Spec.PodTemplate.Spec.Containers[0].Env {
+		if e.Name == "KRACLAW_GROUP_TOKEN" {
+			t.Fatalf("KRACLAW_GROUP_TOKEN must be omitted when no secret is configured, got %q", e.Value)
+		}
 	}
 }
