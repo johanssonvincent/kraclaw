@@ -256,7 +256,7 @@ func TestWatchSandboxEvents_ReconnectsAfterWatchEnds(t *testing.T) {
 
 	watcher := &closingWatchClient{WithWatch: base, openCalls: make(chan int, 8)}
 
-	ctrl, err := sandbox.New(k8sfake.NewClientset(), watcher, nil, "test-ns", nil, "", "", "", true)
+	ctrl, err := sandbox.New(k8sfake.NewClientset(), watcher, nil, "test-ns", nil, "", "", "", true, "")
 	if err != nil {
 		t.Fatalf("sandbox.New: %v", err)
 	}
