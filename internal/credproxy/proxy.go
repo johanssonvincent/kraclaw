@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/johanssonvincent/kraclaw/internal/config"
+	"github.com/johanssonvincent/kraclaw/internal/credproxy/grouptoken"
 	"github.com/johanssonvincent/kraclaw/internal/metrics"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 )
@@ -173,6 +174,12 @@ type Proxy struct {
 	addr                 string
 	log                  *slog.Logger
 	resolver             CredentialResolver // nil = legacy single-provider mode
+
+	// groupTokenSecret, when non-empty, makes X-Kraclaw-Group a claim that must
+	// be proved with the matching capability token. Empty keeps the legacy
+	// behaviour (any reachable caller may name any group) for single-tenant
+	// deployments that have not configured the secret yet.
+	groupTokenSecret string
 }
 
 // New creates a new credential proxy from the given config.
@@ -191,11 +198,12 @@ func New(cfg config.ProxyConfig) (*Proxy, error) {
 	}
 
 	return &Proxy{
-		upstream:    upstream,
-		allowedHost: upstream.Host,
-		apiKey:      cfg.AnthropicAPIKey,
-		addr:        cfg.Addr,
-		log:         slog.Default().With("component", "credproxy"),
+		upstream:         upstream,
+		allowedHost:      upstream.Host,
+		apiKey:           cfg.AnthropicAPIKey,
+		addr:             cfg.Addr,
+		log:              slog.Default().With("component", "credproxy"),
+		groupTokenSecret: cfg.GroupTokenSecret,
 	}, nil
 }
 
@@ -234,6 +242,7 @@ func NewMultiProviderProxy(cfg config.ProxyConfig, resolver CredentialResolver) 
 		addr:                 cfg.Addr,
 		log:                  slog.Default().With("component", "credproxy"),
 		resolver:             resolver,
+		groupTokenSecret:     cfg.GroupTokenSecret,
 	}, nil
 }
 
@@ -243,7 +252,13 @@ func (p *Proxy) handler() http.Handler {
 	mux.HandleFunc("/healthz", p.handleHealthz)
 	mux.HandleFunc("/readyz", p.handleReadyz)
 	rp := p.newReverseProxy()
-	mux.Handle("/", p.metricsMiddleware(p.hostGuard(p.credentialMiddleware(rp))))
+	mux.Handle("/", p.metricsMiddleware(
+		p.hostGuard(
+			p.groupTokenGuard(
+				p.credentialMiddleware(rp),
+			),
+		),
+	))
 
 	return mux
 }
@@ -259,7 +274,16 @@ func (p *Proxy) Start(ctx context.Context) error {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	p.log.Info("credential proxy starting", "addr", p.addr, "upstream", p.upstream.String(), "auth_mode", p.authMode())
+	p.log.Info("credential proxy starting",
+		"addr", p.addr,
+		"upstream", p.upstream.String(),
+		"auth_mode", p.authMode(),
+		"group_token_auth", p.groupTokenSecret != "",
+	)
+
+	if p.groupTokenSecret == "" {
+		p.log.Warn("CREDPROXY_GROUP_TOKEN_SECRET is not set: any caller that can reach the proxy may name any group in X-Kraclaw-Group and use that group's stored credential; set the secret to require a capability token")
+	}
 
 	errCh := make(chan error, 1)
 
@@ -337,6 +361,7 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 				pr.Out.Header.Del("Transfer-Encoding")
 				pr.Out.Header.Del("X-Kraclaw-Group")
 				pr.Out.Header.Del("X-Kraclaw-Provider")
+				pr.Out.Header.Del(grouptoken.HeaderGroupToken)
 
 				// Inject provider-specific auth headers.
 				switch rd.cred.Provider {
@@ -391,6 +416,12 @@ func (p *Proxy) newReverseProxy() *httputil.ReverseProxy {
 			pr.Out.Header.Del("Connection")
 			pr.Out.Header.Del("Keep-Alive")
 			pr.Out.Header.Del("Transfer-Encoding")
+
+			// Internal routing headers are not part of the provider API; never
+			// leak the tenant identity to the upstream.
+			pr.Out.Header.Del("X-Kraclaw-Group")
+			pr.Out.Header.Del("X-Kraclaw-Provider")
+			pr.Out.Header.Del(grouptoken.HeaderGroupToken)
 
 			// API key mode: strip incoming auth, inject real key.
 			pr.Out.Header.Del("X-Api-Key")
@@ -552,13 +583,52 @@ func (p *Proxy) hostGuard(next http.Handler) http.Handler {
 	})
 }
 
+// groupTokenGuard enforces that a caller naming a group proves possession of
+// that group's capability token before any credential is resolved for it.
+//
+// Without this check X-Kraclaw-Group is an unauthenticated tenant selector: any
+// pod that can reach the proxy (every sandbox runs untrusted instructions by
+// design) could name another group and have that group's stored provider key
+// injected into its own outbound request. With CREDPROXY_GROUP_TOKEN_SECRET set,
+// the header is only honoured together with a token the sandbox cannot mint for
+// a group it was not created for.
+//
+// Requests without the group header stay on the platform-credential path, which
+// is not a cross-tenant boundary: it resolves the deployment's own key.
+func (p *Proxy) groupTokenGuard(next http.Handler) http.Handler {
+	if p.groupTokenSecret == "" {
+		return next
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		groupJID := r.Header.Get(grouptoken.HeaderGroup)
+		if groupJID == "" {
+			next.ServeHTTP(w, r)
+
+			return
+		}
+
+		if !grouptoken.Verify(p.groupTokenSecret, groupJID, r.Header.Get(grouptoken.HeaderGroupToken)) {
+			p.log.Warn("rejected request without a valid group capability token",
+				"group", groupJID,
+				"remote_addr", r.RemoteAddr,
+			)
+			http.Error(w, "Forbidden: invalid group capability token", http.StatusForbidden)
+
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // credentialMiddleware resolves credentials before the reverse proxy Director...
 func (p *Proxy) credentialMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		groupJID := r.Header.Get("X-Kraclaw-Group")
+		groupJID := r.Header.Get(grouptoken.HeaderGroup)
 
 		if p.resolver != nil && groupJID != "" {
-			requestedProvider := r.Header.Get("X-Kraclaw-Provider")
+			requestedProvider := r.Header.Get(grouptoken.HeaderProvider)
 
 			cred, err := p.resolver.Resolve(r.Context(), groupJID, requestedProvider)
 			if err != nil {

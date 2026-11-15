@@ -11,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/johanssonvincent/kraclaw/internal/credproxy/grouptoken"
 	"github.com/johanssonvincent/kraclaw/pkg/agent"
 )
 
@@ -40,11 +41,18 @@ func runAnthropic(ctx context.Context, ipc *agent.IPCClient, log *slog.Logger) e
 	maxTokens := int64(8192)
 
 	// Create Anthropic client pointing at the credential proxy.
-	client := anthropic.NewClient(
+	clientOpts := []option.RequestOption{
 		option.WithAPIKey("placeholder"), // Proxy injects real key.
 		option.WithBaseURL(proxyURL),
-		option.WithHeader("X-Kraclaw-Group", groupJID),
-	)
+		option.WithHeader(grouptoken.HeaderGroup, groupJID),
+	}
+	// Proves this sandbox owns groupJID; the proxy rejects the group header
+	// without it when CREDPROXY_GROUP_TOKEN_SECRET is configured.
+	if token := os.Getenv("KRACLAW_GROUP_TOKEN"); token != "" {
+		clientOpts = append(clientOpts, option.WithHeader(grouptoken.HeaderGroupToken, token))
+	}
+
+	client := anthropic.NewClient(clientOpts...)
 
 	log.Info("anthropic agent ready", "model", model, "proxy", proxyURL)
 

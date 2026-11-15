@@ -17,6 +17,7 @@ import (
 	agentsandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/johanssonvincent/kraclaw/internal/credproxy/grouptoken"
 	"github.com/johanssonvincent/kraclaw/internal/ipc"
 	"github.com/johanssonvincent/kraclaw/internal/provider"
 	"github.com/johanssonvincent/kraclaw/internal/store"
@@ -46,6 +47,7 @@ type Controller struct {
 	natsURL          string
 	proxyURL         string
 	natsAuthSecret   string
+	groupTokenSecret string
 	fastStartEnabled bool
 	log              *slog.Logger
 }
@@ -126,6 +128,7 @@ func New(
 	agentImages map[string]string,
 	natsURL, proxyURL, natsAuthSecret string,
 	fastStartEnabled bool,
+	groupTokenSecret string,
 ) (*Controller, error) {
 	if clientset == nil {
 		return nil, fmt.Errorf("sandbox: kubernetes clientset is required")
@@ -144,6 +147,7 @@ func New(
 		natsURL:          natsURL,
 		proxyURL:         proxyURL,
 		natsAuthSecret:   natsAuthSecret,
+		groupTokenSecret: groupTokenSecret,
 		fastStartEnabled: fastStartEnabled,
 		log:              slog.Default().With("component", "sandbox"),
 	}, nil
@@ -368,6 +372,13 @@ func (c *Controller) buildSandbox(name string, cfg SandboxConfig) (*agentsandbox
 		{Name: "KRACLAW_PROXY_URL", Value: c.proxyURL},
 		{Name: "KRACLAW_PROVIDER", Value: providerID},
 		{Name: "KRACLAW_GROUP", Value: cfg.GroupJID},
+	}
+
+	// The proxy only honours X-Kraclaw-Group together with this token. It is
+	// derived from the shared secret and this sandbox's group, so a compromised
+	// sandbox can use its own credential but cannot mint another group's.
+	if token := grouptoken.Token(c.groupTokenSecret, cfg.GroupJID); token != "" {
+		envVars = append(envVars, corev1.EnvVar{Name: "KRACLAW_GROUP_TOKEN", Value: token})
 	}
 
 	if c.natsAuthSecret != "" {

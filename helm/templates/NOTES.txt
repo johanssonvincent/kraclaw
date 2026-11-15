@@ -12,7 +12,13 @@ The following Secrets MUST be created before kraclaw will start:
 2. Anthropic API Keys Secret ({{ .Values.credproxy.secretName }}):
    kubectl create secret generic {{ .Values.credproxy.secretName }} \
      --from-literal=ANTHROPIC_API_KEY='sk-ant-...' \
+     --from-literal={{ .Values.credproxy.groupTokenSecretKey }}="$(openssl rand -hex 32)" \
      -n {{ .Release.Namespace }}
+
+   {{ .Values.credproxy.groupTokenSecretKey }} (>= 32 characters) authenticates the
+   tenant named in X-Kraclaw-Group so one sandbox cannot use another group's
+   stored credential. Omit it only for single-tenant installs; the proxy logs a
+   warning and accepts any group from any caller that can reach it.
 
 {{- if not .Values.server.grpcInsecure }}
 3. gRPC TLS Secret ({{ .Values.tls.secretName }}):

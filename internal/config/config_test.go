@@ -362,3 +362,19 @@ func unsetNATSEnv(t *testing.T) {
 		_ = os.Unsetenv(key)
 	}
 }
+
+func TestValidate_GroupTokenSecretTooShort(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.GroupTokenSecret = "short"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for a group token secret shorter than 32 characters")
+	}
+}
+
+func TestValidate_GroupTokenSecretAccepted(t *testing.T) {
+	cfg := validConfig()
+	cfg.Proxy.GroupTokenSecret = strings.Repeat("a", 32)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
