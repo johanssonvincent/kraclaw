@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -352,6 +353,14 @@ func TestListGroups(t *testing.T) {
 func TestUpsertGroup(t *testing.T) {
 	store, mock := newTestStore(t)
 
+	// The folder pre-check finds no conflicting owner (the only row it can find
+	// is this very JID), so the upsert proceeds.
+	ownerRows := sqlmock.NewRows([]string{"jid", "name", "folder", "trigger_pattern", "is_main", "requires_trigger", "container_config", "added_at"}).
+		AddRow("g1@g.us", "Test", "test", "!bot", false, true, nil, time.Now().UTC())
+	mock.ExpectQuery("SELECT .+ FROM `groups` WHERE folder = \\?").
+		WithArgs("test").
+		WillReturnRows(ownerRows)
+
 	mock.ExpectExec("INSERT INTO `groups`.*ON DUPLICATE KEY UPDATE").
 		WithArgs("g1@g.us", "Test", "test", "!bot", false, true, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -369,6 +378,73 @@ func TestUpsertGroup(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestUpsertGroupRejectsFolderOwnedByAnotherGroup is the regression test for the
+// cross-group takeover: `groups` is UNIQUE on both `jid` and `folder`, and
+// INSERT ... ON DUPLICATE KEY UPDATE fires on either key. Registering a new JID
+// with a folder that already belongs to another group used to rewrite that
+// group's row (name, trigger pattern, is_main, container_config) while silently
+// never inserting the requested JID.
+func TestUpsertGroupRejectsFolderOwnedByAnotherGroup(t *testing.T) {
+	store, mock := newTestStore(t)
+
+	ownerRows := sqlmock.NewRows([]string{"jid", "name", "folder", "trigger_pattern", "is_main", "requires_trigger", "container_config", "added_at"}).
+		AddRow("owner@g.us", "Owner", "shared", "!bot", false, true, nil, time.Now().UTC())
+	mock.ExpectQuery("SELECT .+ FROM `groups` WHERE folder = \\?").
+		WithArgs("shared").
+		WillReturnRows(ownerRows)
+	// No ExpectExec: the conflicting write must never be attempted.
+
+	err := store.UpsertGroup(context.Background(), &Group{
+		JID:             "newcomer@g.us",
+		Name:            "Newcomer",
+		Folder:          "shared",
+		TriggerPattern:  "!bot",
+		IsMain:          true,
+		RequiresTrigger: false,
+		AddedAt:         time.Now().UTC(),
+	})
+	if err == nil {
+		t.Fatal("expected an error when the folder already belongs to another group")
+	}
+	if !strings.Contains(err.Error(), "already registered to group") {
+		t.Fatalf("error = %v, want a folder-conflict error", err)
+	}
+	if !strings.Contains(err.Error(), "owner@g.us") {
+		t.Fatalf("error = %v, want it to name the owning group", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestUpsertGroupGuardsCrossRowUpdate asserts the UPDATE arms stay keyed on the
+// JID: between the pre-check and the write another writer can still take the
+// folder, and an unguarded arm would then rewrite the other group's row.
+func TestUpsertGroupGuardsCrossRowUpdate(t *testing.T) {
+	src, err := os.ReadFile("mysql.go")
+	if err != nil {
+		t.Fatalf("read mysql.go: %v", err)
+	}
+
+	body := string(src)
+	start := strings.Index(body, "func (s *MySQLStore) UpsertGroup(")
+	if start == -1 {
+		t.Fatal("UpsertGroup not found")
+	}
+	end := strings.Index(body[start:], "\n}\n")
+	if end == -1 {
+		t.Fatal("could not isolate UpsertGroup body")
+	}
+
+	upsert := body[start : start+end]
+	for _, column := range []string{"name", "folder", "trigger_pattern", "is_main", "requires_trigger", "container_config"} {
+		arm := regexp.MustCompile(`(?m)^\s*` + column + `\s*= IF\(jid = VALUES\(jid\)`)
+		if !arm.MatchString(upsert) {
+			t.Errorf("UpsertGroup UPDATE arm %q is not guarded by jid: a folder collision would rewrite another group's row", column)
+		}
 	}
 }
 
