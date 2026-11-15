@@ -436,6 +436,11 @@ func (s *MySQLStore) DeleteMessage(ctx context.Context, id, chatJID string) erro
 	return nil
 }
 
+// GetNewMessages returns unread messages for the given chats, oldest first.
+//
+// The inner query MUST order ascending: the caller advances its cursor to the
+// newest returned timestamp, so a newest-first LIMIT window would drop the
+// oldest `total-limit` messages permanently (they are never fetched again).
 func (s *MySQLStore) GetNewMessages(ctx context.Context, jids []string, since time.Time, limit int) ([]Message, error) {
 	if len(jids) == 0 {
 		return nil, nil
@@ -460,7 +465,7 @@ func (s *MySQLStore) GetNewMessages(ctx context.Context, jids []string, since ti
 			WHERE timestamp > ? AND chat_jid IN (%s)
 			  AND is_bot_message = 0
 			  AND content != '' AND content IS NOT NULL
-			ORDER BY timestamp DESC
+			ORDER BY timestamp ASC
 			LIMIT ?
 		) sub ORDER BY timestamp`,
 		strings.Join(placeholders, ","),
@@ -475,6 +480,11 @@ func (s *MySQLStore) GetNewMessages(ctx context.Context, jids []string, since ti
 	return scanMessages(rows)
 }
 
+// GetMessagesSince returns the pending messages for one chat, oldest first.
+//
+// Same rule as GetNewMessages: the caller moves its cursor to the newest
+// returned timestamp after handing the batch to an agent, so selecting the
+// newest rows inside the LIMIT window silently skips everything older.
 func (s *MySQLStore) GetMessagesSince(ctx context.Context, chatJID string, since time.Time, limit int) ([]Message, error) {
 	query := `
 		SELECT * FROM (
@@ -483,7 +493,7 @@ func (s *MySQLStore) GetMessagesSince(ctx context.Context, chatJID string, since
 			WHERE chat_jid = ? AND timestamp > ?
 			  AND is_bot_message = 0
 			  AND content != '' AND content IS NOT NULL
-			ORDER BY timestamp DESC
+			ORDER BY timestamp ASC
 			LIMIT ?
 		) sub ORDER BY timestamp`
 
