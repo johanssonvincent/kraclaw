@@ -647,6 +647,57 @@ func TestGetNewMessages(t *testing.T) {
 	}
 }
 
+// TestGetNewMessages_SelectsOldestWindowFirst pins the ordering contract of the
+// unread window. pollMessages advances last_timestamp to the newest message it
+// gets back, so the LIMIT window must be taken from the OLDEST unread rows:
+// with a newest-first window, a burst larger than Queue.MessageLimit silently
+// loses the oldest (limit-total) messages forever.
+func TestGetNewMessages_SelectsOldestWindowFirst(t *testing.T) {
+	store, mock := newTestStore(t)
+	since := time.Now().UTC().Add(-time.Hour)
+
+	rows := sqlmock.NewRows([]string{"id", "chat_jid", "sender", "sender_name", "content", "timestamp", "is_from_me", "is_bot_message"}).
+		AddRow("m1", "c1@g.us", "s1", "Alice", "first", since.Add(time.Second), false, false)
+	mock.ExpectQuery(`(?s)WHERE timestamp > \? AND chat_jid IN .*ORDER BY timestamp ASC\s+LIMIT \?`).
+		WithArgs(since, "c1@g.us", 100).
+		WillReturnRows(rows)
+
+	msgs, err := store.GetNewMessages(context.Background(), []string{"c1@g.us"}, since, 100)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestGetMessagesSince_SelectsOldestWindowFirst is the same contract for the
+// per-chat query used to hand a batch to an agent.
+func TestGetMessagesSince_SelectsOldestWindowFirst(t *testing.T) {
+	store, mock := newTestStore(t)
+	since := time.Now().UTC().Add(-time.Hour)
+
+	rows := sqlmock.NewRows([]string{"id", "chat_jid", "sender", "sender_name", "content", "timestamp", "is_from_me", "is_bot_message"}).
+		AddRow("m1", "c1@g.us", "s1", "Alice", "first", since.Add(time.Second), false, false)
+	mock.ExpectQuery(`(?s)WHERE chat_jid = \? AND timestamp > \?.*ORDER BY timestamp ASC\s+LIMIT \?`).
+		WithArgs("c1@g.us", since, 50).
+		WillReturnRows(rows)
+
+	msgs, err := store.GetMessagesSince(context.Background(), "c1@g.us", since, 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestGetNewMessagesEmpty(t *testing.T) {
 	store, _ := newTestStore(t)
 
