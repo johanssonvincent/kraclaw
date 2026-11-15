@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -262,7 +261,7 @@ func TestWatchSandboxEvents_ReconnectsAfterWatchEnds(t *testing.T) {
 		t.Fatalf("sandbox.New: %v", err)
 	}
 
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	hub := newEventHub(log)
 	srv := &Server{sandbox: ctrl, events: hub, log: log}
 
@@ -322,7 +321,7 @@ func TestWatchSandboxEvents_ReconnectsAfterWatchEnds(t *testing.T) {
 // TestSuperviseSandboxEvents_PublishesSetupFailure keeps the operator-visible
 // error event when the watch cannot be opened at all.
 func TestSuperviseSandboxEvents_PublishesSetupFailure(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	hub := newEventHub(log)
 	srv := &Server{events: hub, log: log}
 
