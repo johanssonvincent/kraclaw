@@ -296,22 +296,43 @@ func (s *MySQLStore) ListGroups(ctx context.Context) ([]Group, error) {
 	return groups, rows.Err()
 }
 
+// UpsertGroup inserts or updates a group by JID.
+//
+// `groups` carries two unique keys: `jid` (primary) and `folder` (UNIQUE). INSERT
+// ... ON DUPLICATE KEY UPDATE fires on a violation of either, so a folder that
+// already belongs to a different JID used to rewrite THAT group's row (name,
+// trigger pattern, is_main, container config) while never inserting the
+// requested JID — a silent cross-group takeover: the response looked successful
+// but the caller's group did not exist and the incumbent group was mutated.
+// The clash is rejected up front, and the UPDATE arms are additionally guarded
+// by the JID so a concurrent writer can never rewrite a row it does not own.
 func (s *MySQLStore) UpsertGroup(ctx context.Context, g *Group) error {
 	ccJSON, err := ContainerConfigJSON(g.ContainerConfig)
 	if err != nil {
 		return fmt.Errorf("marshal container config: %w", err)
 	}
 
+	if g.Folder != "" {
+		owner, err := s.GetGroupByFolder(ctx, g.Folder)
+		if err != nil {
+			return fmt.Errorf("upsert group: look up folder %q: %w", g.Folder, err)
+		}
+
+		if owner != nil && owner.JID != g.JID {
+			return fmt.Errorf("upsert group: folder %q is already registered to group %q", g.Folder, owner.JID)
+		}
+	}
+
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO `+"`groups`"+` (jid, name, folder, trigger_pattern, is_main, requires_trigger, container_config, added_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON DUPLICATE KEY UPDATE
-		   name             = VALUES(name),
-		   folder           = VALUES(folder),
-		   trigger_pattern  = VALUES(trigger_pattern),
-		   is_main          = VALUES(is_main),
-		   requires_trigger = VALUES(requires_trigger),
-		   container_config = VALUES(container_config)`,
+		   name             = IF(jid = VALUES(jid), VALUES(name), name),
+		   folder           = IF(jid = VALUES(jid), VALUES(folder), folder),
+		   trigger_pattern  = IF(jid = VALUES(jid), VALUES(trigger_pattern), trigger_pattern),
+		   is_main          = IF(jid = VALUES(jid), VALUES(is_main), is_main),
+		   requires_trigger = IF(jid = VALUES(jid), VALUES(requires_trigger), requires_trigger),
+		   container_config = IF(jid = VALUES(jid), VALUES(container_config), container_config)`,
 		g.JID, g.Name, g.Folder, g.TriggerPattern, g.IsMain, g.RequiresTrigger, ccJSON, g.AddedAt,
 	)
 	if err != nil {
