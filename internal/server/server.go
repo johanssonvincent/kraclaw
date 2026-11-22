@@ -111,10 +111,20 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
+	// Both chains are required: gRPC keeps unary and streaming interceptors
+	// separate, so a stream-only omission silently disables panic recovery and
+	// request logging for every server-streaming RPC (StreamEvents,
+	// StreamInbound, StreamSandboxOutput, StartChatGPTDeviceAuth). A panic in
+	// one of those handlers would then crash the process instead of failing a
+	// single RPC.
 	grpcOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(
 			loggingInterceptor(cfg.Log),
 			recoveryInterceptor(cfg.Log),
+		),
+		grpc.ChainStreamInterceptor(
+			loggingStreamInterceptor(cfg.Log),
+			recoveryStreamInterceptor(cfg.Log),
 		),
 	}
 
