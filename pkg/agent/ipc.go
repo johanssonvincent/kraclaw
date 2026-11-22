@@ -190,6 +190,59 @@ func (c *IPCClient) ReadInput(ctx context.Context) (<-chan *InboundMessage, <-ch
 	return c.msgCh, c.errCh, nil
 }
 
+// ErrInputChannelClosed is returned by WaitForInput when the input channel was
+// closed while the context was still live — the reader stopped without
+// reporting a cause, which no normal shutdown does.
+var ErrInputChannelClosed = errors.New("ipc input channel closed unexpectedly")
+
+// WaitForInput blocks until the next inbound message arrives.
+//
+// It returns (nil, nil) for a clean shutdown: the context was cancelled, or the
+// reader exited and closed errCh. A closed errCh is not itself a failure — the
+// reader sends its fatal cause on the buffered channel *before* closing it, so
+// anything still queued is delivered first and a close with nothing queued
+// means the reader stopped normally.
+//
+// Callers must treat a nil message as "stop the loop"; treating a closed error
+// channel as an error instead reports a spurious "%!w(<nil>)" failure on every
+// normal agent shutdown.
+func WaitForInput(ctx context.Context, msgCh <-chan *InboundMessage, errCh <-chan error) (*InboundMessage, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, nil
+		case err, ok := <-errCh:
+			if !ok || err == nil {
+				return nil, nil
+			}
+
+			return nil, fmt.Errorf("ipc read: %w", err)
+		case msg, ok := <-msgCh:
+			if !ok {
+				// The reader closes errCh before msgCh, so a queued cause is
+				// observable here; an empty, closed errCh means clean exit.
+				select {
+				case err, ok := <-errCh:
+					if ok && err != nil {
+						return nil, fmt.Errorf("ipc read: %w", err)
+					}
+
+					return nil, nil
+				default:
+				}
+
+				if ctx.Err() != nil {
+					return nil, nil
+				}
+
+				return nil, ErrInputChannelClosed
+			}
+
+			return msg, nil
+		}
+	}
+}
+
 // startReadInput initializes the message reader goroutine.
 func (c *IPCClient) startReadInput(ctx context.Context, ch chan *InboundMessage, errCh chan error) error {
 	if c.defensiveStream {
