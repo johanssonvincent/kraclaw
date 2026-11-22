@@ -102,6 +102,30 @@ func (m *mockTaskStore) GetTaskRunLogs(context.Context, string, string, int) ([]
 	return nil, nil
 }
 
+// TestNew_RejectsNonPositivePollInterval guards startup: Start hands the interval
+// to time.NewTicker, which panics for d <= 0. The scheduler runs in its own
+// goroutine (orchestrator.Start) with no recover, so SCHEDULER_POLL_INTERVAL=0
+// crashed the whole server instead of failing startup like the nil-argument
+// checks in New.
+func TestNew_RejectsNonPositivePollInterval(t *testing.T) {
+	executor := func(context.Context, store.ScheduledTask) error { return nil }
+
+	for _, interval := range []time.Duration{0, -time.Second} {
+		if _, err := New(&mockTaskStore{}, executor, interval); err == nil {
+			t.Errorf("New(pollInterval=%s) error = nil, want an error (time.NewTicker panics on it)", interval)
+		}
+	}
+
+	sched, err := New(&mockTaskStore{}, executor, time.Minute)
+	if err != nil {
+		t.Fatalf("New(pollInterval=1m) error = %v", err)
+	}
+
+	if sched == nil {
+		t.Fatal("New(pollInterval=1m) returned a nil scheduler")
+	}
+}
+
 func TestPollConcurrency(t *testing.T) {
 	tests := []struct {
 		name          string

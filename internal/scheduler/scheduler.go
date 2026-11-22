@@ -53,6 +53,14 @@ func New(s store.TaskStore, executor TaskExecutor, pollInterval time.Duration) (
 		return nil, fmt.Errorf("scheduler: executor is required")
 	}
 
+	// Start feeds this value straight into time.NewTicker, which panics on a
+	// non-positive duration. The scheduler runs in its own goroutine with no
+	// recover, so a SCHEDULER_POLL_INTERVAL typo (e.g. "0") killed the whole
+	// process instead of failing startup like the two checks above.
+	if pollInterval <= 0 {
+		return nil, fmt.Errorf("scheduler: poll interval must be positive, got %s", pollInterval)
+	}
+
 	return &Scheduler{
 		store:        s,
 		executor:     executor,
