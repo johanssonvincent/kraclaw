@@ -312,6 +312,16 @@ func (s *MySQLStore) UpsertGroup(ctx context.Context, g *Group) error {
 		return fmt.Errorf("marshal container config: %w", err)
 	}
 
+	// added_at is TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, but the column is
+	// bound explicitly below, so an unset Go timestamp is sent as year 1 — outside
+	// the TIMESTAMP range, which MySQL 8 rejects in its default strict mode
+	// (error 1292) instead of applying the default. Callers that do not track
+	// added_at (RegisterGroup) therefore had their insert fail outright.
+	addedAt := g.AddedAt
+	if addedAt.IsZero() {
+		addedAt = time.Now().UTC()
+	}
+
 	if g.Folder != "" {
 		owner, err := s.GetGroupByFolder(ctx, g.Folder)
 		if err != nil {
@@ -333,7 +343,7 @@ func (s *MySQLStore) UpsertGroup(ctx context.Context, g *Group) error {
 		   is_main          = IF(jid = VALUES(jid), VALUES(is_main), is_main),
 		   requires_trigger = IF(jid = VALUES(jid), VALUES(requires_trigger), requires_trigger),
 		   container_config = IF(jid = VALUES(jid), VALUES(container_config), container_config)`,
-		g.JID, g.Name, g.Folder, g.TriggerPattern, g.IsMain, g.RequiresTrigger, ccJSON, g.AddedAt,
+		g.JID, g.Name, g.Folder, g.TriggerPattern, g.IsMain, g.RequiresTrigger, ccJSON, addedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert group: %w", err)
@@ -611,6 +621,23 @@ func (s *MySQLStore) CreateTask(ctx context.Context, task *ScheduledTask) error 
 	// forever (it is listed, updatable, and never executed).
 	if err := task.EnsureNextRun(time.Now().UTC()); err != nil {
 		return fmt.Errorf("create task: %w", err)
+	}
+
+	// context_mode, status and created_at are bound explicitly below, so a zero
+	// value reaches MySQL as '' / year 1 and is rejected in strict mode (ENUM
+	// 1265, datetime 1292) instead of falling back to the column default. A task
+	// created without a context_mode (the proto field is optional) failed with an
+	// opaque Internal error.
+	if task.ContextMode == "" {
+		task.ContextMode = ContextIsolated
+	}
+
+	if task.Status == "" {
+		task.Status = TaskActive
+	}
+
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = time.Now().UTC()
 	}
 
 	_, err := s.db.ExecContext(ctx,

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"os"
@@ -376,6 +377,52 @@ func TestUpsertGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// nonZeroTime matches any non-zero time.Time argument. It pins the class of bug
+// where a zero Go timestamp reaches MySQL and is rejected as out-of-range
+// instead of letting the column default apply.
+type nonZeroTime struct{}
+
+func (nonZeroTime) Match(v driver.Value) bool {
+	t, ok := v.(time.Time)
+
+	return ok && !t.IsZero()
+}
+
+// TestUpsertGroup_DefaultsZeroAddedAt guards the group-registration path:
+// RegisterGroup builds a Group without added_at, so the store used to bind a
+// zero time.Time. go-sql-driver sends that as year 1, which is outside MySQL's
+// TIMESTAMP range and rejected in the server's default strict mode
+// (ERROR 1292) instead of applying DEFAULT CURRENT_TIMESTAMP — the RPC failed
+// for every new group.
+func TestUpsertGroup_DefaultsZeroAddedAt(t *testing.T) {
+	store, mock := newTestStore(t)
+
+	ownerRows := sqlmock.NewRows([]string{"jid", "name", "folder", "trigger_pattern", "is_main", "requires_trigger", "container_config", "added_at"})
+	mock.ExpectQuery("SELECT .+ FROM `groups` WHERE folder = \\\\?").
+		WithArgs("test").
+		WillReturnRows(ownerRows)
+
+	mock.ExpectExec("INSERT INTO `groups`.*ON DUPLICATE KEY UPDATE").
+		WithArgs("g1@g.us", "Test", "test", "!bot", false, true, sqlmock.AnyArg(), nonZeroTime{}).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// No AddedAt: exactly what server.groupService.RegisterGroup constructs.
+	err := store.UpsertGroup(context.Background(), &Group{
+		JID:             "g1@g.us",
+		Name:            "Test",
+		Folder:          "test",
+		TriggerPattern:  "!bot",
+		RequiresTrigger: true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertGroup() error = %v", err)
+	}
+
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
@@ -842,6 +889,46 @@ func TestCreateTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestCreateTask_AppliesSchemaDefaults pins the values CreateTask must fill in
+// when the caller leaves them unset: context_mode, status and created_at are
+// bound explicitly by the INSERT, so a zero value is sent as ” / year 1 and
+// rejected by MySQL's strict mode (ENUM 1265, datetime 1292) rather than
+// falling back to the column default. Creating a task without a context_mode
+// (the proto field is optional) failed with an opaque Internal error.
+func TestCreateTask_AppliesSchemaDefaults(t *testing.T) {
+	store, mock := newTestStore(t)
+
+	mock.ExpectExec("INSERT INTO scheduled_tasks").
+		WithArgs("task1", "folder1", "c1@g.us", "do something", ScheduleInterval, "1h",
+			ContextIsolated, sqlmock.AnyArg(), TaskActive, nonZeroTime{}).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	task := &ScheduledTask{
+		ID: "task1", GroupFolder: "folder1", ChatJID: "c1@g.us", Prompt: "do something",
+		ScheduleType: ScheduleInterval, ScheduleValue: "1h",
+	}
+
+	if err := store.CreateTask(context.Background(), task); err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	if task.ContextMode != ContextIsolated {
+		t.Errorf("ContextMode = %q, want %q (the schema default)", task.ContextMode, ContextIsolated)
+	}
+
+	if task.Status != TaskActive {
+		t.Errorf("Status = %q, want %q (the schema default)", task.Status, TaskActive)
+	}
+
+	if task.CreatedAt.IsZero() {
+		t.Error("CreatedAt is zero: the insert would bind year 1, which MySQL rejects")
+	}
+
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
