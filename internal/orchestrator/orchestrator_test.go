@@ -1263,6 +1263,53 @@ func TestHasTriggerMessage(t *testing.T) {
 	}
 }
 
+// A scheduled task's prompt is stored by the server, not typed by a user, so it
+// cannot carry a trigger pattern. It must still start an agent in a
+// trigger-gated group; otherwise every scheduled task is silently enqueued and
+// never delivered.
+func TestHasTriggerMessage_SchedulerPromptTriggers(t *testing.T) {
+	s := newMockStore()
+	// Deny every user sender: a server-generated prompt must not depend on the
+	// allowlist, which exists to gate who may address the bot.
+	s.allowlist["group1@g.us"] = []store.SenderAllowlistEntry{
+		{ChatJID: "group1@g.us", AllowPattern: "*", Mode: store.ModeDrop},
+	}
+	ch := &mockChannel{name: "test", connected: true, ownsJIDs: map[string]bool{"group1@g.us": true}}
+	o := newTestOrchestratorWithRouter(s, newMockQueue(), &mockIPCBroker{}, []channel.Channel{ch})
+
+	group := store.Group{
+		JID:             "group1@g.us",
+		Folder:          "test-group",
+		TriggerPattern:  "!bot",
+		RequiresTrigger: true,
+	}
+
+	got, err := o.hasTriggerMessage(context.Background(), "group1@g.us", group, []store.Message{
+		{Sender: schedulerSender, SenderName: "Scheduled Task", Content: "summarise yesterday", IsFromMe: true},
+	})
+	if err != nil {
+		t.Fatalf("hasTriggerMessage() error = %v", err)
+	}
+
+	if !got {
+		t.Error("hasTriggerMessage() = false, want true (a scheduled-task prompt must start an agent in a trigger-gated group)")
+	}
+
+	// The sender string is caller-controlled (gRPC SendMessage takes it from the
+	// request), so a message that only claims to be the scheduler must not
+	// bypass the trigger gate.
+	got, err = o.hasTriggerMessage(context.Background(), "group1@g.us", group, []store.Message{
+		{Sender: schedulerSender, Content: "summarise yesterday"},
+	})
+	if err != nil {
+		t.Fatalf("hasTriggerMessage() error = %v", err)
+	}
+
+	if got {
+		t.Error("hasTriggerMessage() = true, want false (a forged scheduler sender must not match)")
+	}
+}
+
 func TestHasTriggerMessage_MainGroup(t *testing.T) {
 	// Main groups skip trigger check entirely in the caller (pollMessages/process...
 	s := newMockStore()
@@ -3079,6 +3126,9 @@ func TestExecuteScheduledTask_StoresPromptThenEnqueues(t *testing.T) {
 	}
 	if got.Sender != "scheduler" {
 		t.Errorf("stored message Sender = %q, want %q", got.Sender, "scheduler")
+	}
+	if !got.IsFromMe {
+		t.Error("stored message IsFromMe = false, want true (a scheduled prompt is server-generated, so the trigger gate must accept it)")
 	}
 	if got.SenderName != "Scheduled Task" {
 		t.Errorf("stored message SenderName = %q, want %q", got.SenderName, "Scheduled Task")
